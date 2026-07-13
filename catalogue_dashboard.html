@@ -284,7 +284,7 @@
     <div class="sec-t">&#128176; Pricing Tier Configuration</div>
     <div class="sec-s">Configure how much of OneCard's margin to share with each customer tier. Changes update all prices instantly.</div>
     <div class="tier-ed" id="tierEditor">
-        <div class="tier-hdr"><div>Tier Name</div><div>Margin Share % (slider)</div><div>Customer Gets</div><div>OC Keeps</div><div>Color</div></div>
+        <div class="tier-hdr"><div>Tier Name</div><div>Margin Share % (slider)</div><div>Customer Gets</div><div>OC Keeps</div><div>Actions / Color</div></div>
         <div id="tierRows"></div>
         <button class="btn-p mt16" onclick="addTier()" style="background:rgba(99,102,241,.15);color:var(--accent)">+ Add Tier</button>
     </div>
@@ -293,7 +293,17 @@
             <div class="tbl-filters">
                 <select class="fsel" id="tierCatF" onchange="renderTierTable()"><option value="">All Categories</option></select>
                 <select class="fsel" id="tierCountryF" onchange="renderTierTable()"><option value="">All Countries</option></select>
-                <button class="btn-p" onclick="exportTierCSV()">&#128229; Export Tier Prices</button>
+                <!-- Multi-select for Tiers to Export -->
+                <div class="ms-wrap" id="msExportTiers">
+                    <button class="ms-btn" onclick="toggleMS('msExportTiers')">🎖️ Export Tiers <span class="cnt" id="msExportTiersCnt">0</span></button>
+                    <div class="ms-dd" id="msExportTiersDD"></div>
+                </div>
+                <!-- Export Mode -->
+                <select class="fsel" id="exportMode">
+                    <option value="detailed">Detailed (Per Item)</option>
+                    <option value="merchant">Rates (Per Merchant/Category)</option>
+                </select>
+                <button class="btn-p" onclick="exportTierCSV()">&#128229; Export</button>
             </div>
         </div>
         <div class="tbl-scroll"><table><thead><tr id="tierTblH"></tr></thead><tbody id="tierTblB"></tbody></table></div>
@@ -327,6 +337,7 @@ let TIERS=[];
 let selectedCountries=new Set(), selectedRegions=new Set();
 let selectedMerchRegions=new Set();
 let selectedExplorerCountries=new Set();
+let selectedExportTiers=new Set();
 
 // LOAD
 async function boot(){
@@ -555,19 +566,51 @@ function toggleExplorerCountry(country,el){
 }
 
 // TAB 5: TIERS
-function buildTiers(){renderTierEditor();renderTierTable()}
+function buildTiers(){renderTierEditor();renderTierTable();populateExportTiers();}
 function renderTierEditor(){
     document.getElementById('tierRows').innerHTML=TIERS.map((t,i)=>`<div class="tier-row">
-        <input type="text" value="${esc(t.name)}" oninput="TIERS[${i}].name=this.value;renderTierTable();renderCalcResult()">
+        <input type="text" value="${esc(t.name)}" oninput="TIERS[${i}].name=this.value;renderTierTable();renderCalcResult();populateExportTiers()">
         <input type="range" min="0" max="100" value="${t.margin_share_pct}" oninput="TIERS[${i}].margin_share_pct=+this.value;this.parentElement.querySelector('.tier-pct').textContent=this.value+'%';this.parentElement.querySelector('.tier-keep').textContent='OC keeps '+(100-this.value)+'%';renderTierTable();renderCalcResult()">
         <div class="tier-pct" style="color:${t.color}">${t.margin_share_pct}%</div>
         <div class="tier-keep">OC keeps ${100-t.margin_share_pct}%</div>
-        <input type="color" value="${t.color}" class="tier-color" oninput="TIERS[${i}].color=this.value;this.parentElement.querySelector('.tier-pct').style.color=this.value">
+        <div style="display:flex;align-items:center;gap:6px">
+            <input type="color" value="${t.color}" class="tier-color" oninput="TIERS[${i}].color=this.value;this.parentElement.querySelector('.tier-pct').style.color=this.value">
+            <button onclick="deleteTier(${i})" style="background:none;border:0;color:var(--danger);cursor:pointer;font-size:14px" title="Delete Tier">&#128465;</button>
+        </div>
     </div>`).join('');
 }
 function addTier(){
     TIERS.push({name:'New Tier',margin_share_pct:25,color:'#64748b'});
-    renderTierEditor();renderTierTable();
+    renderTierEditor();renderTierTable();populateExportTiers();
+}
+function deleteTier(i){
+    if(TIERS.length<=1){alert("You must keep at least one tier.");return;}
+    TIERS.splice(i,1);
+    renderTierEditor();renderTierTable();renderCalcResult();populateExportTiers();
+}
+function populateExportTiers() {
+    const activeNames = TIERS.map(t => t.name);
+    if (selectedExportTiers.size === 0) {
+        activeNames.forEach(n => selectedExportTiers.add(n));
+    } else {
+        const toRemove = [...selectedExportTiers].filter(n => !activeNames.includes(n));
+        toRemove.forEach(n => selectedExportTiers.delete(n));
+        if (selectedExportTiers.size === 0) {
+            activeNames.forEach(n => selectedExportTiers.add(n));
+        }
+    }
+    const dd = document.getElementById('msExportTiersDD');
+    let html = `<div class="ms-acts"><button onclick="msAll('msExportTiers',true)">All</button><button onclick="msAll('msExportTiers',false)">None</button></div>`;
+    TIERS.forEach(t => {
+        html += `<label><input type="checkbox" data-v="${esc(t.name)}" ${selectedExportTiers.has(t.name)?'checked':''}><span>${esc(t.name)}</span></label>`;
+    });
+    dd.innerHTML = html;
+    document.getElementById('msExportTiersCnt').textContent = selectedExportTiers.size;
+    dd.querySelectorAll('input').forEach(cb => cb.addEventListener('change', () => {
+        if (cb.checked) selectedExportTiers.add(cb.dataset.v);
+        else selectedExportTiers.delete(cb.dataset.v);
+        document.getElementById('msExportTiersCnt').textContent = selectedExportTiers.size;
+    }));
 }
 function renderTierTable(){
     const cat=document.getElementById('tierCatF').value;
@@ -688,13 +731,86 @@ function exportTierCSV(){
     const cat=document.getElementById('tierCatF').value;
     const country=document.getElementById('tierCountryF').value;
     let prods=D.products.filter(p=>{if(cat&&p.category!==cat)return false;if(country&&p.country!==country)return false;if(String(p.country).startsWith('eSIM'))return false;return true});
-    const headers=['Product','Merchant','Country','Currency','Cost','Default Price','OC Margin',...TIERS.map(t=>t.name+' Price'),...TIERS.map(t=>t.name+' OC Profit')];
-    const rows=prods.map(p=>{
-        const prices=TIERS.map(t=>{const d=(p.oc_margin||0)*(t.margin_share_pct/100);return Math.max((p.default_price||0)-d,p.cost||0).toFixed(2)});
-        const profits=TIERS.map((t,i)=>(prices[i]-(p.cost||0)).toFixed(2));
-        return[p.product_name,p.merchant,p.country,p.currency,p.cost,p.default_price,p.oc_margin,...prices,...profits].map(v=>`"${String(v||'').replace(/"/g,'""')}"`).join(',');
-    });
-    dl([headers.join(','),...rows].join('\n'),'tier_prices.csv','text/csv');
+    
+    const activeExportTiers = TIERS.filter(t => selectedExportTiers.has(t.name));
+    if(activeExportTiers.length === 0) {
+        alert("Please select at least one tier to export.");
+        return;
+    }
+    
+    const mode = document.getElementById('exportMode').value;
+    if(mode === 'merchant') {
+        // Group by Merchant + Category
+        const groups = {};
+        prods.forEach(p => {
+            const k = p.merchant + '|' + p.category;
+            if(!groups[k]) {
+                groups[k] = {
+                    merchant: p.merchant,
+                    category: p.category,
+                    currency: p.currency,
+                    margins: []
+                };
+            }
+            groups[k].margins.push(p.oc_margin_pct || 0);
+        });
+        
+        const rates = [];
+        Object.values(groups).forEach(g => {
+            const counts = {};
+            let modeMargin = 0;
+            let maxCount = -1;
+            g.margins.forEach(m => {
+                const rm = Math.round(m * 100) / 100;
+                counts[rm] = (counts[rm] || 0) + 1;
+                if (counts[rm] > maxCount) {
+                    maxCount = counts[rm];
+                    modeMargin = rm;
+                }
+            });
+            rates.push({
+                merchant: g.merchant,
+                category: g.category,
+                currency: g.currency,
+                mode_margin_pct: modeMargin
+            });
+        });
+        
+        const headers = ['Merchant', 'Category', 'Currency', 'Default OC Margin %'];
+        activeExportTiers.forEach(t => headers.push(t.name + ' Customer Discount %'));
+        activeExportTiers.forEach(t => headers.push(t.name + ' OC Kept Margin %'));
+        
+        const rows = rates.map(r => {
+            const row = [r.merchant, r.category, r.currency, r.mode_margin_pct.toFixed(2) + '%'];
+            activeExportTiers.forEach(t => {
+                const share = t.margin_share_pct / 100;
+                row.push((r.mode_margin_pct * share).toFixed(2) + '%');
+            });
+            activeExportTiers.forEach(t => {
+                const share = t.margin_share_pct / 100;
+                row.push((r.mode_margin_pct * (1 - share)).toFixed(2) + '%');
+            });
+            return row.map(v => `"${String(v||'').replace(/"/g,'""')}"`).join(',');
+        });
+        
+        dl([headers.join(','), ...rows].join('\n'), 'merchant_tier_rates.csv', 'text/csv');
+    } else {
+        const headers = ['Product', 'Merchant', 'Country', 'Category', 'Currency', 'Cost', 'Default Price', 'OC Margin'];
+        activeExportTiers.forEach(t => headers.push(t.name + ' Price'));
+        activeExportTiers.forEach(t => headers.push(t.name + ' OC Profit'));
+        
+        const rows = prods.map(p => {
+            const prices = activeExportTiers.map(t => {
+                const d = (p.oc_margin || 0) * (t.margin_share_pct / 100);
+                return Math.max((p.default_price || 0) - d, p.cost || 0).toFixed(2);
+            });
+            const profits = activeExportTiers.map((t, i) => (prices[i] - (p.cost || 0)).toFixed(2));
+            return [p.product_name, p.merchant, p.country, p.currency, p.cost, p.default_price, p.oc_margin, ...prices, ...profits]
+                .map(v => `"${String(v||'').replace(/"/g,'""')}"`).join(',');
+        });
+        
+        dl([headers.join(','), ...rows].join('\n'), 'detailed_tier_prices.csv', 'text/csv');
+    }
 }
 function dl(content,name,type){const b=new Blob([content],{type});const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download=name;a.click();URL.revokeObjectURL(u)}
 
