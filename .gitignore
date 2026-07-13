@@ -1,0 +1,14 @@
+# ═══════════════════════════════════════════════════════════
+# OneCard Catalogue Management System - .gitignore
+# ═══════════════════════════════════════════════════════════
+
+# Ignore EVERYTHING by default
+*
+
+# Then ONLY allow the Catalogue Management System files
+!.gitignore
+!README.md
+!catalogue_engine.py
+!catalogue_dashboard.html
+!catalogue_data.json
+!Organized_Catalogue_Master.xlsx
