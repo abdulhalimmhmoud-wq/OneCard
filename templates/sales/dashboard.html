@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Sales Dashboard — OneCard{% endblock %}
+{% block sidebar %}
+<div class="nav-section">Sales</div>
+<a href="/sales" class="nav-item {{ 'active' if active_tab == 'dashboard' }}"><span class="icon">📊</span>Dashboard</a>
+<a href="/sales/register" class="nav-item {{ 'active' if active_tab == 'register' }}"><span class="icon">➕</span>Register Client</a>
+<a href="/sales/clients" class="nav-item {{ 'active' if active_tab == 'clients' }}"><span class="icon">👥</span>My Clients</a>
+<a href="/sales/catalogue" class="nav-item {{ 'active' if active_tab == 'catalogue' }}"><span class="icon">📦</span>Product Catalogue</a>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">📊 Sales Dashboard</h1>
+        <p class="page-subtitle">Welcome back, {{ current_user.name }}</p>
+    </div>
+    <div class="page-actions">
+        <a href="/sales/register" class="btn btn-primary">➕ Register New Client</a>
+    </div>
+</div>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-icon">👥</div>
+        <div class="stat-value">{{ clients|length }}</div>
+        <div class="stat-label">My Clients</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">📦</div>
+        <div class="stat-value">{{ stats.total_products }}</div>
+        <div class="stat-label">Products Available</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🏪</div>
+        <div class="stat-value">{{ stats.total_merchants }}</div>
+        <div class="stat-label">Merchants</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🌍</div>
+        <div class="stat-value">{{ stats.total_countries }}</div>
+        <div class="stat-label">Countries</div>
+    </div>
+</div>
+
+<div class="table-card">
+    <div class="table-header">
+        <div class="table-title">👥 My Registered Clients</div>
+        <a href="/sales/register" class="btn btn-sm btn-ghost">+ Register New</a>
+    </div>
+    <div class="table-scroll">
+        <table>
+            <thead>
+                <tr><th>Company</th><th>Contact</th><th>Expected Sales</th><th>Tier</th><th>Registered</th><th>Actions</th></tr>
+            </thead>
+            <tbody>
+            {% for c in clients %}
+            <tr>
+                <td class="fw6">{{ c.company_name }}</td>
+                <td>{{ c.contact_name }}<br><span class="text-muted" style="font-size:11px">{{ c.email }}</span></td>
+                <td class="fw6">SAR {{ "{:,.0f}".format(c.expected_monthly_sales) }}</td>
+                <td><span class="badge badge-tier" style="background:{{ c.tier_color or '#64748b' }}20;color:{{ c.tier_color or '#64748b' }}">{{ c.tier_name or 'Unassigned' }}</span></td>
+                <td class="text-muted">{{ c.created_at[:10] if c.created_at else '—' }}</td>
+                <td><a href="/sales/preview/{{ c.user_id }}" class="btn btn-sm btn-ghost">👁️ Preview</a></td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-3)">
+                No clients yet. <a href="/sales/register" style="color:var(--accent)">Register your first client →</a>
+            </td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

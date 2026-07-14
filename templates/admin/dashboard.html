@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Admin Dashboard — OneCard{% endblock %}
+{% block sidebar %}
+<div class="nav-section">Management</div>
+<a href="/admin" class="nav-item {{ 'active' if active_tab == 'dashboard' }}"><span class="icon">📊</span>Dashboard</a>
+<a href="/admin/tiers" class="nav-item {{ 'active' if active_tab == 'tiers' }}"><span class="icon">🎖️</span>Tier Rules</a>
+<a href="/admin/catalogue" class="nav-item {{ 'active' if active_tab == 'catalogue' }}"><span class="icon">📦</span>Product Catalogue</a>
+<a href="/admin/clients" class="nav-item {{ 'active' if active_tab == 'clients' }}"><span class="icon">👥</span>All Clients</a>
+<div class="nav-section">Settings</div>
+<a href="/admin/users" class="nav-item {{ 'active' if active_tab == 'users' }}"><span class="icon">⚙️</span>Manage Users</a>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">📊 Admin Dashboard</h1>
+        <p class="page-subtitle">Overview of the OneCard Catalogue Platform</p>
+    </div>
+</div>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-icon">📦</div>
+        <div class="stat-value">{{ stats.total_products | default(0) }}</div>
+        <div class="stat-label">Total Products</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🏪</div>
+        <div class="stat-value">{{ stats.total_merchants | default(0) }}</div>
+        <div class="stat-label">Merchants</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🌍</div>
+        <div class="stat-value">{{ stats.total_countries | default(0) }}</div>
+        <div class="stat-label">Countries</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">📂</div>
+        <div class="stat-value">{{ stats.total_categories | default(0) }}</div>
+        <div class="stat-label">Categories</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">👤</div>
+        <div class="stat-value">{{ stats.total_clients | default(0) }}</div>
+        <div class="stat-label">Registered Clients</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">💰</div>
+        <div class="stat-value">{{ "%.1f" | format(stats.avg_margin | default(0)) }}%</div>
+        <div class="stat-label">Avg. Margin</div>
+    </div>
+</div>
+
+<div class="grid-2">
+    <!-- Tier Distribution -->
+    <div class="card">
+        <div class="card-header"><div class="card-title">🎖️ Active Tier Rules</div></div>
+        <table style="width:100%">
+            <thead><tr><th>Tier</th><th>Min Monthly (SAR)</th><th>Min Categories</th><th>Margin Share</th></tr></thead>
+            <tbody>
+            {% for t in tiers %}
+            <tr>
+                <td><span class="badge badge-tier" style="background:{{ t.color }}20;color:{{ t.color }}">{{ t.name }}</span></td>
+                <td class="fw6">{{ "{:,.0f}".format(t.min_monthly_sales) }}</td>
+                <td>{{ t.min_categories }}+</td>
+                <td class="fw6">{{ t.margin_share_pct }}%</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Recent Clients -->
+    <div class="card">
+        <div class="card-header"><div class="card-title">👥 Recent Clients</div></div>
+        {% if clients %}
+        <table style="width:100%">
+            <thead><tr><th>Company</th><th>Tier</th><th>Sales Manager</th></tr></thead>
+            <tbody>
+            {% for c in clients[:8] %}
+            <tr>
+                <td>{{ c.company_name }}</td>
+                <td><span class="badge badge-tier" style="background:{{ c.tier_color or '#64748b' }}20;color:{{ c.tier_color or '#64748b' }}">{{ c.tier_name or 'Unassigned' }}</span></td>
+                <td class="text-muted">{{ c.sales_name or '—' }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div style="text-align:center;padding:30px;color:var(--text-3)">No clients registered yet</div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

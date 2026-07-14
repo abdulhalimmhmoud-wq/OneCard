@@ -1,14 +1,33 @@
 # ═══════════════════════════════════════════════════════════
-# OneCard Catalogue Management System - .gitignore
+# OneCard Catalogue Management Platform - .gitignore
 # ═══════════════════════════════════════════════════════════
 
 # Ignore EVERYTHING by default
 *
 
-# Then ONLY allow the Catalogue Management System files
+# Allow Git files
 !.gitignore
+
+# Ignore SQLite Database
+onecard.db
+
+# Allow core documentation & packages
 !README.md
+!requirements.txt
+
+# Allow legacy CMS v2 files
 !catalogue_engine.py
 !catalogue_dashboard.html
 !catalogue_data.json
 !Organized_Catalogue_Master.xlsx
+
+# Allow new Flask application files
+!app.py
+!models.py
+!seed_products.py
+
+# Allow static files and templates directories
+!static/
+!static/**
+!templates/
+!templates/**

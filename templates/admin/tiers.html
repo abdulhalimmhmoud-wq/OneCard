@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Tier Rules — OneCard Admin{% endblock %}
+{% block sidebar %}
+<div class="nav-section">Management</div>
+<a href="/admin" class="nav-item"><span class="icon">📊</span>Dashboard</a>
+<a href="/admin/tiers" class="nav-item active"><span class="icon">🎖️</span>Tier Rules</a>
+<a href="/admin/catalogue" class="nav-item"><span class="icon">📦</span>Product Catalogue</a>
+<a href="/admin/clients" class="nav-item"><span class="icon">👥</span>All Clients</a>
+<div class="nav-section">Settings</div>
+<a href="/admin/users" class="nav-item"><span class="icon">⚙️</span>Manage Users</a>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">🎖️ Pricing Tier Rules</h1>
+        <p class="page-subtitle">Define monthly sales targets and margin share percentages for each customer tier</p>
+    </div>
+</div>
+
+<form method="POST" action="/admin/tiers">
+    <div style="margin-bottom:8px;display:grid;grid-template-columns:200px 1fr 120px 100px 50px 40px;gap:16px;padding:0 20px;font-size:11px;font-weight:600;color:var(--text-3);text-transform:uppercase">
+        <div>Tier Name</div><div>Min Monthly Sales (SAR) | Min Categories | Margin Share %</div><div>Margin %</div><div>OC Keeps</div><div>Color</div><div></div>
+    </div>
+
+    {% for t in tiers %}
+    <div class="tier-card">
+        <input type="hidden" name="tier_id" value="{{ t.id }}">
+        <input type="text" name="tier_name" value="{{ t.name }}" style="font-weight:600;font-size:15px">
+        <div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;align-items:end">
+                <div>
+                    <div style="font-size:10px;color:var(--text-3);margin-bottom:4px">Min Monthly Sales (SAR)</div>
+                    <input type="number" name="tier_min_sales" value="{{ t.min_monthly_sales|int }}" min="0" step="1000">
+                </div>
+                <div>
+                    <div style="font-size:10px;color:var(--text-3);margin-bottom:4px">Min Categories</div>
+                    <input type="number" name="tier_min_cats" value="{{ t.min_categories }}" min="1" max="20">
+                </div>
+                <div>
+                    <div style="font-size:10px;color:var(--text-3);margin-bottom:4px">Margin Share %</div>
+                    <input type="number" name="tier_margin" value="{{ t.margin_share_pct }}" min="0" max="100" step="1">
+                </div>
+            </div>
+        </div>
+        <div class="tier-pct" style="color:{{ t.color }}">{{ t.margin_share_pct }}%</div>
+        <div class="tier-keep">OC keeps {{ 100 - t.margin_share_pct|int }}%</div>
+        <input type="color" name="tier_color" value="{{ t.color }}">
+        <a href="/admin/tiers/delete/{{ t.id }}" onclick="return confirm('Delete this tier?')" style="color:var(--danger);text-decoration:none;font-size:16px" title="Delete">🗑️</a>
+    </div>
+    {% endfor %}
+
+    <div style="display:flex;gap:12px;margin-top:16px">
+        <button type="submit" class="btn btn-primary">💾 Save All Tier Rules</button>
+        <a href="/admin/tiers/add" class="btn btn-ghost">+ Add New Tier</a>
+    </div>
+</form>
+
+<div class="card mt-24">
+    <div class="card-header"><div class="card-title">ℹ️ How Tier Assignment Works</div></div>
+    <div style="font-size:13px;color:var(--text-2);line-height:1.8">
+        When a Sales Manager registers a new client, they enter:
+        <ul style="margin:8px 0 0 20px">
+            <li><strong>Expected Monthly Sales (SAR)</strong> — How much the client is expected to spend per month</li>
+            <li><strong>Target Categories</strong> — Which product categories they'll purchase (Gaming, Telecom, etc.)</li>
+        </ul>
+        <div style="margin-top:10px">
+            The system automatically assigns the <strong>highest qualifying tier</strong> — the tier where both the monthly sales
+            target AND minimum categories are met. The client then sees prices calculated as:
+        </div>
+        <div style="margin-top:8px;padding:10px 14px;background:var(--bg-2);border-radius:8px;font-family:monospace;font-size:12px">
+            Client Price = Default Price − (OC Margin × Tier's Margin Share %)
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}{{ profile.company_name }} — OneCard{% endblock %}
+{% block sidebar %}
+<div class="nav-section">My Catalogue</div>
+<a href="/client" class="nav-item {{ 'active' if active_tab == 'dashboard' }}"><span class="icon">🏠</span>Home</a>
+<a href="/client/products" class="nav-item {{ 'active' if active_tab == 'products' }}"><span class="icon">📦</span>Products</a>
+<a href="/client/merchants" class="nav-item {{ 'active' if active_tab == 'merchants' }}"><span class="icon">🏪</span>By Merchant</a>
+<a href="/client/calculator" class="nav-item {{ 'active' if active_tab == 'calculator' }}"><span class="icon">🧮</span>Profit Calculator</a>
+<a href="/client/recommended" class="nav-item {{ 'active' if active_tab == 'recommended' }}"><span class="icon">⭐</span>Recommended</a>
+{% endblock %}
+
+{% block content %}
+<!-- Welcome Banner -->
+<div class="welcome-banner fade-in">
+    <div class="welcome-title">Welcome, {{ profile.company_name }} 👋</div>
+    <div class="welcome-sub">Your personalized product catalogue with exclusive pricing</div>
+    {% if profile.tier %}
+    <div class="welcome-tier" style="background:{{ profile.tier.color }}20;color:{{ profile.tier.color }}">
+        🎖️ {{ profile.tier.name }} Tier — {{ profile.tier.margin_share_pct }}% Margin Share
+    </div>
+    {% endif %}
+</div>
+
+<!-- Stats -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-icon">📦</div>
+        <div class="stat-value">{{ products|length }}</div>
+        <div class="stat-label">Available Products</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🏪</div>
+        <div class="stat-value">{{ merchants|length }}</div>
+        <div class="stat-label">Merchants</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">📂</div>
+        <div class="stat-value">{{ categories|length }}</div>
+        <div class="stat-label">Categories</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">💰</div>
+        <div class="stat-value">{{ "%.1f" | format(avg_discount) }}%</div>
+        <div class="stat-label">Your Avg. Discount</div>
+    </div>
+</div>
+
+<!-- Quick Browse by Category -->
+<div class="card mb-24">
+    <div class="card-header"><div class="card-title">📂 Browse by Category</div></div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px">
+        {% for cat, count in cat_counts.items() %}
+        <a href="/client/products?category={{ cat }}" class="btn btn-sm btn-ghost" style="text-decoration:none">
+            {{ cat }} <span class="badge badge-accent" style="margin-left:4px">{{ count }}</span>
+        </a>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- Top Products by Margin -->
+<div class="card">
+    <div class="card-header">
+        <div class="card-title">⭐ Highest Margin Products for You</div>
+        <a href="/client/recommended" class="btn btn-sm btn-ghost">See All →</a>
+    </div>
+    <div class="table-scroll">
+        <table>
+            <thead><tr><th>Product</th><th>Merchant</th><th>Category</th><th>Your Price</th><th>Your Discount</th><th>Your Margin</th></tr></thead>
+            <tbody>
+            {% for p in top_products[:10] %}
+            <tr>
+                <td class="fw6 truncate" title="{{ p.product_name }}">{{ p.product_name }}</td>
+                <td class="text-muted">{{ p.merchant }}</td>
+                <td><span class="badge badge-accent">{{ p.category }}</span></td>
+                <td class="fw6" style="color:{{ profile.tier.color if profile.tier else 'var(--text-1)' }}">{{ "%.2f" | format(p.client_price) }}</td>
+                <td class="fw6 text-s">{{ "%.2f" | format(p.discount) }}</td>
+                <td class="fw6 text-s">{{ "%.1f" | format(p.margin_pct) }}%</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

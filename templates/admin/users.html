@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Manage Users — OneCard Admin{% endblock %}
+{% block sidebar %}
+<div class="nav-section">Management</div>
+<a href="/admin" class="nav-item"><span class="icon">📊</span>Dashboard</a>
+<a href="/admin/tiers" class="nav-item"><span class="icon">🎖️</span>Tier Rules</a>
+<a href="/admin/catalogue" class="nav-item"><span class="icon">📦</span>Product Catalogue</a>
+<a href="/admin/clients" class="nav-item"><span class="icon">👥</span>All Clients</a>
+<div class="nav-section">Settings</div>
+<a href="/admin/users" class="nav-item active"><span class="icon">⚙️</span>Manage Users</a>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">⚙️ Manage Users</h1>
+        <p class="page-subtitle">Create admin and sales manager accounts</p>
+    </div>
+</div>
+
+<div class="grid-2">
+    <div class="card">
+        <div class="card-header"><div class="card-title">➕ Create New User</div></div>
+        <form method="POST" action="/admin/users/create">
+            <div class="form-group">
+                <label class="form-label">Full Name</label>
+                <input type="text" name="name" required placeholder="e.g. Ahmed Hassan">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Email</label>
+                <input type="email" name="email" required placeholder="e.g. ahmed@onecard.com">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Password</label>
+                <input type="password" name="password" required placeholder="Min 6 characters" minlength="6">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Role</label>
+                <select name="role" required>
+                    <option value="sales">Sales Manager</option>
+                    <option value="admin">Admin</option>
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary">Create User</button>
+        </form>
+    </div>
+
+    <div class="card">
+        <div class="card-header"><div class="card-title">👤 Existing Users</div></div>
+        <table style="width:100%">
+            <thead><tr><th>Name</th><th>Email</th><th>Role</th></tr></thead>
+            <tbody>
+            {% for u in users %}
+            <tr>
+                <td class="fw6">{{ u.name }}</td>
+                <td class="text-muted">{{ u.email }}</td>
+                <td><span class="badge {{ 'badge-accent' if u.role == 'admin' else 'badge-info' if u.role == 'sales' else 'badge-success' }}">{{ u.role }}</span></td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

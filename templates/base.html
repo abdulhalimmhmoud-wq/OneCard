@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}OneCard Platform{% endblock %}</title>
+    <meta name="description" content="OneCard Catalogue Management Platform">
+    <link rel="stylesheet" href="/static/style.css">
+    {% block head %}{% endblock %}
+</head>
+<body>
+{% if current_user %}
+<div class="app">
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-logo">
+            <div class="logo-icon">📦</div>
+            <div>
+                <div class="logo-text">OneCard</div>
+                <div class="logo-sub">
+                    {% if current_user.role == 'admin' %}Admin Panel
+                    {% elif current_user.role == 'sales' %}Sales Portal
+                    {% else %}Client Portal{% endif %}
+                </div>
+            </div>
+        </div>
+        <nav class="sidebar-nav">
+            {% block sidebar %}{% endblock %}
+        </nav>
+        <div class="sidebar-user">
+            <div class="user-avatar">{{ current_user.name[0]|upper }}</div>
+            <div class="user-info">
+                <div class="user-name">{{ current_user.name }}</div>
+                <div class="user-role">{{ current_user.role }}</div>
+            </div>
+            <a href="/logout" title="Logout" style="color:var(--text-3);text-decoration:none;font-size:18px">⏻</a>
+        </div>
+    </aside>
+    <main class="main-content">
+        <button class="mobile-toggle" onclick="toggleSidebar()">☰</button>
+        
+        {% if is_preview %}
+        <div class="flash flash-warning fade-in" style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;background:rgba(245,158,11,0.15);border:1px solid rgba(245,158,11,0.4)">
+            <span>⚠️ <strong>Preview Mode</strong> — Viewing portal as <strong>{{ preview_company }}</strong></span>
+            <a href="/sales/preview/exit" class="btn btn-sm btn-danger" style="text-decoration:none;padding:4px 10px;font-size:11px;color:white">Exit Preview</a>
+        </div>
+        {% endif %}
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        <div class="flash-messages">
+            {% for cat, msg in messages %}
+            <div class="flash flash-{{ cat }}">{{ msg }}</div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% endwith %}
+        {% block content %}{% endblock %}
+    </main>
+</div>
+{% else %}
+    {% block fullpage %}{% endblock %}
+{% endif %}
+<script src="/static/app.js"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{% block title %}Merchants — {{ profile.company_name }}{% endblock %}
+{% block sidebar %}
+<div class="nav-section">My Catalogue</div>
+<a href="/client" class="nav-item"><span class="icon">🏠</span>Home</a>
+<a href="/client/products" class="nav-item"><span class="icon">📦</span>Products</a>
+<a href="/client/merchants" class="nav-item active"><span class="icon">🏪</span>By Merchant</a>
+<a href="/client/calculator" class="nav-item"><span class="icon">🧮</span>Profit Calculator</a>
+<a href="/client/recommended" class="nav-item"><span class="icon">⭐</span>Recommended</a>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">🏪 Browse by Merchant</h1>
+        <p class="page-subtitle">{{ merchants|length }} merchants available in your catalogue</p>
+    </div>
+</div>
+
+<div class="card mb-24">
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <div class="search-box" style="flex:1;max-width:400px">
+            <span class="search-icon">🔍</span>
+            <input type="search" id="merchSearch" placeholder="Search merchants..." oninput="filterMerchants()">
+        </div>
+        <select id="merchSort" style="width:220px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterMerchants()">
+            <option value="count_desc">Products Count (High to Low)</option>
+            <option value="count_asc">Products Count (Low to High)</option>
+            <option value="margin_desc">Avg Margin % (High to Low)</option>
+            <option value="popularity_desc">Sales Volume (High to Low)</option>
+            <option value="name_asc">Name (A to Z)</option>
+        </select>
+    </div>
+</div>
+
+<div id="merchantCards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px"></div>
+
+<div class="table-card mt-24" id="merchProducts" style="display:none">
+    <div class="table-header">
+        <div class="table-title" id="merchTitle">Products</div>
+        <button class="btn btn-sm btn-primary" onclick="exportMerchantCSV()">📥 Export</button>
+    </div>
+    <div class="table-scroll">
+        <table>
+            <thead>
+                <tr>
+                    <th onclick="sortTable(0)">Product ↕</th>
+                    <th onclick="sortTable(1)">Category</th>
+                    <th onclick="sortTable(2)">Country</th>
+                    <th>Your Price</th>
+                    <th>Discount</th>
+                    <th onclick="sortTable(5)">Margin ↕</th>
+                    <th onclick="sortTable(6)">Sales Vol ↕</th>
+                </tr>
+            </thead>
+            <tbody id="merchBody"></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const products = {{ products_json|safe }};
+const tierColor = '{{ profile.tier.color if profile.tier else "#6366f1" }}';
+let selectedMerchant = null;
+let merchProductsList = [];
+let sortCol = -1, sortAsc = true;
+
+// Build merchant list
+function getMerchants() {
+    const map = {};
+    products.forEach(p => {
+        if (!map[p.merchant]) map[p.merchant] = { name: p.merchant, count: 0, avgMargin: 0, totalMargin: 0, totalPop: 0, avgPop: 0, cats: new Set() };
+        map[p.merchant].count++;
+        map[p.merchant].totalMargin += p.margin_pct || 0;
+        map[p.merchant].totalPop += p.popularity || 0;
+        map[p.merchant].cats.add(p.category);
+    });
+    return Object.values(map).map(m => { 
+        m.avgMargin = m.totalMargin / m.count; 
+        m.avgPop = m.totalPop / m.count; 
+        return m; 
+    });
+}
+
+function filterMerchants() {
+    const q = document.getElementById('merchSearch').value.toLowerCase();
+    const sort = document.getElementById('merchSort').value;
+    let list = getMerchants().filter(m => !q || m.name.toLowerCase().includes(q));
+    
+    switch (sort) {
+        case 'count_desc': list.sort((a, b) => b.count - a.count); break;
+        case 'count_asc': list.sort((a, b) => a.count - b.count); break;
+        case 'margin_desc': list.sort((a, b) => b.avgMargin - a.avgMargin); break;
+        case 'popularity_desc': list.sort((a, b) => b.avgPop - a.avgPop); break;
+        case 'name_asc': list.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase())); break;
+    }
+
+    document.getElementById('merchantCards').innerHTML = list.map(m => {
+        const popLabel = m.avgPop > 80 ? '🔥 High' : m.avgPop > 50 ? '📈 Medium' : 'Standard';
+        return `
+            <div class="product-card" style="cursor:pointer" onclick="selectMerchant('${esc(m.name)}')">
+                <div class="pc-name">${esc(m.name)}</div>
+                <div class="pc-merchant">${m.count} products · ${m.cats.size} categories</div>
+                <div class="pc-prices">
+                    <div><div class="pc-price-label">Products</div><div class="pc-price-value">${m.count}</div></div>
+                    <div><div class="pc-price-label">Avg Margin</div><div class="pc-price-value text-s">${m.avgMargin.toFixed(1)}%</div></div>
+                </div>
+                <div style="margin-top:10px;display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--text-3);border-top:1px solid var(--border);padding-top:8px">
+                    <span>Sales Volume:</span>
+                    <span class="badge ${m.avgPop > 80 ? 'badge-warning' : 'badge-ghost'}">${popLabel}</span>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function selectMerchant(name) {
+    selectedMerchant = name;
+    merchProductsList = products.filter(p => p.merchant === name);
+    document.getElementById('merchTitle').textContent = `${name} — ${merchProductsList.length} Products`;
+    document.getElementById('merchProducts').style.display = 'block';
+    sortCol = -1;
+    renderMerchProducts();
+    document.getElementById('merchProducts').scrollIntoView({ behavior: 'smooth' });
+}
+
+function sortTable(col) {
+    if (sortCol === col) sortAsc = !sortAsc;
+    else { sortCol = col; sortAsc = true; }
+    const keys = ['product_name', 'category', 'country', 'client_price', 'discount', 'margin_pct', 'popularity'];
+    merchProductsList.sort((a, b) => {
+        let va = a[keys[col]], vb = b[keys[col]];
+        if (typeof va === 'string') { va = va.toLowerCase(); vb = (vb || '').toLowerCase(); }
+        if (va < vb) return sortAsc ? -1 : 1;
+        if (va > vb) return sortAsc ? 1 : -1;
+        return 0;
+    });
+    renderMerchProducts();
+}
+
+function renderMerchProducts() {
+    document.getElementById('merchBody').innerHTML = merchProductsList.map(p => {
+        const popTag = p.popularity > 80 ? '🔥 High' : p.popularity > 50 ? '📈 Medium' : 'Standard';
+        return `<tr>
+            <td class="fw6 truncate" title="${esc(p.product_name)}">${esc(p.product_name)}</td>
+            <td><span class="badge badge-accent">${esc(p.category)}</span></td>
+            <td><span class="badge badge-info">${esc(p.country)}</span></td>
+            <td class="fw6" style="color:${tierColor}">${fmt(p.client_price)}</td>
+            <td class="fw6 text-s">${fmt(p.discount)}</td>
+            <td class="fw6 text-s">${p.margin_pct.toFixed(1)}%</td>
+            <td><span class="badge ${p.popularity > 80 ? 'badge-warning' : 'badge-ghost'}">${popTag}</span></td>
+        </tr>`;
+    }).join('');
+}
+
+function exportMerchantCSV() {
+    if (!selectedMerchant) return;
+    const prods = products.filter(p => p.merchant === selectedMerchant);
+    downloadCSV(
+        ['Product', 'Category', 'Country', 'Currency', 'Your Price', 'Discount', 'Margin %'],
+        prods.map(p => [p.product_name, p.category, p.country, p.currency, p.client_price, p.discount, p.margin_pct]),
+        `${selectedMerchant}_products.csv`
+    );
+}
+
+filterMerchants();
+</script>
+{% endblock %}

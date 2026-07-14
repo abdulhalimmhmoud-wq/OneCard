@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block title %}Catalogue Browser — OneCard Admin{% endblock %}
+{% block sidebar %}
+<div class="nav-section">Management</div>
+<a href="/admin" class="nav-item"><span class="icon">📊</span>Dashboard</a>
+<a href="/admin/tiers" class="nav-item"><span class="icon">🎖️</span>Tier Rules</a>
+<a href="/admin/catalogue" class="nav-item active"><span class="icon">📦</span>Product Catalogue</a>
+<a href="/admin/clients" class="nav-item"><span class="icon">👥</span>All Clients</a>
+<div class="nav-section">Settings</div>
+<a href="/admin/users" class="nav-item"><span class="icon">⚙️</span>Manage Users</a>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">📦 Master Product Catalogue</h1>
+        <p class="page-subtitle">{{ products|length }} products registered in system database</p>
+    </div>
+    <div class="page-actions">
+        <button class="btn btn-primary" onclick="exportMasterCSV()">📥 Export master catalog</button>
+    </div>
+</div>
+
+<!-- Filters -->
+<div class="card mb-24">
+    <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
+        <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input type="search" id="searchInput" placeholder="Search product or merchant..." oninput="filterTable()">
+        </div>
+        <select id="catFilter" style="width:180px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterTable()">
+            <option value="">All Categories</option>
+            {% for c in categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+        </select>
+        <select id="regionFilter" style="width:150px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterTable()">
+            <option value="">All Regions</option>
+            {% for r in regions %}<option value="{{ r }}">{{ r }}</option>{% endfor %}
+        </select>
+        <span id="resultCount" class="text-muted" style="font-size:13px"></span>
+    </div>
+</div>
+
+<!-- Products Table -->
+<div class="table-card">
+    <div class="table-scroll">
+        <table id="productsTable">
+            <thead>
+                <tr>
+                    <th onclick="sortTable(0)">Product ↕</th>
+                    <th onclick="sortTable(1)">Merchant ↕</th>
+                    <th onclick="sortTable(2)">Category</th>
+                    <th onclick="sortTable(3)">Country</th>
+                    <th>Cost</th>
+                    <th>Default Price</th>
+                    <th>Margin</th>
+                    {% for t in tiers %}
+                    <th style="color:{{ t.color }}">{{ t.name }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody id="tableBody"></tbody>
+        </table>
+    </div>
+    <div class="table-footer">
+        <span id="pageInfo"></span>
+        <div class="pagination" id="pagination"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const allProducts = {{ products_json|safe }};
+const tiers = {{ tiers_json|safe }};
+let filtered = [...allProducts];
+let currentPage = 1;
+const pageSize = 50;
+let sortCol = -1, sortAsc = true;
+
+function filterTable() {
+    const search = document.getElementById('searchInput').value.toLowerCase();
+    const cat = document.getElementById('catFilter').value;
+    const reg = document.getElementById('regionFilter').value;
+    filtered = allProducts.filter(p => {
+        if (search && !p.product_name.toLowerCase().includes(search) && !p.merchant.toLowerCase().includes(search)) return false;
+        if (cat && p.category !== cat) return false;
+        if (reg && p.region !== reg) return false;
+        return true;
+    });
+    currentPage = 1;
+    renderTable();
+}
+
+function sortTable(col) {
+    if (sortCol === col) sortAsc = !sortAsc;
+    else { sortCol = col; sortAsc = true; }
+    const keys = ['product_name', 'merchant', 'category', 'country'];
+    if (col < 4) {
+        filtered.sort((a, b) => {
+            let va = a[keys[col]], vb = b[keys[col]];
+            if (typeof va === 'string') { va = va.toLowerCase(); vb = (vb || '').toLowerCase(); }
+            if (va < vb) return sortAsc ? -1 : 1;
+            if (va > vb) return sortAsc ? 1 : -1;
+            return 0;
+        });
+    }
+    renderTable();
+}
+
+function renderTable() {
+    const start = (currentPage - 1) * pageSize;
+    const end = Math.min(start + pageSize, filtered.length);
+    const page = filtered.slice(start, end);
+    document.getElementById('resultCount').textContent = `${filtered.length} products`;
+    document.getElementById('tableBody').innerHTML = page.map(p => {
+        const tierCells = tiers.map(t => {
+            const disc = (p.oc_margin || 0) * (t.margin_share_pct / 100);
+            const pr = Math.max((p.default_price || 0) - disc, p.cost || 0);
+            return `<td class="fw6" style="color:${t.color}">${fmt(pr)}</td>`;
+        }).join('');
+        return `<tr>
+            <td class="fw6 truncate" title="${esc(p.product_name)}">${esc(p.product_name)}</td>
+            <td class="text-muted truncate" title="${esc(p.merchant)}">${esc(p.merchant)}</td>
+            <td><span class="badge badge-accent">${esc(p.category)}</span></td>
+            <td><span class="badge badge-info">${esc(p.country)}</span></td>
+            <td class="fw6">${fmt(p.cost)}</td>
+            <td class="fw6">${fmt(p.default_price)}</td>
+            <td class="fw6 ${p.oc_margin_pct > 3 ? 'text-s' : p.oc_margin_pct > 1 ? 'text-w' : 'text-d'}">${p.oc_margin_pct.toFixed(1)}%</td>
+            ${tierCells}
+        </tr>`;
+    }).join('');
+    document.getElementById('pageInfo').textContent = `${start + 1}-${end} of ${filtered.length}`;
+    renderPagination();
+}
+
+function renderPagination() {
+    const total = Math.ceil(filtered.length / pageSize);
+    if (total <= 1) { document.getElementById('pagination').innerHTML = ''; return; }
+    let html = `<button class="pg-btn" ${currentPage === 1 ? 'disabled' : ''} onclick="goPage(${currentPage - 1})">‹</button>`;
+    for (let i = 1; i <= Math.min(total, 7); i++) {
+        html += `<button class="pg-btn ${i === currentPage ? 'active' : ''}" onclick="goPage(${i})">${i}</button>`;
+    }
+    if (total > 7) html += `<span class="text-muted">…${total}</span>`;
+    html += `<button class="pg-btn" ${currentPage === total ? 'disabled' : ''} onclick="goPage(${currentPage + 1})">›</button>`;
+    document.getElementById('pagination').innerHTML = html;
+}
+
+function goPage(p) { currentPage = p; renderTable(); }
+
+function exportMasterCSV() {
+    const headers = ['Product', 'Merchant', 'Category', 'Country', 'Currency', 'Cost', 'Default Price', 'OC Margin', ...tiers.map(t => t.name + ' Price')];
+    const rows = filtered.map(p => {
+        const prices = tiers.map(t => {
+            const disc = (p.oc_margin || 0) * (t.margin_share_pct / 100);
+            return Math.max((p.default_price || 0) - disc, p.cost || 0).toFixed(2);
+        });
+        return [p.product_name, p.merchant, p.category, p.country, p.currency, p.cost, p.default_price, p.oc_margin, ...prices];
+    });
+    downloadCSV(headers, rows, 'master_catalogue.csv');
+}
+
+filterTable();
+</script>
+{% endblock %}

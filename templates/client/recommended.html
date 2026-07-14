@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Recommended — {{ profile.company_name }}{% endblock %}
+{% block sidebar %}
+<div class="nav-section">My Catalogue</div>
+<a href="/client" class="nav-item"><span class="icon">🏠</span>Home</a>
+<a href="/client/products" class="nav-item"><span class="icon">📦</span>Products</a>
+<a href="/client/merchants" class="nav-item"><span class="icon">🏪</span>By Merchant</a>
+<a href="/client/calculator" class="nav-item"><span class="icon">🧮</span>Profit Calculator</a>
+<a href="/client/recommended" class="nav-item active"><span class="icon">⭐</span>Recommended</a>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">⭐ Recommended Products</h1>
+        <p class="page-subtitle">Products with the highest margins — maximize your profit</p>
+    </div>
+</div>
+
+<div class="card mb-24">
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+        <select id="recCat" style="padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterRec()">
+            <option value="">All Categories</option>
+            {% for c in categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+        </select>
+        <select id="recSort" style="padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterRec()">
+            <option value="margin">Highest Margin %</option>
+            <option value="popularity">Highest Sales Volume</option>
+            <option value="discount">Highest Discount (SAR)</option>
+            <option value="price_low">Lowest Price</option>
+            <option value="price_high">Highest Price</option>
+        </select>
+    </div>
+</div>
+
+<div class="product-grid" id="recGrid"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const products = {{ products_json|safe }};
+const tierColor = '{{ profile.tier.color if profile.tier else "#6366f1" }}';
+
+function filterRec() {
+    const cat = document.getElementById('recCat').value;
+    const sort = document.getElementById('recSort').value;
+    let list = cat ? products.filter(p => p.category === cat) : [...products];
+
+    switch (sort) {
+        case 'margin': list.sort((a, b) => b.margin_pct - a.margin_pct); break;
+        case 'popularity': list.sort((a, b) => b.popularity - a.popularity); break;
+        case 'discount': list.sort((a, b) => b.discount - a.discount); break;
+        case 'price_low': list.sort((a, b) => a.client_price - b.client_price); break;
+        case 'price_high': list.sort((a, b) => b.client_price - a.client_price); break;
+    }
+
+    document.getElementById('recGrid').innerHTML = list.slice(0, 60).map((p, i) => `
+        <div class="product-card" style="position:relative">
+            ${i < 3 ? '<div style="position:absolute;top:10px;right:10px;background:linear-gradient(135deg,var(--warning),#f97316);color:#000;padding:3px 10px;border-radius:100px;font-size:10px;font-weight:700">🔥 TOP ${i + 1}</div>' : ''}
+            <div class="pc-name">${esc(p.product_name)}</div>
+            <div class="pc-merchant">${esc(p.merchant)} · ${esc(p.category)}</div>
+            <div style="display:flex;gap:4px;margin-top:6px">
+                <span class="badge badge-info">${esc(p.country)}</span>
+                <span class="badge badge-accent">${p.currency}</span>
+            </div>
+            <div class="pc-prices">
+                <div>
+                    <div class="pc-price-label">Your Price</div>
+                    <div class="pc-price-value" style="color:${tierColor}">${fmt(p.client_price)}</div>
+                </div>
+                <div>
+                    <div class="pc-price-label">Face Value</div>
+                    <div class="pc-price-value">${fmt(p.face_value)}</div>
+                </div>
+                <div>
+                    <div class="pc-price-label">Your Discount</div>
+                    <div class="pc-price-value text-s">${fmt(p.discount)}</div>
+                </div>
+                <div>
+                    <div class="pc-price-label">Margin</div>
+                    <div class="pc-price-value text-s">${p.margin_pct.toFixed(1)}%</div>
+                </div>
+            </div>
+        </div>
+    `).join('');
+}
+
+filterRec();
+</script>
+{% endblock %}
