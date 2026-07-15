@@ -204,30 +204,23 @@ def sales_register():
         sales = float(request.form.get('expected_sales') or 0)
         notes = request.form.get('notes', '')
 
-        regs = request.form.getlist('regions')
-        merchants_selected = request.form.getlist('merchants')
-
-        # Auto tier assignment based on expected sales and selected merchant count
-        assigned = models.auto_assign_tier(sales, len(merchants_selected))
+        # Auto tier assignment based on expected sales
+        assigned = models.auto_assign_tier(sales)
         tier_id = assigned['id'] if assigned else None
 
         # Create reseller user account
         uid = models.create_user(cemail, pw, cname, 'reseller')
         if uid:
             curr = auth.get_current_user()
-            models.create_reseller(uid, comp, sales, tier_id, curr['id'], regs, merchants_selected, notes)
+            models.create_reseller(uid, comp, sales, tier_id, curr['id'], notes)
             flash(f"Reseller '{comp}' registered successfully with '{assigned['name'] if assigned else 'None'}' tier.", "success")
             return redirect(url_for('sales_dashboard'))
         else:
             flash("Reseller email address is already in use.", "error")
 
-    regions = models.get_all_regions()
-    merchants = models.get_all_merchants()
     tiers = models.get_all_tiers()
-
     tiers_json = json.dumps([dict(t) for t in tiers])
     return render_template('sales/register.html', active_tab='register',
-                           regions=regions, merchants=merchants,
                            tiers_json=tiers_json)
 
 

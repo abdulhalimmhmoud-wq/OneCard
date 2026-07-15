@@ -20,7 +20,7 @@
 
 <form method="POST" action="/admin/tiers">
     <div style="margin-bottom:8px;display:grid;grid-template-columns:200px 1fr 120px 100px 50px 40px;gap:16px;padding:0 20px;font-size:11px;font-weight:600;color:var(--text-3);text-transform:uppercase">
-        <div>Tier Name</div><div>Min Monthly Sales (SAR) | Min Merchants | Margin Share %</div><div>Margin %</div><div>OC Keeps</div><div>Color</div><div></div>
+        <div>Tier Name</div><div>Min Monthly Sales (SAR) & Margin Share %</div><div>Margin %</div><div>OC Keeps</div><div>Color</div><div></div>
     </div>
 
     {% for t in tiers %}
@@ -28,15 +28,12 @@
         <input type="hidden" name="tier_id" value="{{ t.id }}">
         <input type="text" name="tier_name" value="{{ t.name }}" style="font-weight:600;font-size:15px">
         <div>
-            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;align-items:end">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:end">
                 <div>
                     <div style="font-size:10px;color:var(--text-3);margin-bottom:4px">Min Monthly Sales (SAR)</div>
                     <input type="number" name="tier_min_sales" value="{{ t.min_monthly_sales|int }}" min="0" step="1000">
                 </div>
-                <div>
-                    <div style="font-size:10px;color:var(--text-3);margin-bottom:4px">Min Merchants</div>
-                    <input type="number" name="tier_min_merch" value="{{ t.min_merchants }}" min="1" max="200">
-                </div>
+                <input type="hidden" name="tier_min_merch" value="1">
                 <div>
                     <div style="font-size:10px;color:var(--text-3);margin-bottom:4px">Margin Share %</div>
                     <input type="number" name="tier_margin" value="{{ t.margin_share_pct }}" min="0" max="100" step="1">
@@ -62,11 +59,9 @@
         When a Sales Manager registers a new reseller, they enter:
         <ul style="margin:8px 0 0 20px">
             <li><strong>Expected Monthly Sales (SAR)</strong> — How much the reseller is expected to spend per month</li>
-            <li><strong>Target Merchants</strong> — Which merchants they'll purchase from (STC, PlayStation, Xbox, etc.)</li>
         </ul>
         <div style="margin-top:10px">
-            The system automatically assigns the <strong>highest qualifying tier</strong> — the tier where both the monthly sales
-            target AND minimum merchants are met. The reseller then sees prices calculated as:
+            The system automatically assigns the <strong>highest qualifying tier</strong> based on the expected monthly sales target. The reseller then sees prices calculated as:
         </div>
         <div style="margin-top:8px;padding:10px 14px;background:var(--bg-2);border-radius:8px;font-family:monospace;font-size:12px">
             Reseller Price = Default Price − (OC Margin × Tier's Margin Share %)

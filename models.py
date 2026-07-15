@@ -174,11 +174,11 @@ def delete_tier(tid):
     conn.close()
 
 
-def auto_assign_tier(expected_sales, num_merchants):
-    """Find the best tier for given sales + merchant count."""
-    tiers = get_all_tiers()  # sorted by min_monthly_sales DESC
+def auto_assign_tier(expected_sales):
+    """Find the best tier for given sales. Tiers are sorted by min_monthly_sales DESC."""
+    tiers = get_all_tiers()
     for t in tiers:
-        if expected_sales >= t['min_monthly_sales'] and num_merchants >= t['min_merchants']:
+        if expected_sales >= t['min_monthly_sales']:
             return dict(t)
     if tiers:
         return dict(tiers[-1])
@@ -187,17 +187,13 @@ def auto_assign_tier(expected_sales, num_merchants):
 
 # ── Reseller Profiles ─────────────────────────────────────────────
 
-def create_reseller(user_id, company_name, expected_sales, tier_id, registered_by, regions, merchants, notes=''):
+def create_reseller(user_id, company_name, expected_sales, tier_id, registered_by, notes=''):
     conn = get_db()
     conn.execute("""INSERT INTO reseller_profiles
                     (user_id, company_name, expected_monthly_sales, assigned_tier_id, registered_by, notes)
                     VALUES (?,?,?,?,?,?)""",
                  (user_id, company_name, expected_sales, tier_id, registered_by, notes))
     reseller_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-    for r in regions:
-        conn.execute("INSERT INTO reseller_regions (reseller_id, region) VALUES (?,?)", (reseller_id, r))
-    for m in merchants:
-        conn.execute("INSERT INTO reseller_merchants (reseller_id, merchant) VALUES (?,?)", (reseller_id, m))
     conn.commit()
     conn.close()
     return reseller_id
@@ -210,10 +206,8 @@ def get_reseller_profile(user_id):
         conn.close()
         return None
     p = dict(profile)
-    p['regions'] = [r['region'] for r in conn.execute(
-        "SELECT region FROM reseller_regions WHERE reseller_id=?", (profile['id'],)).fetchall()]
-    p['merchants'] = [m['merchant'] for m in conn.execute(
-        "SELECT merchant FROM reseller_merchants WHERE reseller_id=?", (profile['id'],)).fetchall()]
+    p['regions'] = []
+    p['merchants'] = []
     if profile['assigned_tier_id']:
         tier = conn.execute("SELECT * FROM tier_rules WHERE id=?", (profile['assigned_tier_id'],)).fetchone()
         p['tier'] = dict(tier) if tier else None

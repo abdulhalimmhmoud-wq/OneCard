@@ -12,15 +12,15 @@
 <div class="page-header">
     <div>
         <h1 class="page-title">➕ Register New Reseller</h1>
-        <p class="page-subtitle">Enter reseller details. The system will auto-assign a pricing tier based on expected sales and active merchant scope.</p>
+        <p class="page-subtitle">Enter reseller details. The pricing tier is auto-assigned based on expected monthly sales.</p>
     </div>
 </div>
 
 <form method="POST" action="/sales/register" id="regForm">
 <div class="grid-2">
-    <!-- Reseller Information -->
+    <!-- Reseller Credentials -->
     <div class="card">
-        <div class="card-header"><div class="card-title">🏢 Reseller Information</div></div>
+        <div class="card-header"><div class="card-title">🏢 Reseller Profile</div></div>
         <div class="form-group">
             <label class="form-label">Company Name *</label>
             <input type="text" name="company_name" required placeholder="e.g. Al Rajhi Digital">
@@ -39,46 +39,28 @@
             <input type="password" name="password" required placeholder="Min 6 characters" minlength="6">
             <div class="form-hint">Set a temporary password for the reseller to log in</div>
         </div>
+    </div>
+
+    <!-- Financials & Tier preview -->
+    <div class="card">
+        <div class="card-header"><div class="card-title">💰 Financial Scope & Pricing</div></div>
+        
         <div class="form-group">
             <label class="form-label">Expected Monthly Sales (SAR) *</label>
             <input type="number" name="expected_sales" required min="0" step="1000" placeholder="e.g. 150000" id="salesInput">
-            <div class="form-hint">How much the reseller is expected to spend per month</div>
+            <div class="form-hint">Monthly purchasing power. This determines the account pricing rate.</div>
         </div>
+
         <div class="form-group">
             <label class="form-label">Notes (optional)</label>
-            <textarea name="notes" placeholder="Any additional notes about this reseller..."></textarea>
-        </div>
-    </div>
-
-    <!-- Product Scope -->
-    <div class="card">
-        <div class="card-header"><div class="card-title">🎯 Product Scope</div></div>
-
-        <div class="form-group">
-            <label class="form-label">Target Regions</label>
-            <div class="form-hint mb-16">Select regions this reseller targets (informative only, catalogue will be fully visible).</div>
-            <div class="checkbox-grid">
-                {% for r in regions %}
-                <label><input type="checkbox" name="regions" value="{{ r }}"><span>{{ r }}</span></label>
-                {% endfor %}
-            </div>
-        </div>
-
-        <div class="form-group">
-            <label class="form-label">Target Merchants *</label>
-            <div class="form-hint mb-16">Select which merchants. This affects tier assignment (min merchants rule).</div>
-            <div class="checkbox-grid" id="merchGrid">
-                {% for m in merchants %}
-                <label><input type="checkbox" name="merchants" value="{{ m.merchant }}" onchange="updateTierPreview()"><span>{{ m.merchant }} ({{ m.product_count }} items)</span></label>
-                {% endfor %}
-            </div>
+            <textarea name="notes" placeholder="Any additional notes about this reseller..." style="height:80px"></textarea>
         </div>
 
         <!-- Tier Preview -->
         <div class="card mt-16" style="background:var(--bg-2);border:1px dashed var(--border)">
-            <div style="font-size:13px;font-weight:600;margin-bottom:8px">🔮 Auto-Tier Preview</div>
+            <div style="font-size:13px;font-weight:600;margin-bottom:8px">🔮 Auto-Tier Assignment Preview</div>
             <div id="tierPreview" style="font-size:14px;color:var(--text-2)">
-                Enter sales amount and select merchants to see tier assignment...
+                Enter sales amount to see pricing tier assignment...
             </div>
         </div>
 
@@ -96,33 +78,30 @@ const tierRules = {{ tiers_json|safe }};
 
 function updateTierPreview() {
     const sales = parseFloat(document.getElementById('salesInput').value) || 0;
-    const checked = document.querySelectorAll('#merchGrid input:checked');
-    const numMerch = checked.length;
     const preview = document.getElementById('tierPreview');
 
-    if (sales === 0 && numMerch === 0) {
-        preview.innerHTML = 'Enter sales amount and select merchants to see tier assignment...';
+    if (sales === 0) {
+        preview.innerHTML = 'Enter sales amount to see pricing tier assignment...';
         return;
     }
 
     // Find best tier (sorted by min_monthly_sales DESC)
     let assigned = null;
     for (const t of tierRules) {
-        if (sales >= t.min_monthly_sales && numMerch >= t.min_merchants) {
+        if (sales >= t.min_monthly_sales) {
             assigned = t;
             break;
         }
     }
 
     if (assigned) {
-        preview.innerHTML = `<span style="font-size:20px;font-weight:700;color:${assigned.color}">${assigned.name}</span>
+        preview.innerHTML = `<span style="font-size:20px;font-weight:700;color:${assigned.color}">${assigned.name} Plan</span>
             <div style="margin-top:6px;font-size:12px;color:var(--text-3)">
-                Sales: SAR ${sales.toLocaleString()} ≥ ${assigned.min_monthly_sales.toLocaleString()} ✓ &nbsp;|&nbsp;
-                Merchants: ${numMerch} ≥ ${assigned.min_merchants} ✓ &nbsp;|&nbsp;
-                Margin Share: ${assigned.margin_share_pct}%
+                Required Sales Volume: SAR ${assigned.min_monthly_sales.toLocaleString()} <br>
+                Verification: Expected SAR ${sales.toLocaleString()} ≥ ${assigned.min_monthly_sales.toLocaleString()} (Qualified ✓)
             </div>`;
     } else {
-        preview.innerHTML = '<span style="color:var(--warning)">No qualifying tier found. Check tier rules.</span>';
+        preview.innerHTML = '<span style="color:var(--warning)">No qualifying plan found. Check tier rules.</span>';
     }
 }
 
