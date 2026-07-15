@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}All Resellers — OneCard Admin{% endblock %}
+{% block sidebar %}
+<div class="nav-section">Management</div>
+<a href="/admin" class="nav-item"><span class="icon">📊</span>Dashboard</a>
+<a href="/admin/tiers" class="nav-item"><span class="icon">🎖️</span>Tier Rules</a>
+<a href="/admin/catalogue" class="nav-item"><span class="icon">📦</span>Product Catalogue</a>
+<a href="/admin/resellers" class="nav-item active"><span class="icon">👥</span>All Resellers</a>
+<div class="nav-section">Settings</div>
+<a href="/admin/users" class="nav-item"><span class="icon">⚙️</span>Manage Users</a>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">👥 All Registered Resellers</h1>
+        <p class="page-subtitle">{{ resellers|length }} resellers registered across all sales managers</p>
+    </div>
+</div>
+
+<div class="table-card">
+    <div class="table-scroll">
+        <table>
+            <thead>
+                <tr>
+                    <th>Company</th><th>Contact</th><th>Email</th>
+                    <th>Expected Sales</th><th>Tier</th><th>Sales Manager</th><th>Registered</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for r in resellers %}
+            <tr>
+                <td class="fw6">{{ r.company_name }}</td>
+                <td>{{ r.contact_name }}</td>
+                <td class="text-muted">{{ r.email }}</td>
+                <td class="fw6">SAR {{ "{:,.0f}".format(r.expected_monthly_sales) }}</td>
+                <td><span class="badge badge-tier" style="background:{{ r.tier_color or '#64748b' }}20;color:{{ r.tier_color or '#64748b' }}">{{ r.tier_name or 'Unassigned' }}</span></td>
+                <td>{{ r.sales_name or '—' }}</td>
+                <td class="text-muted">{{ r.created_at[:10] if r.created_at else '—' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7" style="text-align:center;padding:30px;color:var(--text-3)">No resellers registered yet</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

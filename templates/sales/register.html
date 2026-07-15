@@ -1,26 +1,26 @@
 {% extends "base.html" %}
-{% block title %}Register Client — OneCard Sales{% endblock %}
+{% block title %}Register Reseller — OneCard Sales{% endblock %}
 {% block sidebar %}
 <div class="nav-section">Sales</div>
 <a href="/sales" class="nav-item"><span class="icon">📊</span>Dashboard</a>
-<a href="/sales/register" class="nav-item active"><span class="icon">➕</span>Register Client</a>
-<a href="/sales/clients" class="nav-item"><span class="icon">👥</span>My Clients</a>
+<a href="/sales/register" class="nav-item active"><span class="icon">➕</span>Register Reseller</a>
+<a href="/sales/resellers" class="nav-item"><span class="icon">👥</span>My Resellers</a>
 <a href="/sales/catalogue" class="nav-item"><span class="icon">📦</span>Product Catalogue</a>
 {% endblock %}
 
 {% block content %}
 <div class="page-header">
     <div>
-        <h1 class="page-title">➕ Register New Client</h1>
-        <p class="page-subtitle">Enter client details. The system will auto-assign a pricing tier based on expected sales and product diversity.</p>
+        <h1 class="page-title">➕ Register New Reseller</h1>
+        <p class="page-subtitle">Enter reseller details. The system will auto-assign a pricing tier based on expected sales and active merchant scope.</p>
     </div>
 </div>
 
 <form method="POST" action="/sales/register" id="regForm">
 <div class="grid-2">
-    <!-- Client Information -->
+    <!-- Reseller Information -->
     <div class="card">
-        <div class="card-header"><div class="card-title">🏢 Client Information</div></div>
+        <div class="card-header"><div class="card-title">🏢 Reseller Information</div></div>
         <div class="form-group">
             <label class="form-label">Company Name *</label>
             <input type="text" name="company_name" required placeholder="e.g. Al Rajhi Digital">
@@ -32,21 +32,21 @@
         <div class="form-group">
             <label class="form-label">Contact Email *</label>
             <input type="email" name="contact_email" required placeholder="e.g. ahmed@company.com">
-            <div class="form-hint">This will be the client's login email</div>
+            <div class="form-hint">This will be the reseller's login email</div>
         </div>
         <div class="form-group">
-            <label class="form-label">Password for Client Account *</label>
+            <label class="form-label">Password for Reseller Account *</label>
             <input type="password" name="password" required placeholder="Min 6 characters" minlength="6">
-            <div class="form-hint">Set a temporary password for the client to log in</div>
+            <div class="form-hint">Set a temporary password for the reseller to log in</div>
         </div>
         <div class="form-group">
             <label class="form-label">Expected Monthly Sales (SAR) *</label>
             <input type="number" name="expected_sales" required min="0" step="1000" placeholder="e.g. 150000" id="salesInput">
-            <div class="form-hint">How much the client is expected to spend per month</div>
+            <div class="form-hint">How much the reseller is expected to spend per month</div>
         </div>
         <div class="form-group">
             <label class="form-label">Notes (optional)</label>
-            <textarea name="notes" placeholder="Any additional notes about this client..."></textarea>
+            <textarea name="notes" placeholder="Any additional notes about this reseller..."></textarea>
         </div>
     </div>
 
@@ -56,7 +56,7 @@
 
         <div class="form-group">
             <label class="form-label">Target Regions</label>
-            <div class="form-hint mb-16">Select which regions this client will purchase from. Leave empty for ALL regions.</div>
+            <div class="form-hint mb-16">Select regions this reseller targets (informative only, catalogue will be fully visible).</div>
             <div class="checkbox-grid">
                 {% for r in regions %}
                 <label><input type="checkbox" name="regions" value="{{ r }}"><span>{{ r }}</span></label>
@@ -65,11 +65,11 @@
         </div>
 
         <div class="form-group">
-            <label class="form-label">Target Categories *</label>
-            <div class="form-hint mb-16">Select which product categories. This affects tier assignment (min categories rule).</div>
-            <div class="checkbox-grid" id="catGrid">
-                {% for c in categories %}
-                <label><input type="checkbox" name="categories" value="{{ c }}" onchange="updateTierPreview()"><span>{{ c }}</span></label>
+            <label class="form-label">Target Merchants *</label>
+            <div class="form-hint mb-16">Select which merchants. This affects tier assignment (min merchants rule).</div>
+            <div class="checkbox-grid" id="merchGrid">
+                {% for m in merchants %}
+                <label><input type="checkbox" name="merchants" value="{{ m.merchant }}" onchange="updateTierPreview()"><span>{{ m.merchant }} ({{ m.product_count }} items)</span></label>
                 {% endfor %}
             </div>
         </div>
@@ -78,12 +78,12 @@
         <div class="card mt-16" style="background:var(--bg-2);border:1px dashed var(--border)">
             <div style="font-size:13px;font-weight:600;margin-bottom:8px">🔮 Auto-Tier Preview</div>
             <div id="tierPreview" style="font-size:14px;color:var(--text-2)">
-                Enter sales amount and select categories to see tier assignment...
+                Enter sales amount and select merchants to see tier assignment...
             </div>
         </div>
 
         <button type="submit" class="btn btn-primary btn-lg mt-24" style="width:100%;justify-content:center">
-            ✅ Register Client & Assign Tier
+            ✅ Register Reseller & Assign Tier
         </button>
     </div>
 </div>
@@ -96,19 +96,19 @@ const tierRules = {{ tiers_json|safe }};
 
 function updateTierPreview() {
     const sales = parseFloat(document.getElementById('salesInput').value) || 0;
-    const checked = document.querySelectorAll('#catGrid input:checked');
-    const numCats = checked.length;
+    const checked = document.querySelectorAll('#merchGrid input:checked');
+    const numMerch = checked.length;
     const preview = document.getElementById('tierPreview');
 
-    if (sales === 0 && numCats === 0) {
-        preview.innerHTML = 'Enter sales amount and select categories to see tier assignment...';
+    if (sales === 0 && numMerch === 0) {
+        preview.innerHTML = 'Enter sales amount and select merchants to see tier assignment...';
         return;
     }
 
     // Find best tier (sorted by min_monthly_sales DESC)
     let assigned = null;
     for (const t of tierRules) {
-        if (sales >= t.min_monthly_sales && numCats >= t.min_categories) {
+        if (sales >= t.min_monthly_sales && numMerch >= t.min_merchants) {
             assigned = t;
             break;
         }
@@ -118,7 +118,7 @@ function updateTierPreview() {
         preview.innerHTML = `<span style="font-size:20px;font-weight:700;color:${assigned.color}">${assigned.name}</span>
             <div style="margin-top:6px;font-size:12px;color:var(--text-3)">
                 Sales: SAR ${sales.toLocaleString()} ≥ ${assigned.min_monthly_sales.toLocaleString()} ✓ &nbsp;|&nbsp;
-                Categories: ${numCats} ≥ ${assigned.min_categories} ✓ &nbsp;|&nbsp;
+                Merchants: ${numMerch} ≥ ${assigned.min_merchants} ✓ &nbsp;|&nbsp;
                 Margin Share: ${assigned.margin_share_pct}%
             </div>`;
     } else {

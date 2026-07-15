@@ -5,7 +5,7 @@
 <a href="/admin" class="nav-item"><span class="icon">📊</span>Dashboard</a>
 <a href="/admin/tiers" class="nav-item active"><span class="icon">🎖️</span>Tier Rules</a>
 <a href="/admin/catalogue" class="nav-item"><span class="icon">📦</span>Product Catalogue</a>
-<a href="/admin/clients" class="nav-item"><span class="icon">👥</span>All Clients</a>
+<a href="/admin/resellers" class="nav-item"><span class="icon">👥</span>All Resellers</a>
 <div class="nav-section">Settings</div>
 <a href="/admin/users" class="nav-item"><span class="icon">⚙️</span>Manage Users</a>
 {% endblock %}
@@ -14,13 +14,13 @@
 <div class="page-header">
     <div>
         <h1 class="page-title">🎖️ Pricing Tier Rules</h1>
-        <p class="page-subtitle">Define monthly sales targets and margin share percentages for each customer tier</p>
+        <p class="page-subtitle">Define monthly sales targets and margin share percentages for each reseller tier</p>
     </div>
 </div>
 
 <form method="POST" action="/admin/tiers">
     <div style="margin-bottom:8px;display:grid;grid-template-columns:200px 1fr 120px 100px 50px 40px;gap:16px;padding:0 20px;font-size:11px;font-weight:600;color:var(--text-3);text-transform:uppercase">
-        <div>Tier Name</div><div>Min Monthly Sales (SAR) | Min Categories | Margin Share %</div><div>Margin %</div><div>OC Keeps</div><div>Color</div><div></div>
+        <div>Tier Name</div><div>Min Monthly Sales (SAR) | Min Merchants | Margin Share %</div><div>Margin %</div><div>OC Keeps</div><div>Color</div><div></div>
     </div>
 
     {% for t in tiers %}
@@ -34,8 +34,8 @@
                     <input type="number" name="tier_min_sales" value="{{ t.min_monthly_sales|int }}" min="0" step="1000">
                 </div>
                 <div>
-                    <div style="font-size:10px;color:var(--text-3);margin-bottom:4px">Min Categories</div>
-                    <input type="number" name="tier_min_cats" value="{{ t.min_categories }}" min="1" max="20">
+                    <div style="font-size:10px;color:var(--text-3);margin-bottom:4px">Min Merchants</div>
+                    <input type="number" name="tier_min_merch" value="{{ t.min_merchants }}" min="1" max="200">
                 </div>
                 <div>
                     <div style="font-size:10px;color:var(--text-3);margin-bottom:4px">Margin Share %</div>
@@ -59,17 +59,17 @@
 <div class="card mt-24">
     <div class="card-header"><div class="card-title">ℹ️ How Tier Assignment Works</div></div>
     <div style="font-size:13px;color:var(--text-2);line-height:1.8">
-        When a Sales Manager registers a new client, they enter:
+        When a Sales Manager registers a new reseller, they enter:
         <ul style="margin:8px 0 0 20px">
-            <li><strong>Expected Monthly Sales (SAR)</strong> — How much the client is expected to spend per month</li>
-            <li><strong>Target Categories</strong> — Which product categories they'll purchase (Gaming, Telecom, etc.)</li>
+            <li><strong>Expected Monthly Sales (SAR)</strong> — How much the reseller is expected to spend per month</li>
+            <li><strong>Target Merchants</strong> — Which merchants they'll purchase from (STC, PlayStation, Xbox, etc.)</li>
         </ul>
         <div style="margin-top:10px">
             The system automatically assigns the <strong>highest qualifying tier</strong> — the tier where both the monthly sales
-            target AND minimum categories are met. The client then sees prices calculated as:
+            target AND minimum merchants are met. The reseller then sees prices calculated as:
         </div>
         <div style="margin-top:8px;padding:10px 14px;background:var(--bg-2);border-radius:8px;font-family:monospace;font-size:12px">
-            Client Price = Default Price − (OC Margin × Tier's Margin Share %)
+            Reseller Price = Default Price − (OC Margin × Tier's Margin Share %)
         </div>
     </div>
 </div>

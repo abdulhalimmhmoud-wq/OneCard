@@ -2,11 +2,11 @@
 {% block title %}Recommended — {{ profile.company_name }}{% endblock %}
 {% block sidebar %}
 <div class="nav-section">My Catalogue</div>
-<a href="/client" class="nav-item"><span class="icon">🏠</span>Home</a>
-<a href="/client/products" class="nav-item"><span class="icon">📦</span>Products</a>
-<a href="/client/merchants" class="nav-item"><span class="icon">🏪</span>By Merchant</a>
-<a href="/client/calculator" class="nav-item"><span class="icon">🧮</span>Profit Calculator</a>
-<a href="/client/recommended" class="nav-item active"><span class="icon">⭐</span>Recommended</a>
+<a href="/reseller" class="nav-item"><span class="icon">🏠</span>Home</a>
+<a href="/reseller/products" class="nav-item"><span class="icon">📦</span>Products</a>
+<a href="/reseller/merchants" class="nav-item"><span class="icon">🏪</span>By Merchant</a>
+<a href="/reseller/calculator" class="nav-item"><span class="icon">🧮</span>Profit Calculator</a>
+<a href="/reseller/recommended" class="nav-item active"><span class="icon">⭐</span>Recommended</a>
 {% endblock %}
 
 {% block content %}
@@ -26,7 +26,7 @@
         <select id="recSort" style="padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterRec()">
             <option value="margin">Highest Margin %</option>
             <option value="popularity">Highest Sales Volume</option>
-            <option value="discount">Highest Discount (SAR)</option>
+            <option value="discount">Highest Discount</option>
             <option value="price_low">Lowest Price</option>
             <option value="price_high">Highest Price</option>
         </select>
@@ -66,15 +66,15 @@ function filterRec() {
             <div class="pc-prices">
                 <div>
                     <div class="pc-price-label">Your Price</div>
-                    <div class="pc-price-value" style="color:${tierColor}">${fmt(p.client_price)}</div>
+                    <div class="pc-price-value" style="color:${tierColor}">${fmt(p.client_price)} ${p.currency}</div>
                 </div>
                 <div>
                     <div class="pc-price-label">Face Value</div>
-                    <div class="pc-price-value">${fmt(p.face_value)}</div>
+                    <div class="pc-price-value">${fmt(p.face_value)} ${p.currency}</div>
                 </div>
                 <div>
                     <div class="pc-price-label">Your Discount</div>
-                    <div class="pc-price-value text-s">${fmt(p.discount)}</div>
+                    <div class="pc-price-value text-s">${fmt(p.discount)} ${p.currency}</div>
                 </div>
                 <div>
                     <div class="pc-price-label">Margin</div>

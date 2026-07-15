@@ -1,7 +1,7 @@
 """
-OneCard Platform — Flask Web Application
-=========================================
-Core entry point with routes for BD Managers, Sales Managers, and Clients.
+OneCard Platform — Flask Web Application (v3)
+=============================================
+Core entry point with routes for BD Managers, Sales Managers, and Resellers.
 """
 from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify
 import os
@@ -22,7 +22,7 @@ def inject_user():
     is_preview = 'preview_user_id' in session
     preview_company = None
     if is_preview:
-        profile = models.get_client_profile(session['preview_user_id'])
+        profile = models.get_reseller_profile(session['preview_user_id'])
         if profile:
             preview_company = profile['company_name']
     return {
@@ -32,8 +32,8 @@ def inject_user():
     }
 
 
-def get_active_client_uid():
-    """Get active user_id for client views (supports preview mode)."""
+def get_active_reseller_uid():
+    """Get active user_id for reseller views (supports preview mode)."""
     if 'preview_user_id' in session:
         curr = auth.get_current_user()
         if curr and curr['role'] in ('admin', 'sales'):
@@ -53,7 +53,7 @@ def index():
     elif user['role'] == 'sales':
         return redirect(url_for('sales_dashboard'))
     else:
-        return redirect(url_for('client_dashboard'))
+        return redirect(url_for('reseller_dashboard'))
 
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -88,8 +88,8 @@ def logout():
 def admin_dashboard():
     stats = models.get_product_stats()
     tiers = models.get_all_tiers()
-    clients = models.get_all_clients()
-    return render_template('admin/dashboard.html', active_tab='dashboard', stats=stats, tiers=tiers, clients=clients)
+    resellers = models.get_all_resellers()
+    return render_template('admin/dashboard.html', active_tab='dashboard', stats=stats, tiers=tiers, resellers=resellers)
 
 
 @app.route('/admin/tiers', methods=['GET', 'POST'])
@@ -99,7 +99,7 @@ def admin_tiers():
         ids = request.form.getlist('tier_id')
         names = request.form.getlist('tier_name')
         min_sales = request.form.getlist('tier_min_sales')
-        min_cats = request.form.getlist('tier_min_cats')
+        min_merch = request.form.getlist('tier_min_merch')
         margins = request.form.getlist('tier_margin')
         colors = request.form.getlist('tier_color')
 
@@ -108,7 +108,7 @@ def admin_tiers():
                 ids[i],
                 names[i],
                 float(min_sales[i] or 0),
-                int(min_cats[i] or 1),
+                int(min_merch[i] or 1),
                 float(margins[i] or 20),
                 colors[i],
                 i + 1
@@ -152,11 +152,11 @@ def admin_catalogue():
                            tiers=tiers, tiers_json=tiers_json)
 
 
-@app.route('/admin/clients')
+@app.route('/admin/resellers')
 @auth.admin_required
-def admin_clients():
-    clients = models.get_all_clients()
-    return render_template('admin/clients.html', active_tab='clients', clients=clients)
+def admin_resellers():
+    resellers = models.get_all_resellers()
+    return render_template('admin/resellers.html', active_tab='resellers', resellers=resellers)
 
 
 @app.route('/admin/users')
@@ -188,9 +188,9 @@ def admin_create_user():
 @auth.sales_required
 def sales_dashboard():
     curr = auth.get_current_user()
-    clients = models.get_all_clients(registered_by=curr['id'])
+    resellers = models.get_all_resellers(registered_by=curr['id'])
     stats = models.get_product_stats()
-    return render_template('sales/dashboard.html', active_tab='dashboard', clients=clients, stats=stats)
+    return render_template('sales/dashboard.html', active_tab='dashboard', resellers=resellers, stats=stats)
 
 
 @app.route('/sales/register', methods=['GET', 'POST'])
@@ -205,38 +205,38 @@ def sales_register():
         notes = request.form.get('notes', '')
 
         regs = request.form.getlist('regions')
-        cats = request.form.getlist('categories')
+        merchants_selected = request.form.getlist('merchants')
 
-        # Auto tier assignment logic
-        assigned = models.auto_assign_tier(sales, len(cats))
+        # Auto tier assignment based on expected sales and selected merchant count
+        assigned = models.auto_assign_tier(sales, len(merchants_selected))
         tier_id = assigned['id'] if assigned else None
 
-        # Create client user first
-        uid = models.create_user(cemail, pw, cname, 'client')
+        # Create reseller user account
+        uid = models.create_user(cemail, pw, cname, 'reseller')
         if uid:
             curr = auth.get_current_user()
-            models.create_client(uid, comp, sales, tier_id, curr['id'], regs, cats, notes)
-            flash(f"Client '{comp}' registered successfully with '{assigned['name'] if assigned else 'None'}' tier.", "success")
+            models.create_reseller(uid, comp, sales, tier_id, curr['id'], regs, merchants_selected, notes)
+            flash(f"Reseller '{comp}' registered successfully with '{assigned['name'] if assigned else 'None'}' tier.", "success")
             return redirect(url_for('sales_dashboard'))
         else:
-            flash("Client email address is already in use.", "error")
+            flash("Reseller email address is already in use.", "error")
 
-    categories = models.get_all_categories()
     regions = models.get_all_regions()
+    merchants = models.get_all_merchants()
     tiers = models.get_all_tiers()
 
     tiers_json = json.dumps([dict(t) for t in tiers])
     return render_template('sales/register.html', active_tab='register',
-                           categories=categories, regions=regions,
+                           regions=regions, merchants=merchants,
                            tiers_json=tiers_json)
 
 
-@app.route('/sales/clients')
+@app.route('/sales/resellers')
 @auth.sales_required
-def sales_clients():
+def sales_resellers():
     curr = auth.get_current_user()
-    clients = models.get_all_clients(registered_by=curr['id'])
-    return render_template('sales/my_clients.html', active_tab='clients', clients=clients)
+    resellers = models.get_all_resellers(registered_by=curr['id'])
+    return render_template('sales/my_resellers.html', active_tab='resellers', resellers=resellers)
 
 
 @app.route('/sales/catalogue')
@@ -258,11 +258,11 @@ def sales_catalogue():
 @app.route('/sales/preview/<int:uid>')
 @auth.sales_required
 def sales_preview_enter(uid):
-    # Verify client belongs to this sales manager (or current user is admin)
+    # Verify reseller belongs to this sales manager (or current user is admin)
     curr = auth.get_current_user()
-    profile = models.get_client_profile(uid)
+    profile = models.get_reseller_profile(uid)
     if not profile:
-        flash("Client not found.", "error")
+        flash("Reseller not found.", "error")
         return redirect(url_for('sales_dashboard'))
 
     if curr['role'] != 'admin' and profile['registered_by'] != curr['id']:
@@ -271,7 +271,7 @@ def sales_preview_enter(uid):
 
     session['preview_user_id'] = uid
     flash(f"Entering portal preview for '{profile['company_name']}'", "info")
-    return redirect(url_for('client_dashboard'))
+    return redirect(url_for('reseller_dashboard'))
 
 
 @app.route('/sales/preview/exit')
@@ -282,23 +282,21 @@ def sales_preview_exit():
     return redirect(url_for('sales_dashboard'))
 
 
-# ── Client Portal Routes ─────────────────────────────────────────
+# ── Reseller Portal Routes ────────────────────────────────────────
 
-@app.route('/client')
+@app.route('/reseller')
 @auth.login_required
-def client_dashboard():
-    uid = get_active_client_uid()
-    prods, profile = models.get_client_products(uid)
+def reseller_dashboard():
+    uid = get_active_reseller_uid()
+    prods, profile = models.get_reseller_products(uid)
     if not profile:
-        flash("Client profile not found.", "error")
+        flash("Reseller profile not found.", "error")
         return redirect(url_for('logout'))
 
-    # Calculate client tier prices
     tier = profile['tier']
     share = (tier['margin_share_pct'] / 100.0) if tier else 0.20
 
     enriched = []
-    total_disc = 0
     cat_counts = {}
     merchants = set()
     categories = set()
@@ -308,7 +306,6 @@ def client_dashboard():
         c_price = max(p['default_price'] - disc, p['cost'])
         saved = p['face_value'] - c_price
         pct = (saved / p['face_value'] * 100.0) if p['face_value'] > 0 else 0
-        total_disc += pct
 
         enriched.append({
             **p,
@@ -323,19 +320,20 @@ def client_dashboard():
     # Sort products by margin descending
     enriched.sort(key=lambda x: -x['margin_pct'])
 
-    avg_discount = total_disc / len(prods) if prods else 0
+    # Extract new arrivals
+    new_arrivals = [p for p in enriched if p.get('is_new') == 1]
 
-    return render_template('client/dashboard.html', active_tab='dashboard',
+    return render_template('reseller/dashboard.html', active_tab='dashboard',
                            profile=profile, products=enriched, top_products=enriched,
-                           merchants=list(merchants), categories=list(categories),
-                           avg_discount=avg_discount, cat_counts=cat_counts)
+                           new_arrivals=new_arrivals, merchants=list(merchants),
+                           categories=list(categories), cat_counts=cat_counts)
 
 
-@app.route('/client/products')
+@app.route('/reseller/products')
 @auth.login_required
-def client_products():
-    uid = get_active_client_uid()
-    prods, profile = models.get_client_products(uid)
+def reseller_products():
+    uid = get_active_reseller_uid()
+    prods, profile = models.get_reseller_products(uid)
     if not profile:
         return redirect(url_for('logout'))
 
@@ -362,16 +360,16 @@ def client_products():
         categories.add(p['category'])
 
     products_json = json.dumps(enriched)
-    return render_template('client/products.html', active_tab='products',
+    return render_template('reseller/products.html', active_tab='products',
                            profile=profile, products=enriched, products_json=products_json,
                            merchants=sorted(list(merchants)), categories=sorted(list(categories)))
 
 
-@app.route('/client/merchants')
+@app.route('/reseller/merchants')
 @auth.login_required
-def client_merchants():
-    uid = get_active_client_uid()
-    prods, profile = models.get_client_products(uid)
+def reseller_merchants():
+    uid = get_active_reseller_uid()
+    prods, profile = models.get_reseller_products(uid)
     if not profile:
         return redirect(url_for('logout'))
 
@@ -396,16 +394,16 @@ def client_merchants():
         merchants.add(p['merchant'])
 
     products_json = json.dumps(enriched)
-    return render_template('client/merchants.html', active_tab='merchants',
+    return render_template('reseller/merchants.html', active_tab='merchants',
                            profile=profile, products_json=products_json,
                            merchants=sorted(list(merchants)))
 
 
-@app.route('/client/calculator')
+@app.route('/reseller/calculator')
 @auth.login_required
-def client_calculator():
-    uid = get_active_client_uid()
-    prods, profile = models.get_client_products(uid)
+def reseller_calculator():
+    uid = get_active_reseller_uid()
+    prods, profile = models.get_reseller_products(uid)
     if not profile:
         return redirect(url_for('logout'))
 
@@ -427,15 +425,15 @@ def client_calculator():
         })
 
     products_json = json.dumps(enriched)
-    return render_template('client/calculator.html', active_tab='calculator',
+    return render_template('reseller/calculator.html', active_tab='calculator',
                            profile=profile, products_json=products_json)
 
 
-@app.route('/client/recommended')
+@app.route('/reseller/recommended')
 @auth.login_required
-def client_recommended():
-    uid = get_active_client_uid()
-    prods, profile = models.get_client_products(uid)
+def reseller_recommended():
+    uid = get_active_reseller_uid()
+    prods, profile = models.get_reseller_products(uid)
     if not profile:
         return redirect(url_for('logout'))
 
@@ -462,7 +460,7 @@ def client_recommended():
     enriched.sort(key=lambda x: -x['margin_pct'])
 
     products_json = json.dumps(enriched)
-    return render_template('client/recommended.html', active_tab='recommended',
+    return render_template('reseller/recommended.html', active_tab='recommended',
                            profile=profile, products_json=products_json,
                            categories=sorted(list(categories)))
 

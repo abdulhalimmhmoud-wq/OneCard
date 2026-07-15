@@ -3,8 +3,8 @@
 {% block sidebar %}
 <div class="nav-section">Sales</div>
 <a href="/sales" class="nav-item {{ 'active' if active_tab == 'dashboard' }}"><span class="icon">📊</span>Dashboard</a>
-<a href="/sales/register" class="nav-item {{ 'active' if active_tab == 'register' }}"><span class="icon">➕</span>Register Client</a>
-<a href="/sales/clients" class="nav-item {{ 'active' if active_tab == 'clients' }}"><span class="icon">👥</span>My Clients</a>
+<a href="/sales/register" class="nav-item {{ 'active' if active_tab == 'register' }}"><span class="icon">➕</span>Register Reseller</a>
+<a href="/sales/resellers" class="nav-item {{ 'active' if active_tab == 'resellers' }}"><span class="icon">👥</span>My Resellers</a>
 <a href="/sales/catalogue" class="nav-item {{ 'active' if active_tab == 'catalogue' }}"><span class="icon">📦</span>Product Catalogue</a>
 {% endblock %}
 
@@ -15,15 +15,15 @@
         <p class="page-subtitle">Welcome back, {{ current_user.name }}</p>
     </div>
     <div class="page-actions">
-        <a href="/sales/register" class="btn btn-primary">➕ Register New Client</a>
+        <a href="/sales/register" class="btn btn-primary">➕ Register New Reseller</a>
     </div>
 </div>
 
 <div class="stats-grid">
     <div class="stat-card">
         <div class="stat-icon">👥</div>
-        <div class="stat-value">{{ clients|length }}</div>
-        <div class="stat-label">My Clients</div>
+        <div class="stat-value">{{ resellers|length }}</div>
+        <div class="stat-label">My Resellers</div>
     </div>
     <div class="stat-card">
         <div class="stat-icon">📦</div>
@@ -44,7 +44,7 @@
 
 <div class="table-card">
     <div class="table-header">
-        <div class="table-title">👥 My Registered Clients</div>
+        <div class="table-title">👥 My Registered Resellers</div>
         <a href="/sales/register" class="btn btn-sm btn-ghost">+ Register New</a>
     </div>
     <div class="table-scroll">
@@ -53,18 +53,18 @@
                 <tr><th>Company</th><th>Contact</th><th>Expected Sales</th><th>Tier</th><th>Registered</th><th>Actions</th></tr>
             </thead>
             <tbody>
-            {% for c in clients %}
+            {% for r in resellers %}
             <tr>
-                <td class="fw6">{{ c.company_name }}</td>
-                <td>{{ c.contact_name }}<br><span class="text-muted" style="font-size:11px">{{ c.email }}</span></td>
-                <td class="fw6">SAR {{ "{:,.0f}".format(c.expected_monthly_sales) }}</td>
-                <td><span class="badge badge-tier" style="background:{{ c.tier_color or '#64748b' }}20;color:{{ c.tier_color or '#64748b' }}">{{ c.tier_name or 'Unassigned' }}</span></td>
-                <td class="text-muted">{{ c.created_at[:10] if c.created_at else '—' }}</td>
-                <td><a href="/sales/preview/{{ c.user_id }}" class="btn btn-sm btn-ghost">👁️ Preview</a></td>
+                <td class="fw6">{{ r.company_name }}</td>
+                <td>{{ r.contact_name }}<br><span class="text-muted" style="font-size:11px">{{ r.email }}</span></td>
+                <td class="fw6">SAR {{ "{:,.0f}".format(r.expected_monthly_sales) }}</td>
+                <td><span class="badge badge-tier" style="background:{{ r.tier_color or '#64748b' }}20;color:{{ r.tier_color or '#64748b' }}">{{ r.tier_name or 'Unassigned' }}</span></td>
+                <td class="text-muted">{{ r.created_at[:10] if r.created_at else '—' }}</td>
+                <td><a href="/sales/preview/{{ r.user_id }}" class="btn btn-sm btn-ghost">👁️ Preview</a></td>
             </tr>
             {% else %}
             <tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-3)">
-                No clients yet. <a href="/sales/register" style="color:var(--accent)">Register your first client →</a>
+                No resellers yet. <a href="/sales/register" style="color:var(--accent)">Register your first reseller →</a>
             </td></tr>
             {% endfor %}
             </tbody>

@@ -3,8 +3,8 @@
 {% block sidebar %}
 <div class="nav-section">Sales</div>
 <a href="/sales" class="nav-item"><span class="icon">📊</span>Dashboard</a>
-<a href="/sales/register" class="nav-item"><span class="icon">➕</span>Register Client</a>
-<a href="/sales/clients" class="nav-item"><span class="icon">👥</span>My Clients</a>
+<a href="/sales/register" class="nav-item"><span class="icon">➕</span>Register Reseller</a>
+<a href="/sales/resellers" class="nav-item"><span class="icon">👥</span>My Resellers</a>
 <a href="/sales/catalogue" class="nav-item active"><span class="icon">📦</span>Product Catalogue</a>
 {% endblock %}
 
@@ -114,15 +114,15 @@ function renderTable() {
         const tierCells = tiers.map(t => {
             const disc = (p.oc_margin || 0) * (t.margin_share_pct / 100);
             const pr = Math.max((p.default_price || 0) - disc, p.cost || 0);
-            return `<td class="fw6" style="color:${t.color}">${fmt(pr)}</td>`;
+            return `<td class="fw6" style="color:${t.color}">${fmt(pr)} ${p.currency}</td>`;
         }).join('');
         return `<tr>
             <td class="fw6 truncate" title="${esc(p.product_name)}">${esc(p.product_name)}</td>
             <td class="text-muted truncate" title="${esc(p.merchant)}">${esc(p.merchant)}</td>
             <td><span class="badge badge-accent">${esc(p.category)}</span></td>
             <td><span class="badge badge-info">${esc(p.country)}</span></td>
-            <td class="fw6">${fmt(p.cost)}</td>
-            <td class="fw6">${fmt(p.default_price)}</td>
+            <td class="fw6">${fmt(p.cost)} ${p.currency}</td>
+            <td class="fw6">${fmt(p.default_price)} ${p.currency}</td>
             <td class="fw6 ${p.oc_margin_pct > 3 ? 'text-s' : p.oc_margin_pct > 1 ? 'text-w' : 'text-d'}">${p.oc_margin_pct.toFixed(1)}%</td>
             ${tierCells}
         </tr>`;

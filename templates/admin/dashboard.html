@@ -5,7 +5,7 @@
 <a href="/admin" class="nav-item {{ 'active' if active_tab == 'dashboard' }}"><span class="icon">📊</span>Dashboard</a>
 <a href="/admin/tiers" class="nav-item {{ 'active' if active_tab == 'tiers' }}"><span class="icon">🎖️</span>Tier Rules</a>
 <a href="/admin/catalogue" class="nav-item {{ 'active' if active_tab == 'catalogue' }}"><span class="icon">📦</span>Product Catalogue</a>
-<a href="/admin/clients" class="nav-item {{ 'active' if active_tab == 'clients' }}"><span class="icon">👥</span>All Clients</a>
+<a href="/admin/resellers" class="nav-item {{ 'active' if active_tab == 'resellers' }}"><span class="icon">👥</span>All Resellers</a>
 <div class="nav-section">Settings</div>
 <a href="/admin/users" class="nav-item {{ 'active' if active_tab == 'users' }}"><span class="icon">⚙️</span>Manage Users</a>
 {% endblock %}
@@ -41,8 +41,8 @@
     </div>
     <div class="stat-card">
         <div class="stat-icon">👤</div>
-        <div class="stat-value">{{ stats.total_clients | default(0) }}</div>
-        <div class="stat-label">Registered Clients</div>
+        <div class="stat-value">{{ stats.total_resellers | default(0) }}</div>
+        <div class="stat-label">Registered Resellers</div>
     </div>
     <div class="stat-card">
         <div class="stat-icon">💰</div>
@@ -56,13 +56,13 @@
     <div class="card">
         <div class="card-header"><div class="card-title">🎖️ Active Tier Rules</div></div>
         <table style="width:100%">
-            <thead><tr><th>Tier</th><th>Min Monthly (SAR)</th><th>Min Categories</th><th>Margin Share</th></tr></thead>
+            <thead><tr><th>Tier</th><th>Min Monthly (SAR)</th><th>Min Merchants</th><th>Margin Share</th></tr></thead>
             <tbody>
             {% for t in tiers %}
             <tr>
                 <td><span class="badge badge-tier" style="background:{{ t.color }}20;color:{{ t.color }}">{{ t.name }}</span></td>
                 <td class="fw6">{{ "{:,.0f}".format(t.min_monthly_sales) }}</td>
-                <td>{{ t.min_categories }}+</td>
+                <td>{{ t.min_merchants }}+</td>
                 <td class="fw6">{{ t.margin_share_pct }}%</td>
             </tr>
             {% endfor %}
@@ -70,24 +70,24 @@
         </table>
     </div>
 
-    <!-- Recent Clients -->
+    <!-- Recent Resellers -->
     <div class="card">
-        <div class="card-header"><div class="card-title">👥 Recent Clients</div></div>
-        {% if clients %}
+        <div class="card-header"><div class="card-title">👥 Recent Resellers</div></div>
+        {% if resellers %}
         <table style="width:100%">
             <thead><tr><th>Company</th><th>Tier</th><th>Sales Manager</th></tr></thead>
             <tbody>
-            {% for c in clients[:8] %}
+            {% for r in resellers[:8] %}
             <tr>
-                <td>{{ c.company_name }}</td>
-                <td><span class="badge badge-tier" style="background:{{ c.tier_color or '#64748b' }}20;color:{{ c.tier_color or '#64748b' }}">{{ c.tier_name or 'Unassigned' }}</span></td>
-                <td class="text-muted">{{ c.sales_name or '—' }}</td>
+                <td>{{ r.company_name }}</td>
+                <td><span class="badge badge-tier" style="background:{{ r.tier_color or '#64748b' }}20;color:{{ r.tier_color or '#64748b' }}">{{ r.tier_name or 'Unassigned' }}</span></td>
+                <td class="text-muted">{{ r.sales_name or '—' }}</td>
             </tr>
             {% endfor %}
             </tbody>
         </table>
         {% else %}
-        <div style="text-align:center;padding:30px;color:var(--text-3)">No clients registered yet</div>
+        <div style="text-align:center;padding:30px;color:var(--text-3)">No resellers registered yet</div>
         {% endif %}
     </div>
 </div>

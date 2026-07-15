@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}{{ profile.company_name }} — OneCard Reseller{% endblock %}
+{% block sidebar %}
+<div class="nav-section">My Catalogue</div>
+<a href="/reseller" class="nav-item active"><span class="icon">🏠</span>Home</a>
+<a href="/reseller/products" class="nav-item"><span class="icon">📦</span>Products</a>
+<a href="/reseller/merchants" class="nav-item"><span class="icon">🏪</span>By Merchant</a>
+<a href="/reseller/calculator" class="nav-item"><span class="icon">🧮</span>Profit Calculator</a>
+<a href="/reseller/recommended" class="nav-item"><span class="icon">⭐</span>Recommended</a>
+{% endblock %}
+
+{% block content %}
+<!-- Welcome Banner -->
+<div class="welcome-banner fade-in">
+    <div class="welcome-title">Welcome, {{ profile.company_name }} 👋</div>
+    <div class="welcome-sub">Your personalized product catalogue with exclusive pricing</div>
+    <div class="welcome-tier" style="background:var(--success)20;color:var(--success)">
+        🟢 Verified Partner Account — Active Rate Plan
+    </div>
+</div>
+
+<!-- Stats -->
+<div class="stats-grid" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));">
+    <div class="stat-card">
+        <div class="stat-icon">📦</div>
+        <div class="stat-value">{{ products|length }}</div>
+        <div class="stat-label">Available Products</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🏪</div>
+        <div class="stat-value">{{ merchants|length }}</div>
+        <div class="stat-label">Merchants</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">📂</div>
+        <div class="stat-value">{{ categories|length }}</div>
+        <div class="stat-label">Categories</div>
+    </div>
+</div>
+
+<!-- Quick Browse by Category -->
+<div class="card mb-24">
+    <div class="card-header"><div class="card-title">📂 Browse by Category</div></div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px">
+        {% for cat, count in cat_counts.items() %}
+        <a href="/reseller/products?category={{ cat }}" class="btn btn-sm btn-ghost" style="text-decoration:none">
+            {{ cat }} <span class="badge badge-accent" style="margin-left:4px">{{ count }}</span>
+        </a>
+        {% endfor %}
+    </div>
+</div>
+
+<div class="grid-2">
+    <!-- Top Products by Margin -->
+    <div class="card">
+        <div class="card-header">
+            <div class="card-title">⭐ Highest Margin Products for You</div>
+            <a href="/reseller/recommended" class="btn btn-sm btn-ghost">See All →</a>
+        </div>
+        <div class="table-scroll">
+            <table>
+                <thead><tr><th>Product</th><th>Merchant</th><th>Your Price</th><th>Your Discount</th></tr></thead>
+                <tbody>
+                {% for p in top_products[:8] %}
+                <tr>
+                    <td class="fw6 truncate" title="{{ p.product_name }}" style="max-width:180px">{{ p.product_name }}</td>
+                    <td class="text-muted truncate" style="max-width:100px">{{ p.merchant }}</td>
+                    <td class="fw6 text-accent">{{ "%.2f" | format(p.client_price) }} {{ p.currency }}</td>
+                    <td class="fw6 text-s">{{ "%.2f" | format(p.discount) }} {{ p.currency }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- New Arrivals -->
+    <div class="card">
+        <div class="card-header">
+            <div class="card-title">🆕 New Arrivals / New Products</div>
+            <span class="badge badge-success">Fresh Additions</span>
+        </div>
+        <div class="table-scroll">
+            <table>
+                <thead><tr><th>Product</th><th>Merchant</th><th>Category</th><th>Your Price</th></tr></thead>
+                <tbody>
+                {% for p in new_arrivals[:8] %}
+                <tr>
+                    <td class="fw6 truncate" title="{{ p.product_name }}" style="max-width:180px">{{ p.product_name }}</td>
+                    <td class="text-muted truncate" style="max-width:100px">{{ p.merchant }}</td>
+                    <td><span class="badge badge-info">{{ p.category }}</span></td>
+                    <td class="fw6 text-accent">{{ "%.2f" | format(p.client_price) }} {{ p.currency }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4" style="text-align:center;padding:20px;color:var(--text-3)">No new products added recently</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

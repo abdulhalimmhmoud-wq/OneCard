@@ -2,18 +2,18 @@
 {% block title %}Products — {{ profile.company_name }}{% endblock %}
 {% block sidebar %}
 <div class="nav-section">My Catalogue</div>
-<a href="/client" class="nav-item"><span class="icon">🏠</span>Home</a>
-<a href="/client/products" class="nav-item active"><span class="icon">📦</span>Products</a>
-<a href="/client/merchants" class="nav-item"><span class="icon">🏪</span>By Merchant</a>
-<a href="/client/calculator" class="nav-item"><span class="icon">🧮</span>Profit Calculator</a>
-<a href="/client/recommended" class="nav-item"><span class="icon">⭐</span>Recommended</a>
+<a href="/reseller" class="nav-item"><span class="icon">🏠</span>Home</a>
+<a href="/reseller/products" class="nav-item active"><span class="icon">📦</span>Products</a>
+<a href="/reseller/merchants" class="nav-item"><span class="icon">🏪</span>By Merchant</a>
+<a href="/reseller/calculator" class="nav-item"><span class="icon">🧮</span>Profit Calculator</a>
+<a href="/reseller/recommended" class="nav-item"><span class="icon">⭐</span>Recommended</a>
 {% endblock %}
 
 {% block content %}
 <div class="page-header">
     <div>
-        <h1 class="page-title">📦 Your Product Catalogue</h1>
-        <p class="page-subtitle">{{ products|length }} products available in your tier</p>
+        <h1 class="page-title">📦 Master Product Catalogue</h1>
+        <p class="page-subtitle">{{ products|length }} products available in your catalogue</p>
     </div>
     <div class="page-actions">
         <button class="btn btn-primary" onclick="exportClientCSV()">📥 Export CSV</button>
@@ -115,9 +115,9 @@ function renderTable() {
             <td class="text-muted truncate" title="${esc(p.merchant)}">${esc(p.merchant)}</td>
             <td><span class="badge badge-accent">${esc(p.category)}</span></td>
             <td><span class="badge badge-info">${esc(p.country)}</span></td>
-            <td class="fw6">${fmt(p.face_value)}</td>
-            <td class="fw6" style="color:${tierColor}">${fmt(p.client_price)}</td>
-            <td class="fw6 text-s">${fmt(p.discount)}</td>
+            <td class="fw6">${fmt(p.face_value)} ${p.currency}</td>
+            <td class="fw6" style="color:${tierColor}">${fmt(p.client_price)} ${p.currency}</td>
+            <td class="fw6 text-s">${fmt(p.discount)} ${p.currency}</td>
             <td class="fw6 ${p.margin_pct > 3 ? 'text-s' : p.margin_pct > 1 ? 'text-w' : 'text-d'}">${p.margin_pct.toFixed(1)}%</td>
             <td><span class="badge ${p.popularity > 80 ? 'badge-warning' : 'badge-ghost'}">${popTag}</span></td>
         </tr>`;

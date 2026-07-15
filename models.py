@@ -1,5 +1,5 @@
 """
-OneCard Platform — Database Models
+OneCard Platform — Database Models (v3)
 ===================================
 SQLite database layer with all CRUD operations.
 """
@@ -27,7 +27,7 @@ def init_db():
             email TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             name TEXT NOT NULL,
-            role TEXT NOT NULL CHECK(role IN ('admin','sales','client')),
+            role TEXT NOT NULL CHECK(role IN ('admin','sales','reseller')),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -35,16 +35,16 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             min_monthly_sales REAL NOT NULL DEFAULT 0,
-            min_categories INTEGER NOT NULL DEFAULT 1,
+            min_merchants INTEGER NOT NULL DEFAULT 1,
             margin_share_pct REAL NOT NULL DEFAULT 20,
             color TEXT NOT NULL DEFAULT '#64748b',
             sort_order INTEGER NOT NULL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
-        CREATE TABLE IF NOT EXISTS client_profiles (
+        CREATE TABLE IF NOT EXISTS reseller_profiles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL REFERENCES users(id),
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             company_name TEXT NOT NULL,
             expected_monthly_sales REAL NOT NULL DEFAULT 0,
             assigned_tier_id INTEGER REFERENCES tier_rules(id),
@@ -53,16 +53,16 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
-        CREATE TABLE IF NOT EXISTS client_regions (
+        CREATE TABLE IF NOT EXISTS reseller_regions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            client_id INTEGER NOT NULL REFERENCES client_profiles(id) ON DELETE CASCADE,
+            reseller_id INTEGER NOT NULL REFERENCES reseller_profiles(id) ON DELETE CASCADE,
             region TEXT NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS client_categories (
+        CREATE TABLE IF NOT EXISTS reseller_merchants (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            client_id INTEGER NOT NULL REFERENCES client_profiles(id) ON DELETE CASCADE,
-            category TEXT NOT NULL
+            reseller_id INTEGER NOT NULL REFERENCES reseller_profiles(id) ON DELETE CASCADE,
+            merchant TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS products (
@@ -80,7 +80,8 @@ def init_db():
             face_value REAL NOT NULL DEFAULT 0,
             oc_margin REAL NOT NULL DEFAULT 0,
             oc_margin_pct REAL NOT NULL DEFAULT 0,
-            popularity INTEGER NOT NULL DEFAULT 0
+            popularity INTEGER NOT NULL DEFAULT 0,
+            is_new INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE INDEX IF NOT EXISTS idx_products_country ON products(country);
@@ -151,69 +152,68 @@ def get_all_tiers():
     return rows
 
 
-def upsert_tier(tid, name, min_sales, min_cats, margin_pct, color, sort_order):
+def upsert_tier(tid, name, min_sales, min_merch, margin_pct, color, sort_order):
     conn = get_db()
     if tid:
-        conn.execute("""UPDATE tier_rules SET name=?, min_monthly_sales=?, min_categories=?,
+        conn.execute("""UPDATE tier_rules SET name=?, min_monthly_sales=?, min_merchants=?,
                         margin_share_pct=?, color=?, sort_order=? WHERE id=?""",
-                     (name, min_sales, min_cats, margin_pct, color, sort_order, tid))
+                     (name, min_sales, min_merch, margin_pct, color, sort_order, tid))
     else:
-        conn.execute("""INSERT INTO tier_rules (name, min_monthly_sales, min_categories,
+        conn.execute("""INSERT INTO tier_rules (name, min_monthly_sales, min_merchants,
                         margin_share_pct, color, sort_order) VALUES (?,?,?,?,?,?)""",
-                     (name, min_sales, min_cats, margin_pct, color, sort_order))
+                     (name, min_sales, min_merch, margin_pct, color, sort_order))
     conn.commit()
     conn.close()
 
 
 def delete_tier(tid):
     conn = get_db()
-    conn.execute("UPDATE client_profiles SET assigned_tier_id=NULL WHERE assigned_tier_id=?", (tid,))
+    conn.execute("UPDATE reseller_profiles SET assigned_tier_id=NULL WHERE assigned_tier_id=?", (tid,))
     conn.execute("DELETE FROM tier_rules WHERE id=?", (tid,))
     conn.commit()
     conn.close()
 
 
-def auto_assign_tier(expected_sales, num_categories):
-    """Find the best tier for given sales + category count."""
+def auto_assign_tier(expected_sales, num_merchants):
+    """Find the best tier for given sales + merchant count."""
     tiers = get_all_tiers()  # sorted by min_monthly_sales DESC
     for t in tiers:
-        if expected_sales >= t['min_monthly_sales'] and num_categories >= t['min_categories']:
+        if expected_sales >= t['min_monthly_sales'] and num_merchants >= t['min_merchants']:
             return dict(t)
-    # Fallback to lowest tier
     if tiers:
         return dict(tiers[-1])
     return None
 
 
-# ── Client Profiles ──────────────────────────────────────────────
+# ── Reseller Profiles ─────────────────────────────────────────────
 
-def create_client(user_id, company_name, expected_sales, tier_id, registered_by, regions, categories, notes=''):
+def create_reseller(user_id, company_name, expected_sales, tier_id, registered_by, regions, merchants, notes=''):
     conn = get_db()
-    conn.execute("""INSERT INTO client_profiles
+    conn.execute("""INSERT INTO reseller_profiles
                     (user_id, company_name, expected_monthly_sales, assigned_tier_id, registered_by, notes)
                     VALUES (?,?,?,?,?,?)""",
                  (user_id, company_name, expected_sales, tier_id, registered_by, notes))
-    client_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    reseller_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     for r in regions:
-        conn.execute("INSERT INTO client_regions (client_id, region) VALUES (?,?)", (client_id, r))
-    for c in categories:
-        conn.execute("INSERT INTO client_categories (client_id, category) VALUES (?,?)", (client_id, c))
+        conn.execute("INSERT INTO reseller_regions (reseller_id, region) VALUES (?,?)", (reseller_id, r))
+    for m in merchants:
+        conn.execute("INSERT INTO reseller_merchants (reseller_id, merchant) VALUES (?,?)", (reseller_id, m))
     conn.commit()
     conn.close()
-    return client_id
+    return reseller_id
 
 
-def get_client_profile(user_id):
+def get_reseller_profile(user_id):
     conn = get_db()
-    profile = conn.execute("SELECT * FROM client_profiles WHERE user_id=?", (user_id,)).fetchone()
+    profile = conn.execute("SELECT * FROM reseller_profiles WHERE user_id=?", (user_id,)).fetchone()
     if not profile:
         conn.close()
         return None
     p = dict(profile)
     p['regions'] = [r['region'] for r in conn.execute(
-        "SELECT region FROM client_regions WHERE client_id=?", (profile['id'],)).fetchall()]
-    p['categories'] = [c['category'] for c in conn.execute(
-        "SELECT category FROM client_categories WHERE client_id=?", (profile['id'],)).fetchall()]
+        "SELECT region FROM reseller_regions WHERE reseller_id=?", (profile['id'],)).fetchall()]
+    p['merchants'] = [m['merchant'] for m in conn.execute(
+        "SELECT merchant FROM reseller_merchants WHERE reseller_id=?", (profile['id'],)).fetchall()]
     if profile['assigned_tier_id']:
         tier = conn.execute("SELECT * FROM tier_rules WHERE id=?", (profile['assigned_tier_id'],)).fetchone()
         p['tier'] = dict(tier) if tier else None
@@ -223,12 +223,12 @@ def get_client_profile(user_id):
     return p
 
 
-def get_all_clients(registered_by=None):
+def get_all_resellers(registered_by=None):
     conn = get_db()
     if registered_by:
         rows = conn.execute("""
             SELECT cp.*, u.email, u.name as contact_name, t.name as tier_name, t.margin_share_pct, t.color as tier_color
-            FROM client_profiles cp
+            FROM reseller_profiles cp
             JOIN users u ON cp.user_id = u.id
             LEFT JOIN tier_rules t ON cp.assigned_tier_id = t.id
             WHERE cp.registered_by = ?
@@ -238,7 +238,7 @@ def get_all_clients(registered_by=None):
         rows = conn.execute("""
             SELECT cp.*, u.email, u.name as contact_name, t.name as tier_name, t.margin_share_pct, t.color as tier_color,
                    su.name as sales_name
-            FROM client_profiles cp
+            FROM reseller_profiles cp
             JOIN users u ON cp.user_id = u.id
             LEFT JOIN tier_rules t ON cp.assigned_tier_id = t.id
             LEFT JOIN users su ON cp.registered_by = su.id
@@ -280,22 +280,12 @@ def get_products(country=None, region=None, category=None, merchant=None, search
     return [dict(r) for r in rows]
 
 
-def get_client_products(user_id):
-    """Get products filtered by client's regions and categories."""
-    profile = get_client_profile(user_id)
+def get_reseller_products(user_id):
+    """Resellers have access to the ENTIRE Master Catalogue, so we return all products."""
+    profile = get_reseller_profile(user_id)
     if not profile:
         return [], None
-    regions = profile.get('regions', [])
-    categories = profile.get('categories', [])
-    # If no regions/categories specified, show all
-    if not regions and not categories:
-        products = get_products()
-    elif regions and categories:
-        products = get_products(region=regions, category=categories)
-    elif regions:
-        products = get_products(region=regions)
-    else:
-        products = get_products(category=categories)
+    products = get_products()
     return products, profile
 
 
@@ -337,7 +327,7 @@ def get_product_stats():
         'total_countries': conn.execute("SELECT COUNT(DISTINCT country) FROM products WHERE country NOT LIKE 'eSIM%'").fetchone()[0],
         'total_categories': conn.execute("SELECT COUNT(DISTINCT category) FROM products").fetchone()[0],
         'avg_margin': conn.execute("SELECT AVG(oc_margin_pct) FROM products").fetchone()[0] or 0,
-        'total_clients': conn.execute("SELECT COUNT(*) FROM client_profiles").fetchone()[0],
+        'total_resellers': conn.execute("SELECT COUNT(*) FROM reseller_profiles").fetchone()[0],
     }
     conn.close()
     return stats
@@ -358,8 +348,8 @@ def seed_default_data():
             ('Bronze',   10000, 1, 30, '#b45309', 4),
             ('Starter',      0, 1, 20, '#3b82f6', 5),
         ]
-        for name, sales, cats, margin, color, order in defaults:
-            upsert_tier(None, name, sales, cats, margin, color, order)
+        for name, sales, merch, margin, color, order in defaults:
+            upsert_tier(None, name, sales, merch, margin, color, order)
         print("  [OK] Default tier rules created")
 
     # Create a demo sales manager

@@ -194,12 +194,14 @@ def seed_products():
         else:
             popularity = (abs(hash(name)) % 50) + 10 # 10 to 60
 
+        is_new = 1 if (count % 35 == 0 or 'esim' in text_lower) else 0
+
         conn.execute("""INSERT INTO products
                         (product_id, product_name, merchant, merchant_id, category, country, region,
-                         currency, cost, default_price, face_value, oc_margin, oc_margin_pct, popularity)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                         currency, cost, default_price, face_value, oc_margin, oc_margin_pct, popularity, is_new)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                      (product_id, name, merchant, merchant_id, category, country, region,
-                      currency, cost, default_price, face_value, oc_margin, oc_margin_pct, popularity))
+                      currency, cost, default_price, face_value, oc_margin, oc_margin_pct, popularity, is_new))
         count += 1
 
     conn.commit()
