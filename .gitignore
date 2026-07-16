@@ -24,7 +24,9 @@ onecard.db
 # Allow new Flask application files
 !app.py
 !models.py
+!auth.py
 !seed_products.py
+!Start OneCard.bat
 
 # Allow static files and templates directories
 !static/

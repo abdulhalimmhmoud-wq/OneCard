@@ -1,23 +1,38 @@
 """
-OneCard Platform — Flask Web Application (v3)
+OneCard Platform — Flask Web Application (v4)
 =============================================
-Core entry point with routes for BD Managers, Sales Managers, and Resellers.
+Roles: Admin (BD Manager), Sales Manager, Reseller, CCO, Finance.
+
+Workflows:
+  Sales registers reseller (client type + markets) → auto tier by expected sales
+  Reseller browses catalogue → submits Forecast (pre-contract)
+  Contract signed → Reseller orders using Wallet balance
+  Wallet top-up: bank transfer receipt → Finance approval → balance credited
+  Sales requests special merchant discount → CCO approves → auto-applied
+  Tier compliance: below commitment → grace month → automatic downgrade
 """
-from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify
+from flask import (Flask, render_template, request, redirect, url_for, session,
+                   flash, send_from_directory, abort)
 import os
 import json
+import uuid
+from datetime import datetime
 import models
 import auth
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads', 'receipts')
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+ALLOWED_RECEIPT_EXT = {'.png', '.jpg', '.jpeg', '.pdf', '.webp'}
+
 
 # ── Context Processor ─────────────────────────────────────────────
 
 @app.context_processor
 def inject_user():
-    """Inject logged-in user and preview state into all templates."""
+    """Inject logged-in user, preview state and unread notifications into all templates."""
     curr = auth.get_current_user()
     is_preview = 'preview_user_id' in session
     preview_company = None
@@ -25,11 +40,29 @@ def inject_user():
         profile = models.get_reseller_profile(session['preview_user_id'])
         if profile:
             preview_company = profile['company_name']
+    unread = models.unread_count(curr['id']) if curr else 0
     return {
         'current_user': curr,
         'is_preview': is_preview,
-        'preview_company': preview_company
+        'preview_company': preview_company,
+        'unread_notifications': unread,
     }
+
+
+@app.template_filter('money')
+def money_filter(v):
+    """Whole-number money formatting (business rule: no decimals)."""
+    try:
+        return f"{round(float(v or 0)):,}"
+    except (TypeError, ValueError):
+        return '0'
+
+
+@app.before_request
+def daily_compliance_check():
+    """Lazy daily tier-compliance run (throttled inside the function)."""
+    if request.endpoint not in ('static',):
+        models.run_tier_compliance()
 
 
 def get_active_reseller_uid():
@@ -41,19 +74,27 @@ def get_active_reseller_uid():
     return session.get('user_id')
 
 
+def block_in_preview():
+    """Preview mode is read-only: sales/admin cannot act on behalf of the reseller."""
+    if 'preview_user_id' in session:
+        flash("Preview mode is read-only — actions are disabled.", "warning")
+        return True
+    return False
+
+
 # ── Global Routes ────────────────────────────────────────────────
+
+ROLE_HOME = {'admin': 'admin_dashboard', 'sales': 'sales_dashboard',
+             'cco': 'cco_dashboard', 'finance': 'finance_dashboard',
+             'reseller': 'reseller_dashboard'}
+
 
 @app.route('/')
 def index():
     user = auth.get_current_user()
     if not user:
         return redirect(url_for('login'))
-    if user['role'] == 'admin':
-        return redirect(url_for('admin_dashboard'))
-    elif user['role'] == 'sales':
-        return redirect(url_for('sales_dashboard'))
-    else:
-        return redirect(url_for('reseller_dashboard'))
+    return redirect(url_for(ROLE_HOME.get(user['role'], 'reseller_dashboard')))
 
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -81,6 +122,28 @@ def logout():
     return redirect(url_for('login'))
 
 
+@app.route('/notifications')
+@auth.login_required
+def notifications():
+    curr = auth.get_current_user()
+    notes = models.get_notifications(curr['id'])
+    models.mark_notifications_read(curr['id'])
+    return render_template('notifications.html', active_tab='notifications', notes=notes)
+
+
+@app.route('/receipts/<int:txn_id>')
+@auth.login_required
+def view_receipt(txn_id):
+    """Receipt files are private: finance/admin, or the owning reseller."""
+    txn = models.get_topup(txn_id)
+    if not txn or not txn['receipt_file']:
+        abort(404)
+    curr = auth.get_current_user()
+    if curr['role'] not in ('finance', 'admin') and curr['id'] != txn['reseller_user_id']:
+        abort(403)
+    return send_from_directory(UPLOAD_DIR, txn['receipt_file'])
+
+
 # ── Admin Routes (BD Manager) ────────────────────────────────────
 
 @app.route('/admin')
@@ -89,7 +152,11 @@ def admin_dashboard():
     stats = models.get_product_stats()
     tiers = models.get_all_tiers()
     resellers = models.get_all_resellers()
-    return render_template('admin/dashboard.html', active_tab='dashboard', stats=stats, tiers=tiers, resellers=resellers)
+    pending_topups = len(models.get_topups('pending'))
+    pending_discounts = len(models.get_discount_requests('pending'))
+    return render_template('admin/dashboard.html', active_tab='dashboard', stats=stats,
+                           tiers=tiers, resellers=resellers,
+                           pending_topups=pending_topups, pending_discounts=pending_discounts)
 
 
 @app.route('/admin/tiers', methods=['GET', 'POST'])
@@ -102,20 +169,12 @@ def admin_tiers():
         min_merch = request.form.getlist('tier_min_merch')
         margins = request.form.getlist('tier_margin')
         colors = request.form.getlist('tier_color')
-
         for i in range(len(ids)):
-            models.upsert_tier(
-                ids[i],
-                names[i],
-                float(min_sales[i] or 0),
-                int(min_merch[i] or 1),
-                float(margins[i] or 20),
-                colors[i],
-                i + 1
-            )
+            models.upsert_tier(ids[i], names[i], float(min_sales[i] or 0),
+                               int(min_merch[i] or 1), float(margins[i] or 20),
+                               colors[i], i + 1)
         flash("Tier rules updated successfully.", "success")
         return redirect(url_for('admin_tiers'))
-
     tiers = models.get_all_tiers()
     return render_template('admin/tiers.html', active_tab='tiers', tiers=tiers)
 
@@ -143,7 +202,6 @@ def admin_catalogue():
     categories = models.get_all_categories()
     regions = models.get_all_regions()
     tiers = models.get_all_tiers()
-
     products_json = json.dumps(products)
     tiers_json = json.dumps([dict(t) for t in tiers])
     return render_template('admin/catalogue.html', active_tab='catalogue',
@@ -173,13 +231,51 @@ def admin_create_user():
     email = request.form.get('email')
     password = request.form.get('password')
     role = request.form.get('role')
-
+    if role not in models.ROLES:
+        flash("Invalid role.", "error")
+        return redirect(url_for('admin_users'))
     uid = models.create_user(email, password, name, role)
     if uid:
         flash(f"User {name} created successfully.", "success")
     else:
         flash("Email address is already in use.", "error")
     return redirect(url_for('admin_users'))
+
+
+@app.route('/admin/compliance/run')
+@auth.admin_required
+def admin_run_compliance():
+    actions = models.run_tier_compliance(force=True)
+    if actions:
+        flash("Compliance check done: " + " | ".join(actions), "info")
+    else:
+        flash("Compliance check done — all contracted resellers are on track.", "success")
+    return redirect(url_for('admin_dashboard'))
+
+
+# ── Contract signing (sales manager or admin) ────────────────────
+
+@app.route('/resellers/<int:rid>/contract', methods=['POST'])
+@auth.sales_required
+def sign_contract(rid):
+    curr = auth.get_current_user()
+    profile = models.get_reseller_profile_by_id(rid)
+    if not profile:
+        flash("Reseller not found.", "error")
+        return redirect(url_for('index'))
+    if curr['role'] != 'admin' and profile['registered_by'] != curr['id']:
+        flash("Access denied.", "error")
+        return redirect(url_for('index'))
+    new_status = request.form.get('status', 'contracted')
+    models.set_contract_status(rid, new_status)
+    if new_status == 'contracted':
+        models.notify(profile['user_id'], "Contract activated 🎉",
+                      "Your contract is now active. You can place orders from your wallet balance.",
+                      "/reseller/orders")
+        flash(f"Contract marked as signed for {profile['company_name']}. Ordering is now enabled.", "success")
+    else:
+        flash(f"{profile['company_name']} set back to prospect.", "info")
+    return redirect(request.referrer or url_for('index'))
 
 
 # ── Sales Manager Routes ─────────────────────────────────────────
@@ -190,7 +286,12 @@ def sales_dashboard():
     curr = auth.get_current_user()
     resellers = models.get_all_resellers(registered_by=curr['id'])
     stats = models.get_product_stats()
-    return render_template('sales/dashboard.html', active_tab='dashboard', resellers=resellers, stats=stats)
+    forecasts = models.get_forecasts_for_sales(curr['id'])
+    pending_discounts = [d for d in models.get_discount_requests(requested_by=curr['id'])
+                         if d['status'] == 'pending']
+    return render_template('sales/dashboard.html', active_tab='dashboard',
+                           resellers=resellers, stats=stats,
+                           forecasts=forecasts[:5], pending_discounts=len(pending_discounts))
 
 
 @app.route('/sales/register', methods=['GET', 'POST'])
@@ -203,17 +304,19 @@ def sales_register():
         pw = request.form.get('password')
         sales = float(request.form.get('expected_sales') or 0)
         notes = request.form.get('notes', '')
+        client_type = request.form.get('client_type', '')
+        countries = request.form.getlist('countries')
 
-        # Auto tier assignment based on expected sales
         assigned = models.auto_assign_tier(sales)
         tier_id = assigned['id'] if assigned else None
 
-        # Create reseller user account
         uid = models.create_user(cemail, pw, cname, 'reseller')
         if uid:
             curr = auth.get_current_user()
-            models.create_reseller(uid, comp, sales, tier_id, curr['id'], notes)
-            flash(f"Reseller '{comp}' registered successfully with '{assigned['name'] if assigned else 'None'}' tier.", "success")
+            models.create_reseller(uid, comp, sales, tier_id, curr['id'], notes,
+                                   client_type=client_type, countries=countries)
+            flash(f"Reseller '{comp}' registered successfully with "
+                  f"'{assigned['name'] if assigned else 'None'}' plan.", "success")
             return redirect(url_for('sales_dashboard'))
         else:
             flash("Reseller email address is already in use.", "error")
@@ -221,7 +324,9 @@ def sales_register():
     tiers = models.get_all_tiers()
     tiers_json = json.dumps([dict(t) for t in tiers])
     return render_template('sales/register.html', active_tab='register',
-                           tiers_json=tiers_json)
+                           tiers_json=tiers_json,
+                           client_types=models.CLIENT_TYPES,
+                           countries=models.get_all_countries())
 
 
 @app.route('/sales/resellers')
@@ -232,6 +337,21 @@ def sales_resellers():
     return render_template('sales/my_resellers.html', active_tab='resellers', resellers=resellers)
 
 
+@app.route('/sales/resellers/<int:rid>/update', methods=['POST'])
+@auth.sales_required
+def sales_update_reseller(rid):
+    curr = auth.get_current_user()
+    profile = models.get_reseller_profile_by_id(rid)
+    if not profile or (curr['role'] != 'admin' and profile['registered_by'] != curr['id']):
+        flash("Access denied.", "error")
+        return redirect(url_for('sales_resellers'))
+    client_type = request.form.get('client_type')
+    countries = request.form.getlist('countries')
+    models.update_reseller_profile(rid, client_type=client_type, countries=countries)
+    flash(f"Profile updated for {profile['company_name']}.", "success")
+    return redirect(url_for('sales_resellers'))
+
+
 @app.route('/sales/catalogue')
 @auth.sales_required
 def sales_catalogue():
@@ -239,7 +359,6 @@ def sales_catalogue():
     categories = models.get_all_categories()
     regions = models.get_all_regions()
     tiers = models.get_all_tiers()
-
     products_json = json.dumps(products)
     tiers_json = json.dumps([dict(t) for t in tiers])
     return render_template('sales/catalogue.html', active_tab='catalogue',
@@ -248,20 +367,87 @@ def sales_catalogue():
                            tiers=tiers, tiers_json=tiers_json)
 
 
+@app.route('/sales/forecasts')
+@auth.sales_required
+def sales_forecasts():
+    curr = auth.get_current_user()
+    scope = None if curr['role'] == 'admin' else curr['id']
+    forecasts = models.get_forecasts_for_sales(scope)
+    return render_template('sales/forecasts.html', active_tab='forecasts', forecasts=forecasts)
+
+
+@app.route('/sales/forecasts/<int:fid>')
+@auth.sales_required
+def sales_forecast_detail(fid):
+    curr = auth.get_current_user()
+    forecast, items = models.get_forecast_detail(fid)
+    if not forecast:
+        flash("Forecast not found.", "error")
+        return redirect(url_for('sales_forecasts'))
+    if curr['role'] != 'admin' and forecast['registered_by'] != curr['id']:
+        flash("Access denied.", "error")
+        return redirect(url_for('sales_forecasts'))
+    if forecast['status'] == 'submitted':
+        models.mark_forecast_reviewed(fid)
+    return render_template('sales/forecast_detail.html', active_tab='forecasts',
+                           forecast=forecast, items=items)
+
+
+@app.route('/sales/discounts', methods=['GET', 'POST'])
+@auth.sales_required
+def sales_discounts():
+    curr = auth.get_current_user()
+    if request.method == 'POST':
+        rid = int(request.form.get('reseller_id'))
+        merchant = request.form.get('merchant')
+        requested_share = float(request.form.get('requested_share') or 0)
+        current_sales = float(request.form.get('current_sales') or 0)
+        projected_sales = float(request.form.get('projected_sales') or 0)
+        note = request.form.get('note', '')
+
+        profile = models.get_reseller_profile_by_id(rid)
+        if not profile or (curr['role'] != 'admin' and profile['registered_by'] != curr['id']):
+            flash("Access denied.", "error")
+            return redirect(url_for('sales_discounts'))
+
+        current_share = profile['overrides'].get(
+            merchant, profile['tier']['margin_share_pct'] if profile['tier'] else 20)
+        models.create_discount_request(rid, merchant, current_share, requested_share,
+                                       current_sales, projected_sales, note, curr['id'])
+        models.notify(models.get_user_ids_by_role('cco'),
+                      "New special discount request",
+                      f"{curr['name']} requests {requested_share:.0f}% margin share on "
+                      f"'{merchant}' for {profile['company_name']} "
+                      f"(current {current_share:.0f}%).", "/cco")
+        flash("Discount request sent to the CCO for approval.", "success")
+        return redirect(url_for('sales_discounts'))
+
+    resellers = models.get_all_resellers(registered_by=None if curr['role'] == 'admin' else curr['id'])
+    merchants = models.get_all_merchants()
+    my_requests = models.get_discount_requests(requested_by=curr['id'])
+    # tier + override data for the form's live preview
+    resellers_json = json.dumps([{
+        'id': r['id'], 'company_name': r['company_name'],
+        'share': r['margin_share_pct'] or 20, 'tier_name': r['tier_name'] or 'None',
+    } for r in resellers])
+    merchants_json = json.dumps([{'merchant': m['merchant'], 'avg_margin': m['avg_margin'] or 0}
+                                 for m in merchants])
+    return render_template('sales/discounts.html', active_tab='discounts',
+                           resellers=resellers, merchants=merchants, requests=my_requests,
+                           resellers_json=resellers_json, merchants_json=merchants_json)
+
+
 @app.route('/sales/preview/<int:uid>')
 @auth.sales_required
 def sales_preview_enter(uid):
-    # Verify reseller belongs to this sales manager (or current user is admin)
     curr = auth.get_current_user()
     profile = models.get_reseller_profile(uid)
     if not profile:
         flash("Reseller not found.", "error")
         return redirect(url_for('sales_dashboard'))
-
     if curr['role'] != 'admin' and profile['registered_by'] != curr['id']:
         flash("Access denied.", "error")
         return redirect(url_for('sales_dashboard'))
-
     session['preview_user_id'] = uid
     flash(f"Entering portal preview for '{profile['company_name']}'", "info")
     return redirect(url_for('reseller_dashboard'))
@@ -275,45 +461,119 @@ def sales_preview_exit():
     return redirect(url_for('sales_dashboard'))
 
 
+# ── CCO Routes ───────────────────────────────────────────────────
+
+@app.route('/cco')
+@auth.cco_required
+def cco_dashboard():
+    pending = models.get_discount_requests('pending')
+    history = [d for d in models.get_discount_requests() if d['status'] != 'pending'][:20]
+    # enrich with merchant margin economics for decision support
+    for d in pending:
+        mm = models.get_merchant_avg_margin(d['merchant'])
+        margin_rate = (mm['avg_margin_pct'] or 0) / 100.0
+        oc_keep_now = 1 - d['current_share_pct'] / 100.0
+        oc_keep_req = 1 - d['requested_share_pct'] / 100.0
+        d['profit_now'] = d['current_monthly_sales'] * margin_rate * oc_keep_now
+        d['profit_after'] = d['projected_monthly_sales'] * margin_rate * oc_keep_req
+        d['profit_delta'] = d['profit_after'] - d['profit_now']
+        d['merchant_margin_pct'] = mm['avg_margin_pct'] or 0
+    return render_template('cco/dashboard.html', active_tab='cco',
+                           pending=pending, history=history)
+
+
+@app.route('/cco/decide/<int:rid>', methods=['POST'])
+@auth.cco_required
+def cco_decide(rid):
+    curr = auth.get_current_user()
+    approve = request.form.get('decision') == 'approve'
+    note = request.form.get('decision_note', '')
+    req = models.decide_discount_request(rid, approve, curr['id'], note)
+    if not req:
+        flash("Request not found or already decided.", "error")
+        return redirect(url_for('cco_dashboard'))
+    profile = models.get_reseller_profile_by_id(req['reseller_id'])
+    verdict = "approved ✅" if approve else "rejected ❌"
+    models.notify([req['requested_by']],
+                  f"Discount request {verdict}",
+                  f"{req['requested_share_pct']:.0f}% margin share on '{req['merchant']}' for "
+                  f"{profile['company_name'] if profile else '?'} was {verdict} by {curr['name']}."
+                  + (f" Note: {note}" if note else ""),
+                  "/sales/discounts")
+    if approve and profile:
+        models.notify(profile['user_id'], "Better pricing unlocked 🎉",
+                      f"You now get improved pricing on all '{req['merchant']}' products.",
+                      "/reseller/merchants")
+        flash(f"Approved — override applied automatically for {profile['company_name']} on {req['merchant']}.", "success")
+    else:
+        flash("Request rejected.", "info")
+    return redirect(url_for('cco_dashboard'))
+
+
+# ── Finance Routes ───────────────────────────────────────────────
+
+@app.route('/finance')
+@auth.finance_required
+def finance_dashboard():
+    pending = models.get_topups('pending')
+    history = [t for t in models.get_topups() if t['status'] != 'pending'][:30]
+    resellers = models.get_all_resellers()
+    total_balance = sum(r['wallet_balance'] or 0 for r in resellers)
+    return render_template('finance/dashboard.html', active_tab='finance',
+                           pending=pending, history=history,
+                           resellers=resellers, total_balance=total_balance)
+
+
+@app.route('/finance/review/<int:txn_id>', methods=['POST'])
+@auth.finance_required
+def finance_review(txn_id):
+    curr = auth.get_current_user()
+    approve = request.form.get('decision') == 'approve'
+    note = request.form.get('note', '')
+    txn = models.get_topup(txn_id)
+    if not txn or not models.review_topup(txn_id, approve, curr['id'], note):
+        flash("Transaction not found or already reviewed.", "error")
+        return redirect(url_for('finance_dashboard'))
+    if approve:
+        models.notify(txn['reseller_user_id'], "Wallet top-up approved 💰",
+                      f"Your transfer of {txn['amount']:,.0f} SAR was verified and added to your wallet.",
+                      "/reseller/wallet")
+        flash(f"Approved — {txn['amount']:,.0f} SAR credited to {txn['company_name']}.", "success")
+    else:
+        models.notify(txn['reseller_user_id'], "Wallet top-up rejected",
+                      f"Your transfer of {txn['amount']:,.0f} SAR could not be verified."
+                      + (f" Note: {note}" if note else " Please contact your account manager."),
+                      "/reseller/wallet")
+        flash("Top-up rejected.", "info")
+    return redirect(url_for('finance_dashboard'))
+
+
 # ── Reseller Portal Routes ────────────────────────────────────────
+
+def _reseller_ctx():
+    """Common data for reseller pages: enriched products + profile."""
+    uid = get_active_reseller_uid()
+    prods, profile = models.get_reseller_products(uid)
+    return uid, prods, profile
+
 
 @app.route('/reseller')
 @auth.login_required
 def reseller_dashboard():
-    uid = get_active_reseller_uid()
-    prods, profile = models.get_reseller_products(uid)
+    uid, enriched, profile = _reseller_ctx()
     if not profile:
         flash("Reseller profile not found.", "error")
         return redirect(url_for('logout'))
 
-    tier = profile['tier']
-    share = (tier['margin_share_pct'] / 100.0) if tier else 0.20
-
-    enriched = []
     cat_counts = {}
     merchants = set()
     categories = set()
-
-    for p in prods:
-        disc = p['oc_margin'] * share
-        c_price = max(p['default_price'] - disc, p['cost'])
-        saved = p['face_value'] - c_price
-        pct = (saved / p['face_value'] * 100.0) if p['face_value'] > 0 else 0
-
-        enriched.append({
-            **p,
-            'client_price': c_price,
-            'discount': disc,
-            'margin_pct': pct
-        })
+    for p in enriched:
         cat_counts[p['category']] = cat_counts.get(p['category'], 0) + 1
         merchants.add(p['merchant'])
         categories.add(p['category'])
 
-    # Sort products by margin descending
     enriched.sort(key=lambda x: -x['margin_pct'])
-
-    # Extract new arrivals
     new_arrivals = [p for p in enriched if p.get('is_new') == 1]
 
     return render_template('reseller/dashboard.html', active_tab='dashboard',
@@ -325,137 +585,298 @@ def reseller_dashboard():
 @app.route('/reseller/products')
 @auth.login_required
 def reseller_products():
-    uid = get_active_reseller_uid()
-    prods, profile = models.get_reseller_products(uid)
+    uid, enriched, profile = _reseller_ctx()
     if not profile:
         return redirect(url_for('logout'))
-
-    tier = profile['tier']
-    share = (tier['margin_share_pct'] / 100.0) if tier else 0.20
-
-    enriched = []
-    merchants = set()
-    categories = set()
-
-    for p in prods:
-        disc = p['oc_margin'] * share
-        c_price = max(p['default_price'] - disc, p['cost'])
-        saved = p['face_value'] - c_price
-        pct = (saved / p['face_value'] * 100.0) if p['face_value'] > 0 else 0
-
-        enriched.append({
-            **p,
-            'client_price': c_price,
-            'discount': disc,
-            'margin_pct': pct
-        })
-        merchants.add(p['merchant'])
-        categories.add(p['category'])
-
-    products_json = json.dumps(enriched)
+    merchants = sorted({p['merchant'] for p in enriched})
+    categories = sorted({p['category'] for p in enriched})
+    countries = sorted({p['country'] for p in enriched})
+    regions = sorted({p['region'] for p in enriched})
+    currencies = sorted({p['currency'] for p in enriched if p['currency']})
     return render_template('reseller/products.html', active_tab='products',
-                           profile=profile, products=enriched, products_json=products_json,
-                           merchants=sorted(list(merchants)), categories=sorted(list(categories)))
+                           profile=profile, products=enriched,
+                           products_json=json.dumps(enriched),
+                           merchants=merchants, categories=categories,
+                           countries=countries, regions=regions, currencies=currencies)
 
 
 @app.route('/reseller/merchants')
 @auth.login_required
 def reseller_merchants():
-    uid = get_active_reseller_uid()
-    prods, profile = models.get_reseller_products(uid)
+    uid, enriched, profile = _reseller_ctx()
     if not profile:
         return redirect(url_for('logout'))
-
-    tier = profile['tier']
-    share = (tier['margin_share_pct'] / 100.0) if tier else 0.20
-
-    enriched = []
-    merchants = set()
-
-    for p in prods:
-        disc = p['oc_margin'] * share
-        c_price = max(p['default_price'] - disc, p['cost'])
-        saved = p['face_value'] - c_price
-        pct = (saved / p['face_value'] * 100.0) if p['face_value'] > 0 else 0
-
-        enriched.append({
-            **p,
-            'client_price': c_price,
-            'discount': disc,
-            'margin_pct': pct
-        })
-        merchants.add(p['merchant'])
-
-    products_json = json.dumps(enriched)
+    merchants = sorted({p['merchant'] for p in enriched})
+    categories = sorted({p['category'] for p in enriched})
+    countries = sorted({p['country'] for p in enriched})
+    regions = sorted({p['region'] for p in enriched})
+    currencies = sorted({p['currency'] for p in enriched if p['currency']})
     return render_template('reseller/merchants.html', active_tab='merchants',
-                           profile=profile, products_json=products_json,
-                           merchants=sorted(list(merchants)))
+                           profile=profile, products_json=json.dumps(enriched),
+                           merchants=merchants, categories=categories,
+                           countries=countries, regions=regions, currencies=currencies)
 
 
 @app.route('/reseller/calculator')
 @auth.login_required
 def reseller_calculator():
-    uid = get_active_reseller_uid()
-    prods, profile = models.get_reseller_products(uid)
+    uid, enriched, profile = _reseller_ctx()
     if not profile:
         return redirect(url_for('logout'))
-
-    tier = profile['tier']
-    share = (tier['margin_share_pct'] / 100.0) if tier else 0.20
-
-    enriched = []
-    for p in prods:
-        disc = p['oc_margin'] * share
-        c_price = max(p['default_price'] - disc, p['cost'])
-        saved = p['face_value'] - c_price
-        pct = (saved / p['face_value'] * 100.0) if p['face_value'] > 0 else 0
-
-        enriched.append({
-            **p,
-            'client_price': c_price,
-            'discount': disc,
-            'margin_pct': pct
-        })
-
-    products_json = json.dumps(enriched)
     return render_template('reseller/calculator.html', active_tab='calculator',
-                           profile=profile, products_json=products_json)
+                           profile=profile, products_json=json.dumps(enriched))
 
 
 @app.route('/reseller/recommended')
 @auth.login_required
 def reseller_recommended():
-    uid = get_active_reseller_uid()
-    prods, profile = models.get_reseller_products(uid)
+    uid, enriched, profile = _reseller_ctx()
     if not profile:
         return redirect(url_for('logout'))
 
-    tier = profile['tier']
-    share = (tier['margin_share_pct'] / 100.0) if tier else 0.20
+    # ── Personalized recommendation scoring ──
+    my_countries = set(profile.get('countries') or [])
+    affinity_cats = set(models.CLIENT_TYPE_AFFINITY.get(profile.get('client_type') or '', []))
 
-    enriched = []
-    categories = set()
-    for p in prods:
-        disc = p['oc_margin'] * share
-        c_price = max(p['default_price'] - disc, p['cost'])
-        saved = p['face_value'] - c_price
-        pct = (saved / p['face_value'] * 100.0) if p['face_value'] > 0 else 0
+    def country_match(p):
+        if p['country'] in my_countries:
+            return 1.0
+        if my_countries and any(p['country'].startswith(f"eSIM - {c}") for c in my_countries):
+            return 0.9
+        if p['country'] in ('Global', 'GCC', 'MENA'):
+            return 0.6
+        return 0.0 if my_countries else 0.5
 
-        enriched.append({
-            **p,
-            'client_price': c_price,
-            'discount': disc,
-            'margin_pct': pct
-        })
-        categories.add(p['category'])
+    max_margin = max((p['margin_pct'] for p in enriched), default=1) or 1
+    for p in enriched:
+        score = 0.40 * (p['popularity'] / 100.0)
+        score += 0.25 * (p['margin_pct'] / max_margin)
+        score += 0.20 * country_match(p)
+        score += 0.10 * (1.0 if p['category'] in affinity_cats else 0.0)
+        score += 0.05 * (1.0 if p.get('is_new') else 0.0)
+        p['rec_score'] = round(score, 4)
+        reasons = []
+        if p['popularity'] > 80: reasons.append('Top seller')
+        if p['category'] in affinity_cats: reasons.append(f"Popular with {profile.get('client_type') or 'similar clients'}")
+        if p['country'] in my_countries: reasons.append('Your market')
+        if p['margin_pct'] >= max_margin * 0.6: reasons.append('High margin')
+        if p.get('is_new'): reasons.append('New')
+        p['rec_reasons'] = reasons[:3]
 
-    # Default sort by margin % descending
-    enriched.sort(key=lambda x: -x['margin_pct'])
+    enriched.sort(key=lambda x: -x['rec_score'])
+    top_for_type = [p for p in enriched if p['category'] in affinity_cats][:12] if affinity_cats else []
+    top_markets = [p for p in enriched if country_match(p) >= 0.9][:12] if my_countries else []
+    categories = sorted({p['category'] for p in enriched})
 
-    products_json = json.dumps(enriched)
     return render_template('reseller/recommended.html', active_tab='recommended',
-                           profile=profile, products_json=products_json,
-                           categories=sorted(list(categories)))
+                           profile=profile, products_json=json.dumps(enriched[:200]),
+                           top_for_type=top_for_type, top_markets=top_markets,
+                           categories=categories)
+
+
+# ── Reseller: Forecast (pre-contract purchase intent) ────────────
+
+@app.route('/reseller/forecast', methods=['GET', 'POST'])
+@auth.login_required
+def reseller_forecast():
+    uid, enriched, profile = _reseller_ctx()
+    if not profile:
+        return redirect(url_for('logout'))
+
+    if request.method == 'POST':
+        if block_in_preview():
+            return redirect(url_for('reseller_forecast'))
+        try:
+            items = json.loads(request.form.get('items_json') or '[]')
+        except json.JSONDecodeError:
+            items = []
+        note = request.form.get('note', '')
+        clean = []
+        by_id = {p['id']: p for p in enriched}
+        for it in items:
+            if it.get('type') == 'merchant' and it.get('merchant') and float(it.get('value') or 0) > 0:
+                clean.append({'item_type': 'merchant', 'merchant': it['merchant'],
+                              'est_value': float(it['value'])})
+            elif it.get('type') == 'product' and it.get('product_id') in by_id:
+                p = by_id[it['product_id']]
+                qty = int(it.get('quantity') or 0)
+                if qty > 0:
+                    clean.append({'item_type': 'product', 'merchant': p['merchant'],
+                                  'product_rowid': p['id'], 'product_name': p['product_name'],
+                                  'quantity': qty, 'est_value': qty * p['client_price']})
+        if not clean:
+            flash("Add at least one merchant or product to your plan.", "error")
+        else:
+            fid = models.create_forecast(profile['id'], note, clean)
+            total = sum(i['est_value'] for i in clean)
+            models.notify(profile['registered_by'],
+                          "New purchase forecast received 📋",
+                          f"{profile['company_name']} submitted a purchase plan worth "
+                          f"{total:,.0f} SAR ({len(clean)} items).", f"/sales/forecasts/{fid}")
+            flash("Your purchase plan was submitted to your account manager. "
+                  "They will contact you to finalize the contract.", "success")
+            return redirect(url_for('reseller_forecast'))
+
+    merchants_data = {}
+    for p in enriched:
+        m = merchants_data.setdefault(p['merchant'], {'merchant': p['merchant'], 'count': 0,
+                                                      'avg_margin': 0, 'currency': p['currency']})
+        m['count'] += 1
+        m['avg_margin'] += p['margin_pct']
+    for m in merchants_data.values():
+        m['avg_margin'] = round(m['avg_margin'] / m['count'], 1)
+
+    my_forecasts = models.get_reseller_forecasts(profile['id'])
+    return render_template('reseller/forecast.html', active_tab='forecast',
+                           profile=profile,
+                           products_json=json.dumps(enriched),
+                           merchants_json=json.dumps(sorted(merchants_data.values(),
+                                                            key=lambda x: x['merchant'])),
+                           my_forecasts=my_forecasts)
+
+
+# ── Reseller: Orders (post-contract) ─────────────────────────────
+
+@app.route('/reseller/orders', methods=['GET', 'POST'])
+@auth.login_required
+def reseller_orders():
+    uid, enriched, profile = _reseller_ctx()
+    if not profile:
+        return redirect(url_for('logout'))
+
+    if profile['contract_status'] != 'contracted':
+        return render_template('reseller/orders_locked.html', active_tab='orders', profile=profile)
+
+    if request.method == 'POST':
+        if block_in_preview():
+            return redirect(url_for('reseller_orders'))
+        try:
+            items = json.loads(request.form.get('items_json') or '[]')
+        except json.JSONDecodeError:
+            items = []
+        by_id = {p['id']: p for p in enriched}
+        order_items = []
+        for it in items:
+            p = by_id.get(it.get('product_id'))
+            qty = int(it.get('quantity') or 0)
+            if p and qty > 0:
+                order_items.append({'product_rowid': p['id'], 'product_name': p['product_name'],
+                                    'merchant': p['merchant'], 'category': p['category'],
+                                    'currency': p['currency'], 'quantity': qty,
+                                    'unit_price': p['client_price'], 'unit_face': p['face_value']})
+        if not order_items:
+            flash("Your order is empty.", "error")
+        else:
+            oid, err = models.create_order(profile['id'], order_items)
+            if err:
+                flash(err, "error")
+            else:
+                total = sum(i['unit_price'] * i['quantity'] for i in order_items)
+                models.notify(profile['registered_by'], "New order placed 🛒",
+                              f"{profile['company_name']} placed order #{oid} worth {total:,.0f} SAR.",
+                              "/sales/resellers")
+                flash(f"Order #{oid} placed successfully — {total:,.0f} SAR deducted from your wallet.", "success")
+                return redirect(url_for('reseller_orders'))
+
+    forecast_by_merchant = models.get_latest_forecast_merchant_values(profile['id'])
+    actual_by_merchant = models.get_month_orders_by_merchant(profile['id'])
+    comparison = []
+    for m in sorted(set(list(forecast_by_merchant) + list(actual_by_merchant))):
+        comparison.append({'merchant': m,
+                           'forecast': forecast_by_merchant.get(m, 0),
+                           'actual': actual_by_merchant.get(m, 0)})
+    orders = models.get_orders(profile['id'])
+    for o in orders:
+        o['items'] = models.get_order_items(o['id'])
+
+    return render_template('reseller/orders.html', active_tab='orders',
+                           profile=profile, products_json=json.dumps(enriched),
+                           orders=orders, comparison=comparison)
+
+
+# ── Reseller: Wallet ─────────────────────────────────────────────
+
+@app.route('/reseller/wallet', methods=['GET', 'POST'])
+@auth.login_required
+def reseller_wallet():
+    uid, _, profile = _reseller_ctx()
+    if not profile:
+        return redirect(url_for('logout'))
+
+    if request.method == 'POST':
+        if block_in_preview():
+            return redirect(url_for('reseller_wallet'))
+        amount = float(request.form.get('amount') or 0)
+        bank_ref = request.form.get('bank_reference', '').strip()
+        note = request.form.get('note', '')
+        file = request.files.get('receipt')
+
+        if amount <= 0:
+            flash("Enter a valid transfer amount.", "error")
+        elif not file or not file.filename:
+            flash("Please attach the bank transfer receipt.", "error")
+        else:
+            ext = os.path.splitext(file.filename)[1].lower()
+            if ext not in ALLOWED_RECEIPT_EXT:
+                flash("Receipt must be an image (PNG/JPG/WEBP) or PDF.", "error")
+            else:
+                fname = f"r{profile['id']}_{uuid.uuid4().hex[:12]}{ext}"
+                file.save(os.path.join(UPLOAD_DIR, fname))
+                txn_id = models.create_topup_request(profile['id'], amount, bank_ref, fname, note)
+                models.notify(models.get_user_ids_by_role('finance'),
+                              "New wallet top-up to verify 🧾",
+                              f"{profile['company_name']} uploaded a transfer receipt for "
+                              f"{amount:,.0f} SAR (ref: {bank_ref or '—'}).", "/finance")
+                flash("Receipt uploaded. The finance team will verify your transfer and "
+                      "credit your wallet.", "success")
+                return redirect(url_for('reseller_wallet'))
+
+    transactions = models.get_wallet_transactions(profile['id'])
+    pending_total = sum(t['amount'] for t in transactions
+                        if t['type'] == 'topup' and t['status'] == 'pending')
+    return render_template('reseller/wallet.html', active_tab='wallet',
+                           profile=profile, transactions=transactions,
+                           pending_total=pending_total)
+
+
+# ── Reseller: Analysis ───────────────────────────────────────────
+
+@app.route('/reseller/analysis')
+@auth.login_required
+def reseller_analysis():
+    uid, enriched, profile = _reseller_ctx()
+    if not profile:
+        return redirect(url_for('logout'))
+    data = models.get_reseller_analysis(profile['id'])
+
+    insights = []
+    t = data['totals']
+    if t['orders'] > 0:
+        savings_pct = (t['savings'] / t['face'] * 100) if t['face'] else 0
+        insights.append(f"You purchased {t['face']:,.0f} SAR of face value for {t['spend']:,.0f} SAR — "
+                        f"a total gain of {t['savings']:,.0f} SAR ({savings_pct:.1f}%).")
+        if data['by_merchant']:
+            top = data['by_merchant'][0]
+            share = top['spend'] / t['spend'] * 100 if t['spend'] else 0
+            insights.append(f"'{top['merchant']}' is your biggest merchant: {share:.0f}% of your spend.")
+            if share > 60:
+                insights.append("Consider diversifying across more merchants to reduce concentration risk.")
+        if data['by_category']:
+            catset = {c['category'] for c in data['by_category']}
+            affinity = set(models.CLIENT_TYPE_AFFINITY.get(profile.get('client_type') or '', []))
+            missing = affinity - catset
+            if missing:
+                insights.append("Untapped categories that perform well for similar businesses: "
+                                + ", ".join(sorted(missing)) + ".")
+    if profile['contract_status'] == 'contracted' and profile['expected_monthly_sales']:
+        ym = datetime.now().strftime('%Y-%m')
+        this_month = models.get_month_total_orders(profile['id'], ym)
+        pct = this_month / profile['expected_monthly_sales'] * 100
+        insights.append(f"This month you've ordered {this_month:,.0f} SAR of your "
+                        f"{profile['expected_monthly_sales']:,.0f} SAR monthly commitment ({pct:.0f}%).")
+
+    return render_template('reseller/analysis.html', active_tab='analysis',
+                           profile=profile, data=data, insights=insights)
 
 
 # ── Run ──────────────────────────────────────────────────────────

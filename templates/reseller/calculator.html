@@ -1,33 +1,21 @@
 {% extends "base.html" %}
 {% block title %}Profit Calculator — {{ profile.company_name }}{% endblock %}
-{% block sidebar %}
-<div class="nav-section">My Catalogue</div>
-<a href="/reseller" class="nav-item"><span class="icon">🏠</span>Home</a>
-<a href="/reseller/products" class="nav-item"><span class="icon">📦</span>Products</a>
-<a href="/reseller/merchants" class="nav-item"><span class="icon">🏪</span>By Merchant</a>
-<a href="/reseller/calculator" class="nav-item active"><span class="icon">🧮</span>Profit Calculator</a>
-<a href="/reseller/recommended" class="nav-item"><span class="icon">⭐</span>Recommended</a>
-{% endblock %}
 
 {% block content %}
 <div class="page-header">
     <div>
         <h1 class="page-title">🧮 Profit Calculator</h1>
-        <p class="page-subtitle">Calculate expected profit and net investment at any scale</p>
+        <p class="page-subtitle">Build a basket of products and merchants — see your combined investment and profit</p>
     </div>
 </div>
 
-<!-- Calculator Mode Toggle -->
-<div style="display:flex;gap:12px;margin-bottom:20px;border-bottom:1px solid var(--border);padding-bottom:12px">
-    <button class="btn btn-sm btn-primary" id="btnProductCalc" onclick="switchCalcMode('product')">📦 Product Calculator</button>
-    <button class="btn btn-sm btn-ghost" id="btnMerchantCalc" onclick="switchCalcMode('merchant')">🏪 Merchant Calculator</button>
-</div>
-
-<!-- Mode 1: Product Calculator -->
-<div id="productCalcContainer" class="fade-in">
-    <div class="card mb-24">
-        <div class="form-row">
-            <div class="form-group" style="flex:2">
+<div class="grid-2" style="align-items:start">
+    <!-- LEFT: pickers -->
+    <div>
+        <!-- Add product -->
+        <div class="card mb-24">
+            <div class="card-header"><div class="card-title">📦 Add Product</div></div>
+            <div class="form-group">
                 <label class="form-label">Search Product</label>
                 <div class="search-box" style="width:100%">
                     <span class="search-icon">🔍</span>
@@ -35,55 +23,55 @@
                     <div class="search-suggestions" id="suggestions"></div>
                 </div>
             </div>
-            <div class="form-group" style="flex:1">
-                <label class="form-label">Quantity</label>
-                <input type="number" id="quantity" value="1" min="1" step="1" oninput="updateCalc()">
+            <div class="form-row">
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Quantity</label>
+                    <input type="number" id="prodQty" value="1" min="1" step="1">
+                </div>
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Your Selling Price (optional)</label>
+                    <input type="number" id="prodSellPrice" placeholder="default: face value" step="1">
+                </div>
             </div>
-            <div class="form-group" style="flex:1">
-                <label class="form-label">Your Selling Price (optional)</label>
-                <input type="number" id="sellingPrice" placeholder="e.g. face value" step="0.01" oninput="updateCalc()">
-                <div class="form-hint">Leave empty to use Face Value</div>
-            </div>
+            <button class="btn btn-primary" onclick="addProduct()" style="width:100%;justify-content:center">➕ Add Product to Basket</button>
         </div>
-    </div>
 
-    <div id="calcResult" style="display:none">
-        <div class="card mb-24" id="productInfo"></div>
-        <div class="calc-result" id="calcGrid"></div>
-    </div>
-</div>
-
-<!-- Mode 2: Merchant Calculator (Volume-based) -->
-<div id="merchantCalcContainer" class="hidden fade-in">
-    <div class="card mb-24">
-        <div class="form-row">
-            <div class="form-group" style="flex:2">
-                <label class="form-label">Select Merchant</label>
-                <select id="calcMerchantSelect" onchange="updateMerchantCalc()">
+        <!-- Add merchant volume -->
+        <div class="card">
+            <div class="card-header"><div class="card-title">🏪 Add Merchant (volume-based)</div></div>
+            <div class="form-group">
+                <label class="form-label">Merchant</label>
+                <select id="calcMerchantSelect">
                     <option value="">-- Choose Merchant --</option>
                 </select>
             </div>
-            <div class="form-group" style="flex:1">
-                <label class="form-label">Expected Monthly Volume</label>
-                <input type="number" id="merchSalesVolume" value="100000" min="1" step="1000" oninput="updateMerchantCalc()">
-                <div class="form-hint">Expected reseller volume purchase value</div>
+            <div class="form-group">
+                <label class="form-label">Expected Purchase Volume</label>
+                <input type="number" id="merchVolume" value="100000" min="1" step="1000">
+                <div class="form-hint">Total face value you plan to buy from this merchant</div>
             </div>
+            <button class="btn btn-primary" onclick="addMerchant()" style="width:100%;justify-content:center">➕ Add Merchant to Basket</button>
         </div>
     </div>
 
-    <div id="merchCalcResult" style="display:none" class="card">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:12px">
-            <div>
-                <div id="merchCalcName" style="font-size:18px;font-weight:700">PlayStation USA</div>
-                <div id="merchCalcInfo" class="text-muted" style="font-size:13px;margin-top:4px">Telecom & Recharge · USD</div>
+    <!-- RIGHT: basket + totals -->
+    <div>
+        <div class="table-card mb-24">
+            <div class="table-header">
+                <div class="table-title">🧺 Your Basket (<span id="basketCount">0</span>)</div>
+                <button class="btn btn-sm btn-ghost" onclick="clearBasket()">🗑️ Clear</button>
             </div>
-            <div style="text-align:right">
-                <div style="font-size:11px;color:var(--text-3)">Average Account Discount</div>
-                <div id="merchCalcDiscountRate" style="font-size:24px;font-weight:800;color:var(--success)">5.2%</div>
+            <div class="table-scroll">
+                <table>
+                    <thead><tr><th>Item</th><th>Qty / Volume</th><th>Investment</th><th>Profit</th><th></th></tr></thead>
+                    <tbody id="basketBody">
+                        <tr><td colspan="5" style="text-align:center;padding:30px;color:var(--text-3)">Basket is empty — add products or merchants</td></tr>
+                    </tbody>
+                </table>
             </div>
         </div>
-        
-        <div class="calc-result" id="merchCalcGrid"></div>
+
+        <div id="totalsCards" class="calc-result"></div>
     </div>
 </div>
 {% endblock %}
@@ -92,170 +80,138 @@
 <script>
 const products = {{ products_json|safe }};
 const tierColor = '{{ profile.tier.color if profile.tier else "#6366f1" }}';
-let selectedProduct = null;
-let selectedMode = 'product';
+let basket = [];   // {kind:'product'|'merchant', label, currency, qty, investment, revenue, profit}
+let pickedProduct = null;
 let merchantsList = [];
 
-function switchCalcMode(mode) {
-    selectedMode = mode;
-    if (mode === 'product') {
-        document.getElementById('productCalcContainer').classList.remove('hidden');
-        document.getElementById('merchantCalcContainer').classList.add('hidden');
-        document.getElementById('btnProductCalc').className = 'btn btn-sm btn-primary';
-        document.getElementById('btnMerchantCalc').className = 'btn btn-sm btn-ghost';
-    } else {
-        document.getElementById('productCalcContainer').classList.add('hidden');
-        document.getElementById('merchantCalcContainer').classList.remove('hidden');
-        document.getElementById('btnProductCalc').className = 'btn btn-sm btn-ghost';
-        document.getElementById('btnMerchantCalc').className = 'btn btn-sm btn-primary';
-        populateMerchantsDropdown();
-    }
-}
+// ── Merchant dropdown ──
+(function () {
+    const map = {};
+    products.forEach(p => {
+        if (!map[p.merchant]) map[p.merchant] = { name: p.merchant, currency: p.currency || 'SAR', category: p.category, totalMargin: 0, count: 0 };
+        map[p.merchant].totalMargin += p.margin_pct || 0;
+        map[p.merchant].count++;
+    });
+    merchantsList = Object.values(map).map(m => { m.avgMargin = m.totalMargin / m.count; return m; })
+        .sort((a, b) => a.name.localeCompare(b.name));
+    const select = document.getElementById('calcMerchantSelect');
+    merchantsList.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m.name;
+        opt.textContent = `${m.name} (avg margin ${m.avgMargin.toFixed(1)}%)`;
+        select.appendChild(opt);
+    });
+})();
 
-// ── Product Calculator ──
-
+// ── Product search ──
 function searchProducts() {
     const q = document.getElementById('calcSearch').value.toLowerCase();
     const sugg = document.getElementById('suggestions');
     if (q.length < 2) { sugg.classList.remove('show'); return; }
-    const matches = products.filter(p => p.product_name.toLowerCase().includes(q)).slice(0, 10);
+    const matches = products.filter(p => p.product_name.toLowerCase().includes(q) || p.merchant.toLowerCase().includes(q)).slice(0, 10);
     if (!matches.length) { sugg.classList.remove('show'); return; }
-    sugg.innerHTML = matches.map((p, i) => `<div class="sugg-item" onclick="selectProduct(${i})">${esc(p.product_name)} <span class="text-muted" style="font-size:11px">· ${esc(p.merchant)}</span></div>`).join('');
+    sugg.innerHTML = matches.map((p, i) => `<div class="sugg-item" onclick="pickProduct(${i})">${esc(p.product_name)} <span class="text-muted" style="font-size:11px">· ${esc(p.merchant)} · ${fmt(p.client_price)} ${esc(p.currency)}</span></div>`).join('');
     sugg.classList.add('show');
     sugg._matches = matches;
 }
 
-function selectProduct(idx) {
+function pickProduct(idx) {
     const sugg = document.getElementById('suggestions');
-    selectedProduct = sugg._matches[idx];
-    document.getElementById('calcSearch').value = selectedProduct.product_name;
+    pickedProduct = sugg._matches[idx];
+    document.getElementById('calcSearch').value = pickedProduct.product_name;
     sugg.classList.remove('show');
-    updateCalc();
 }
 
-function updateCalc() {
-    if (!selectedProduct) return;
-    const p = selectedProduct;
-    const qty = parseInt(document.getElementById('quantity').value) || 1;
-    const sellPrice = parseFloat(document.getElementById('sellingPrice').value) || p.face_value;
-
-    const totalCost = p.client_price * qty;
-    const totalRevenue = sellPrice * qty;
-    const totalProfit = totalRevenue - totalCost;
-    const profitPerUnit = sellPrice - p.client_price;
-    const profitMargin = sellPrice > 0 ? ((profitPerUnit / sellPrice) * 100) : 0;
-
-    document.getElementById('calcResult').style.display = 'block';
-    document.getElementById('productInfo').innerHTML = `
-        <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-            <div style="flex:1">
-                <div style="font-size:18px;font-weight:700">${esc(p.product_name)}</div>
-                <div class="text-muted" style="font-size:13px;margin-top:4px">${esc(p.merchant)} · ${esc(p.category)} · ${esc(p.country)}</div>
-            </div>
-            <div style="text-align:right">
-                <div style="font-size:11px;color:var(--text-3)">Your Price</div>
-                <div style="font-size:28px;font-weight:800;color:${tierColor}">${fmt(p.client_price)} ${p.currency}</div>
-                <div class="text-s" style="font-size:12px">You save ${fmt(p.discount)} ${p.currency} per unit (${p.margin_pct.toFixed(1)}%)</div>
-            </div>
-        </div>`;
-
-    document.getElementById('calcGrid').innerHTML = `
-        <div class="calc-item">
-            <div class="ci-label">Your Cost / Unit</div>
-            <div class="ci-value" style="color:${tierColor}">${fmt(p.client_price)} ${p.currency}</div>
-        </div>
-        <div class="calc-item">
-            <div class="ci-label">Your Selling Price</div>
-            <div class="ci-value">${fmt(sellPrice)} ${p.currency}</div>
-        </div>
-        <div class="calc-item">
-            <div class="ci-label">Profit / Unit</div>
-            <div class="ci-value ${profitPerUnit > 0 ? 'text-s' : 'text-d'}">${fmt(profitPerUnit)} ${p.currency}</div>
-        </div>
-        <div class="calc-item">
-            <div class="ci-label">Quantity</div>
-            <div class="ci-value">${qty.toLocaleString()}</div>
-        </div>
-        <div class="calc-item">
-            <div class="ci-label">Total Investment</div>
-            <div class="ci-value" style="color:${tierColor}">${fmt(totalCost)} ${p.currency}</div>
-        </div>
-        <div class="calc-item" style="border:2px solid var(--success)">
-            <div class="ci-label">💰 Total Profit</div>
-            <div class="ci-value text-s" style="font-size:28px">${fmt(totalProfit)} ${p.currency}</div>
-            <div class="text-muted" style="font-size:11px;margin-top:4px">${profitMargin.toFixed(1)}% margin</div>
-        </div>`;
-}
-
-// ── Merchant Calculator ──
-
-function populateMerchantsDropdown() {
-    const select = document.getElementById('calcMerchantSelect');
-    if (select.options.length > 1) return; // already populated
-    
-    const map = {};
-    products.forEach(p => {
-        if (!map[p.merchant]) {
-            map[p.merchant] = {
-                name: p.merchant,
-                currency: p.currency || 'SAR',
-                category: p.category,
-                totalMargin: 0,
-                count: 0
-            };
-        }
-        map[p.merchant].totalMargin += p.margin_pct || 0;
-        map[p.merchant].count++;
+function addProduct() {
+    if (!pickedProduct) { alert('Search and select a product first.'); return; }
+    const qty = parseInt(document.getElementById('prodQty').value) || 1;
+    const sellPrice = parseFloat(document.getElementById('prodSellPrice').value) || pickedProduct.face_value;
+    const investment = pickedProduct.client_price * qty;
+    const revenue = sellPrice * qty;
+    basket.push({
+        kind: 'product',
+        label: pickedProduct.product_name,
+        sub: pickedProduct.merchant,
+        currency: pickedProduct.currency || 'SAR',
+        qty: qty,
+        investment: investment,
+        revenue: revenue,
+        profit: revenue - investment
     });
-    
-    merchantsList = Object.values(map).map(m => {
-        m.avgMargin = m.totalMargin / m.count;
-        return m;
-    }).sort((a, b) => a.name.localeCompare(b.name));
-    
-    merchantsList.forEach(m => {
-        const opt = document.createElement('option');
-        opt.value = m.name;
-        opt.textContent = `${m.name} (${m.currency})`;
-        select.appendChild(opt);
-    });
+    pickedProduct = null;
+    document.getElementById('calcSearch').value = '';
+    document.getElementById('prodSellPrice').value = '';
+    renderBasket();
 }
 
-function updateMerchantCalc() {
-    const merchName = document.getElementById('calcMerchantSelect').value;
-    const vol = parseFloat(document.getElementById('merchSalesVolume').value) || 0;
-    const resultDiv = document.getElementById('merchCalcResult');
-    
-    if (!merchName || vol <= 0) {
-        resultDiv.style.display = 'none';
+function addMerchant() {
+    const name = document.getElementById('calcMerchantSelect').value;
+    const vol = parseFloat(document.getElementById('merchVolume').value) || 0;
+    if (!name || vol <= 0) { alert('Choose a merchant and enter a volume.'); return; }
+    const m = merchantsList.find(x => x.name === name);
+    const profit = vol * (m.avgMargin / 100);
+    basket.push({
+        kind: 'merchant',
+        label: m.name,
+        sub: `volume plan · avg margin ${m.avgMargin.toFixed(1)}%`,
+        currency: m.currency || 'SAR',
+        qty: vol,
+        investment: vol - profit,
+        revenue: vol,
+        profit: profit
+    });
+    renderBasket();
+}
+
+function removeItem(i) { basket.splice(i, 1); renderBasket(); }
+function clearBasket() { basket = []; renderBasket(); }
+
+function renderBasket() {
+    document.getElementById('basketCount').textContent = basket.length;
+    const body = document.getElementById('basketBody');
+    if (!basket.length) {
+        body.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:30px;color:var(--text-3)">Basket is empty — add products or merchants</td></tr>';
+        document.getElementById('totalsCards').innerHTML = '';
         return;
     }
-    
-    const m = merchantsList.find(x => x.name === merchName);
-    if (!m) return;
-    
-    const profit = vol * (m.avgMargin / 100.0);
-    const cost = vol - profit;
-    
-    resultDiv.style.display = 'block';
-    document.getElementById('merchCalcName').textContent = m.name;
-    document.getElementById('merchCalcInfo').textContent = `${m.category} · base currency: ${m.currency}`;
-    document.getElementById('merchCalcDiscountRate').textContent = `${m.avgMargin.toFixed(1)}%`;
-    
-    document.getElementById('merchCalcGrid').innerHTML = `
+    body.innerHTML = basket.map((b, i) => `
+        <tr>
+            <td>
+                <div class="fw6 truncate" style="max-width:200px" title="${esc(b.label)}">${b.kind === 'product' ? '📦' : '🏪'} ${esc(b.label)}</div>
+                <div class="text-muted" style="font-size:11px">${esc(b.sub)}</div>
+            </td>
+            <td class="fw6">${fmt(b.qty)}</td>
+            <td class="fw6" style="color:${tierColor}">${fmt(b.investment)} ${esc(b.currency)}</td>
+            <td class="fw6 ${b.profit >= 0 ? 'text-s' : 'text-d'}">${fmt(b.profit)} ${esc(b.currency)}</td>
+            <td><button class="btn btn-sm btn-ghost" onclick="removeItem(${i})">✕</button></td>
+        </tr>`).join('');
+
+    // Totals grouped by currency
+    const byCurr = {};
+    basket.forEach(b => {
+        const c = b.currency || 'SAR';
+        if (!byCurr[c]) byCurr[c] = { investment: 0, revenue: 0, profit: 0 };
+        byCurr[c].investment += b.investment;
+        byCurr[c].revenue += b.revenue;
+        byCurr[c].profit += b.profit;
+    });
+    document.getElementById('totalsCards').innerHTML = Object.entries(byCurr).map(([c, t]) => {
+        const marginPct = t.revenue > 0 ? (t.profit / t.revenue * 100) : 0;
+        return `
         <div class="calc-item">
-            <div class="ci-label">Target Volume</div>
-            <div class="ci-value">${fmt(vol)} ${m.currency}</div>
+            <div class="ci-label">Total Investment (${esc(c)})</div>
+            <div class="ci-value" style="color:${tierColor}">${fmt(t.investment)}</div>
         </div>
         <div class="calc-item">
-            <div class="ci-label">Net Cost / Investment</div>
-            <div class="ci-value text-accent">${fmt(cost)} ${m.currency}</div>
+            <div class="ci-label">Expected Revenue (${esc(c)})</div>
+            <div class="ci-value">${fmt(t.revenue)}</div>
         </div>
         <div class="calc-item" style="border:2px solid var(--success)">
-            <div class="ci-label">💰 Expected Profit / Savings</div>
-            <div class="ci-value text-s" style="font-size:28px">${fmt(profit)} ${m.currency}</div>
-            <div class="text-muted" style="font-size:11px;margin-top:4px">Based on active rate plan</div>
+            <div class="ci-label">💰 Total Profit (${esc(c)})</div>
+            <div class="ci-value text-s" style="font-size:26px">${fmt(t.profit)}</div>
+            <div class="text-muted" style="font-size:11px;margin-top:4px">${marginPct.toFixed(1)}% margin</div>
         </div>`;
+    }).join('');
 }
 
 document.addEventListener('click', e => { if (!e.target.closest('.search-box')) document.getElementById('suggestions').classList.remove('show'); });

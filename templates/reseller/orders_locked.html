@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Orders — {{ profile.company_name }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">🛒 Orders</h1>
+        <p class="page-subtitle">Place orders directly from your wallet balance</p>
+    </div>
+</div>
+
+<div class="card" style="text-align:center;padding:60px 30px">
+    <div style="font-size:52px;margin-bottom:16px">🔒</div>
+    <h2 style="margin-bottom:8px">Ordering unlocks after your contract is signed</h2>
+    <p class="text-muted" style="max-width:520px;margin:0 auto 24px">
+        You're currently in the pre-contract stage. Submit your purchase plan so your account manager
+        can prepare your agreement — once the contract is signed, this page becomes your ordering hub.
+    </p>
+    <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+        <a href="/reseller/forecast" class="btn btn-primary">📋 Submit Purchase Plan</a>
+        <a href="/reseller/products" class="btn btn-ghost">📦 Browse Catalogue</a>
+    </div>
+</div>
+{% endblock %}

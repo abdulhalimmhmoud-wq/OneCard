@@ -1,22 +1,11 @@
 {% extends "base.html" %}
 {% block title %}Products — {{ profile.company_name }}{% endblock %}
-{% block sidebar %}
-<div class="nav-section">My Catalogue</div>
-<a href="/reseller" class="nav-item"><span class="icon">🏠</span>Home</a>
-<a href="/reseller/products" class="nav-item active"><span class="icon">📦</span>Products</a>
-<a href="/reseller/merchants" class="nav-item"><span class="icon">🏪</span>By Merchant</a>
-<a href="/reseller/calculator" class="nav-item"><span class="icon">🧮</span>Profit Calculator</a>
-<a href="/reseller/recommended" class="nav-item"><span class="icon">⭐</span>Recommended</a>
-{% endblock %}
 
 {% block content %}
 <div class="page-header">
     <div>
         <h1 class="page-title">📦 Master Product Catalogue</h1>
         <p class="page-subtitle">{{ products|length }} products available in your catalogue</p>
-    </div>
-    <div class="page-actions">
-        <button class="btn btn-primary" onclick="exportClientCSV()">📥 Export CSV</button>
     </div>
 </div>
 
@@ -27,13 +16,25 @@
             <span class="search-icon">🔍</span>
             <input type="search" id="searchInput" placeholder="Search products or merchants..." oninput="filterTable()">
         </div>
-        <select id="catFilter" class="form-control" style="width:200px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterTable()">
+        <select id="merchantFilter" style="width:180px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterTable()">
+            <option value="">All Merchants</option>
+            {% for m in merchants %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
+        </select>
+        <select id="catFilter" style="width:180px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterTable()">
             <option value="">All Categories</option>
             {% for c in categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
         </select>
-        <select id="merchantFilter" style="width:200px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterTable()">
-            <option value="">All Merchants</option>
-            {% for m in merchants %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
+        <select id="countryFilter" style="width:160px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterTable()">
+            <option value="">All Countries</option>
+            {% for c in countries %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+        </select>
+        <select id="regionFilter" style="width:150px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterTable()">
+            <option value="">All Regions</option>
+            {% for r in regions %}<option value="{{ r }}">{{ r }}</option>{% endfor %}
+        </select>
+        <select id="currencyFilter" style="width:130px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterTable()">
+            <option value="">All Currencies</option>
+            {% for c in currencies %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
         </select>
         <span id="resultCount" class="text-muted" style="font-size:13px"></span>
     </div>
@@ -47,8 +48,8 @@
                 <tr>
                     <th onclick="sortTable(0)">Product ↕</th>
                     <th onclick="sortTable(1)">Merchant ↕</th>
-                    <th onclick="sortTable(2)">Category</th>
-                    <th onclick="sortTable(3)">Country</th>
+                    <th>Category</th>
+                    <th>Country</th>
                     <th>Face Value</th>
                     <th onclick="sortTable(5)">Your Price ↕</th>
                     <th onclick="sortTable(6)">Discount ↕</th>
@@ -79,10 +80,16 @@ function filterTable() {
     const search = document.getElementById('searchInput').value.toLowerCase();
     const cat = document.getElementById('catFilter').value;
     const merch = document.getElementById('merchantFilter').value;
+    const country = document.getElementById('countryFilter').value;
+    const reg = document.getElementById('regionFilter').value;
+    const curr = document.getElementById('currencyFilter').value;
     filtered = allProducts.filter(p => {
         if (search && !p.product_name.toLowerCase().includes(search) && !p.merchant.toLowerCase().includes(search)) return false;
         if (cat && p.category !== cat) return false;
         if (merch && p.merchant !== merch) return false;
+        if (country && p.country !== country) return false;
+        if (reg && p.region !== reg) return false;
+        if (curr && p.currency !== curr) return false;
         return true;
     });
     currentPage = 1;
@@ -110,19 +117,20 @@ function renderTable() {
     document.getElementById('resultCount').textContent = `${filtered.length} products`;
     document.getElementById('tableBody').innerHTML = page.map(p => {
         const popTag = p.popularity > 80 ? '🔥 High' : p.popularity > 50 ? '📈 Medium' : 'Standard';
+        const specialTag = p.has_override ? ' <span class="badge badge-success" title="Special approved rate">★</span>' : '';
         return `<tr>
             <td class="fw6 truncate" title="${esc(p.product_name)}">${esc(p.product_name)}</td>
-            <td class="text-muted truncate" title="${esc(p.merchant)}">${esc(p.merchant)}</td>
+            <td class="text-muted truncate" title="${esc(p.merchant)}">${esc(p.merchant)}${specialTag}</td>
             <td><span class="badge badge-accent">${esc(p.category)}</span></td>
             <td><span class="badge badge-info">${esc(p.country)}</span></td>
-            <td class="fw6">${fmt(p.face_value)} ${p.currency}</td>
-            <td class="fw6" style="color:${tierColor}">${fmt(p.client_price)} ${p.currency}</td>
-            <td class="fw6 text-s">${fmt(p.discount)} ${p.currency}</td>
+            <td class="fw6">${fmt(p.face_value)} ${esc(p.currency)}</td>
+            <td class="fw6" style="color:${tierColor}">${fmt(p.client_price)} ${esc(p.currency)}</td>
+            <td class="fw6 text-s">${fmt(p.discount)} ${esc(p.currency)}</td>
             <td class="fw6 ${p.margin_pct > 3 ? 'text-s' : p.margin_pct > 1 ? 'text-w' : 'text-d'}">${p.margin_pct.toFixed(1)}%</td>
             <td><span class="badge ${p.popularity > 80 ? 'badge-warning' : 'badge-ghost'}">${popTag}</span></td>
         </tr>`;
     }).join('');
-    document.getElementById('pageInfo').textContent = `${start + 1}-${end} of ${filtered.length}`;
+    document.getElementById('pageInfo').textContent = filtered.length ? `${start + 1}-${end} of ${filtered.length}` : '0 results';
     renderPagination();
 }
 
@@ -139,12 +147,6 @@ function renderPagination() {
 }
 
 function goPage(p) { currentPage = p; renderTable(); }
-
-function exportClientCSV() {
-    const headers = ['Product', 'Merchant', 'Category', 'Country', 'Currency', 'Face Value', 'Your Price', 'Discount', 'Margin %', 'Sales Vol Rank'];
-    const rows = filtered.map(p => [p.product_name, p.merchant, p.category, p.country, p.currency, p.face_value, p.client_price, p.discount, p.margin_pct, p.popularity]);
-    downloadCSV(headers, rows, 'my_catalogue.csv');
-}
 
 filterTable();
 </script>

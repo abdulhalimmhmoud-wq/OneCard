@@ -19,12 +19,26 @@
                 <div class="logo-sub">
                     {% if current_user.role == 'admin' %}Admin Panel
                     {% elif current_user.role == 'sales' %}Sales Portal
+                    {% elif current_user.role == 'cco' %}CCO Panel
+                    {% elif current_user.role == 'finance' %}Finance Panel
                     {% else %}Reseller Portal{% endif %}
                 </div>
             </div>
         </div>
         <nav class="sidebar-nav">
-            {% block sidebar %}{% endblock %}
+            {% block sidebar %}
+                {% if is_preview or current_user.role == 'reseller' %}
+                    {% include 'partials/_nav_reseller.html' %}
+                {% elif current_user.role == 'admin' %}
+                    {% include 'partials/_nav_admin.html' %}
+                {% elif current_user.role == 'sales' %}
+                    {% include 'partials/_nav_sales.html' %}
+                {% elif current_user.role == 'cco' %}
+                    {% include 'partials/_nav_cco.html' %}
+                {% elif current_user.role == 'finance' %}
+                    {% include 'partials/_nav_finance.html' %}
+                {% endif %}
+            {% endblock %}
         </nav>
         <div class="sidebar-user">
             <div class="user-avatar">{{ current_user.name[0]|upper }}</div>

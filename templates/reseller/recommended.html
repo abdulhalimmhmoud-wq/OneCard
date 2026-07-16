@@ -1,19 +1,85 @@
 {% extends "base.html" %}
 {% block title %}Recommended — {{ profile.company_name }}{% endblock %}
-{% block sidebar %}
-<div class="nav-section">My Catalogue</div>
-<a href="/reseller" class="nav-item"><span class="icon">🏠</span>Home</a>
-<a href="/reseller/products" class="nav-item"><span class="icon">📦</span>Products</a>
-<a href="/reseller/merchants" class="nav-item"><span class="icon">🏪</span>By Merchant</a>
-<a href="/reseller/calculator" class="nav-item"><span class="icon">🧮</span>Profit Calculator</a>
-<a href="/reseller/recommended" class="nav-item active"><span class="icon">⭐</span>Recommended</a>
-{% endblock %}
 
 {% block content %}
 <div class="page-header">
     <div>
-        <h1 class="page-title">⭐ Recommended Products</h1>
-        <p class="page-subtitle">Products with the highest margins — maximize your profit</p>
+        <h1 class="page-title">⭐ Recommended for {{ profile.company_name }}</h1>
+        <p class="page-subtitle">
+            Personalized picks
+            {% if profile.client_type %} for a <b>{{ profile.client_type }}</b>{% endif %}
+            {% if profile.countries %} operating in <b>{{ profile.countries|join(', ') }}</b>{% endif %}
+            — based on sales volume, your margins, your markets and your business type
+        </p>
+    </div>
+</div>
+
+{% if not profile.client_type and not profile.countries %}
+<div class="card mb-24" style="border:1px dashed var(--warning)">
+    <div style="display:flex;gap:12px;align-items:center">
+        <div style="font-size:24px">💡</div>
+        <div>
+            <div class="fw6">Recommendations can be sharper</div>
+            <div class="text-muted" style="font-size:13px">Ask your account manager to complete your business profile (client type + operating countries) for tailored suggestions.</div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{% if top_for_type %}
+<div class="card mb-24">
+    <div class="card-header">
+        <div class="card-title">🎯 Top Picks for {{ profile.client_type }}s</div>
+        <span class="badge badge-accent">Best sellers in your business segment</span>
+    </div>
+    <div class="table-scroll">
+        <table>
+            <thead><tr><th>Product</th><th>Merchant</th><th>Category</th><th>Your Price</th><th>Margin</th><th>Sales Vol</th></tr></thead>
+            <tbody>
+            {% for p in top_for_type[:8] %}
+            <tr>
+                <td class="fw6 truncate" style="max-width:220px" title="{{ p.product_name }}">{{ p.product_name }}</td>
+                <td class="text-muted truncate" style="max-width:120px">{{ p.merchant }}</td>
+                <td><span class="badge badge-accent">{{ p.category }}</span></td>
+                <td class="fw6 text-accent">{{ p.client_price|money }} {{ p.currency }}</td>
+                <td class="fw6 text-s">{{ p.margin_pct }}%</td>
+                <td><span class="badge {{ 'badge-warning' if p.popularity > 80 else 'badge-ghost' }}">{{ '🔥 High' if p.popularity > 80 else ('📈 Medium' if p.popularity > 50 else 'Standard') }}</span></td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+{% if top_markets %}
+<div class="card mb-24">
+    <div class="card-header">
+        <div class="card-title">🌍 Strong in Your Markets</div>
+        <span class="badge badge-info">{{ profile.countries|join(' · ') }}</span>
+    </div>
+    <div class="table-scroll">
+        <table>
+            <thead><tr><th>Product</th><th>Merchant</th><th>Country</th><th>Your Price</th><th>Margin</th></tr></thead>
+            <tbody>
+            {% for p in top_markets[:8] %}
+            <tr>
+                <td class="fw6 truncate" style="max-width:220px" title="{{ p.product_name }}">{{ p.product_name }}</td>
+                <td class="text-muted truncate" style="max-width:120px">{{ p.merchant }}</td>
+                <td><span class="badge badge-info">{{ p.country }}</span></td>
+                <td class="fw6 text-accent">{{ p.client_price|money }} {{ p.currency }}</td>
+                <td class="fw6 text-s">{{ p.margin_pct }}%</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<div class="page-header mt-24">
+    <div>
+        <h2 class="page-title" style="font-size:18px">🏆 All Recommendations (ranked for you)</h2>
     </div>
 </div>
 
@@ -24,6 +90,7 @@
             {% for c in categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
         </select>
         <select id="recSort" style="padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterRec()">
+            <option value="score">Best Match for You</option>
             <option value="margin">Highest Margin %</option>
             <option value="popularity">Highest Sales Volume</option>
             <option value="discount">Highest Discount</option>
@@ -47,6 +114,7 @@ function filterRec() {
     let list = cat ? products.filter(p => p.category === cat) : [...products];
 
     switch (sort) {
+        case 'score': list.sort((a, b) => b.rec_score - a.rec_score); break;
         case 'margin': list.sort((a, b) => b.margin_pct - a.margin_pct); break;
         case 'popularity': list.sort((a, b) => b.popularity - a.popularity); break;
         case 'discount': list.sort((a, b) => b.discount - a.discount); break;
@@ -56,25 +124,26 @@ function filterRec() {
 
     document.getElementById('recGrid').innerHTML = list.slice(0, 60).map((p, i) => `
         <div class="product-card" style="position:relative">
-            ${i < 3 ? '<div style="position:absolute;top:10px;right:10px;background:linear-gradient(135deg,var(--warning),#f97316);color:#000;padding:3px 10px;border-radius:100px;font-size:10px;font-weight:700">🔥 TOP ${i + 1}</div>' : ''}
+            ${i < 3 && sort === 'score' ? '<div style="position:absolute;top:10px;right:10px;background:linear-gradient(135deg,var(--warning),#f97316);color:#000;padding:3px 10px;border-radius:100px;font-size:10px;font-weight:700">🔥 TOP ' + (i + 1) + '</div>' : ''}
             <div class="pc-name">${esc(p.product_name)}</div>
             <div class="pc-merchant">${esc(p.merchant)} · ${esc(p.category)}</div>
-            <div style="display:flex;gap:4px;margin-top:6px">
+            <div style="display:flex;gap:4px;margin-top:6px;flex-wrap:wrap">
                 <span class="badge badge-info">${esc(p.country)}</span>
-                <span class="badge badge-accent">${p.currency}</span>
+                <span class="badge badge-accent">${esc(p.currency)}</span>
+                ${(p.rec_reasons || []).map(r => `<span class="badge badge-success" style="font-size:10px">${esc(r)}</span>`).join('')}
             </div>
             <div class="pc-prices">
                 <div>
                     <div class="pc-price-label">Your Price</div>
-                    <div class="pc-price-value" style="color:${tierColor}">${fmt(p.client_price)} ${p.currency}</div>
+                    <div class="pc-price-value" style="color:${tierColor}">${fmt(p.client_price)} ${esc(p.currency)}</div>
                 </div>
                 <div>
                     <div class="pc-price-label">Face Value</div>
-                    <div class="pc-price-value">${fmt(p.face_value)} ${p.currency}</div>
+                    <div class="pc-price-value">${fmt(p.face_value)} ${esc(p.currency)}</div>
                 </div>
                 <div>
                     <div class="pc-price-label">Your Discount</div>
-                    <div class="pc-price-value text-s">${fmt(p.discount)} ${p.currency}</div>
+                    <div class="pc-price-value text-s">${fmt(p.discount)} ${esc(p.currency)}</div>
                 </div>
                 <div>
                     <div class="pc-price-label">Margin</div>

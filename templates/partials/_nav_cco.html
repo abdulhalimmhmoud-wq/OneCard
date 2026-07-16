@@ -1,0 +1,6 @@
+<div class="nav-section">Commercial</div>
+<a href="/cco" class="nav-item {{ 'active' if active_tab == 'cco' }}"><span class="icon">🎯</span>Discount Approvals</a>
+<div class="nav-section">Account</div>
+<a href="/notifications" class="nav-item {{ 'active' if active_tab == 'notifications' }}"><span class="icon">🔔</span>Notifications
+    {% if unread_notifications %}<span class="badge badge-danger" style="margin-left:auto">{{ unread_notifications }}</span>{% endif %}
+</a>

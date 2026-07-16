@@ -1,20 +1,11 @@
 {% extends "base.html" %}
 {% block title %}Manage Users — OneCard Admin{% endblock %}
-{% block sidebar %}
-<div class="nav-section">Management</div>
-<a href="/admin" class="nav-item"><span class="icon">📊</span>Dashboard</a>
-<a href="/admin/tiers" class="nav-item"><span class="icon">🎖️</span>Tier Rules</a>
-<a href="/admin/catalogue" class="nav-item"><span class="icon">📦</span>Product Catalogue</a>
-<a href="/admin/resellers" class="nav-item"><span class="icon">👥</span>All Resellers</a>
-<div class="nav-section">Settings</div>
-<a href="/admin/users" class="nav-item active"><span class="icon">⚙️</span>Manage Users</a>
-{% endblock %}
 
 {% block content %}
 <div class="page-header">
     <div>
         <h1 class="page-title">⚙️ Manage Users</h1>
-        <p class="page-subtitle">Create admin and sales manager accounts</p>
+        <p class="page-subtitle">Create accounts for every internal role — Admin, Sales, CCO and Finance</p>
     </div>
 </div>
 
@@ -38,8 +29,11 @@
                 <label class="form-label">Role</label>
                 <select name="role" required>
                     <option value="sales">Sales Manager</option>
-                    <option value="admin">Admin</option>
+                    <option value="admin">Admin (BD Manager)</option>
+                    <option value="cco">CCO — approves special discounts</option>
+                    <option value="finance">Finance — verifies wallet top-ups</option>
                 </select>
+                <div class="form-hint">Reseller accounts are created by Sales Managers from the Sales Portal.</div>
             </div>
             <button type="submit" class="btn btn-primary">Create User</button>
         </form>
@@ -54,7 +48,13 @@
             <tr>
                 <td class="fw6">{{ u.name }}</td>
                 <td class="text-muted">{{ u.email }}</td>
-                <td><span class="badge {{ 'badge-accent' if u.role == 'admin' else 'badge-info' if u.role == 'sales' else 'badge-success' }}">{{ u.role }}</span></td>
+                <td>
+                    {% if u.role == 'admin' %}<span class="badge badge-accent">Admin</span>
+                    {% elif u.role == 'sales' %}<span class="badge badge-info">Sales</span>
+                    {% elif u.role == 'cco' %}<span class="badge badge-warning">CCO</span>
+                    {% elif u.role == 'finance' %}<span class="badge badge-danger">Finance</span>
+                    {% else %}<span class="badge badge-success">Reseller</span>{% endif %}
+                </td>
             </tr>
             {% endfor %}
             </tbody>

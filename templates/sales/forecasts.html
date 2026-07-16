@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Purchase Forecasts — OneCard Sales{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">📋 Purchase Forecasts</h1>
+        <p class="page-subtitle">Purchase plans submitted by resellers before contract signing</p>
+    </div>
+</div>
+
+<div class="table-card">
+    <div class="table-scroll">
+        <table>
+            <thead>
+                <tr>
+                    <th>Reseller</th>
+                    <th>Contract</th>
+                    <th>Items</th>
+                    <th>Estimated Value</th>
+                    <th>Submitted</th>
+                    <th>Status</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for f in forecasts %}
+            <tr>
+                <td class="fw6">{{ f.company_name }}
+                    <div class="text-muted" style="font-size:11px">{{ f.contact_name }}</div>
+                </td>
+                <td>
+                    {% if f.contract_status == 'contracted' %}<span class="badge badge-success">Signed</span>
+                    {% else %}<span class="badge badge-warning">Prospect</span>{% endif %}
+                </td>
+                <td>{{ f.item_count }}</td>
+                <td class="fw6 text-accent">SAR {{ f.total_value|money }}</td>
+                <td class="text-muted">{{ f.created_at[:16] }}</td>
+                <td>
+                    {% if f.status == 'submitted' %}<span class="badge badge-warning">🆕 New</span>
+                    {% else %}<span class="badge badge-success">Reviewed</span>{% endif %}
+                </td>
+                <td><a href="/sales/forecasts/{{ f.id }}" class="btn btn-sm btn-primary">Open →</a></td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text-3)">
+                No purchase forecasts submitted yet.<br>
+                <span style="font-size:12px">Resellers submit purchase plans from their portal → Purchase Plan page.</span>
+            </td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

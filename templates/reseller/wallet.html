@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Wallet — {{ profile.company_name }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">👛 My Wallet</h1>
+        <p class="page-subtitle">Transfer to OneCard's bank account, upload the receipt, and the finance team credits your wallet after verification</p>
+    </div>
+</div>
+
+<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr))">
+    <div class="stat-card" style="border:2px solid var(--success)">
+        <div class="stat-icon">💰</div>
+        <div class="stat-value" style="color:var(--success)">SAR {{ profile.wallet_balance|money }}</div>
+        <div class="stat-label">Available Balance</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">⏳</div>
+        <div class="stat-value">SAR {{ pending_total|money }}</div>
+        <div class="stat-label">Pending Verification</div>
+    </div>
+</div>
+
+<div class="grid-2" style="align-items:start">
+    <!-- Top-up form -->
+    <div class="card">
+        <div class="card-header"><div class="card-title">🧾 Report a Bank Transfer</div></div>
+        <form method="POST" action="/reseller/wallet" enctype="multipart/form-data">
+            <div class="form-group">
+                <label class="form-label">Transferred Amount (SAR) *</label>
+                <input type="number" name="amount" required min="1" step="1" placeholder="e.g. 50000">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Bank Transfer Reference</label>
+                <input type="text" name="bank_reference" placeholder="Transaction / SWIFT reference number">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Transfer Receipt *</label>
+                <input type="file" name="receipt" required accept=".png,.jpg,.jpeg,.webp,.pdf"
+                       style="padding:10px;background:var(--bg-2);border:1px dashed var(--border);border-radius:var(--radius-sm);width:100%;color:var(--text-2)">
+                <div class="form-hint">Image (PNG/JPG) or PDF of the transfer confirmation</div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Note (optional)</label>
+                <textarea name="note" placeholder="Anything the finance team should know..." style="height:60px"></textarea>
+            </div>
+            <button type="submit" class="btn btn-primary btn-lg" style="width:100%;justify-content:center">
+                📤 Submit for Verification
+            </button>
+            <div class="form-hint" style="text-align:center;margin-top:8px">
+                The finance team is notified instantly. Funds appear in your wallet once approved.
+            </div>
+        </form>
+    </div>
+
+    <!-- Transaction history -->
+    <div class="table-card">
+        <div class="table-header"><div class="table-title">📜 Wallet Activity</div></div>
+        <div class="table-scroll" style="max-height:560px;overflow-y:auto">
+            <table>
+                <thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Status</th></tr></thead>
+                <tbody>
+                {% for t in transactions %}
+                <tr>
+                    <td class="text-muted" style="font-size:12px">{{ t.created_at[:16] }}</td>
+                    <td>
+                        {% if t.type == 'topup' %}<span class="badge badge-info">⬆️ Top-up</span>
+                        {% elif t.type == 'order' %}<span class="badge badge-accent">🛒 Order</span>
+                        {% else %}<span class="badge badge-ghost">Adjustment</span>{% endif %}
+                        {% if t.bank_reference %}<div class="text-muted" style="font-size:10px">ref: {{ t.bank_reference }}</div>{% endif %}
+                        {% if t.note %}<div class="text-muted" style="font-size:10px">{{ t.note }}</div>{% endif %}
+                    </td>
+                    <td class="fw6 {{ 'text-s' if t.amount > 0 else 'text-d' }}">{{ '+' if t.amount > 0 }}{{ t.amount|money }}</td>
+                    <td>
+                        {% if t.status == 'pending' %}<span class="badge badge-warning">⏳ Pending</span>
+                        {% elif t.status == 'approved' %}<span class="badge badge-success">✅ Approved</span>
+                        {% else %}<span class="badge badge-danger">❌ Rejected</span>{% endif %}
+                        {% if t.receipt_file %}<div><a href="/receipts/{{ t.id }}" target="_blank" style="font-size:10px;color:var(--accent)">view receipt</a></div>{% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4" style="text-align:center;padding:30px;color:var(--text-3)">No wallet activity yet</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

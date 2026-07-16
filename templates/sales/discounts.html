@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}Discount Requests — OneCard Sales{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">🎯 Special Discount Requests</h1>
+        <p class="page-subtitle">Request a better margin share on a specific merchant for one of your resellers — approved by the CCO and applied automatically</p>
+    </div>
+</div>
+
+<div class="grid-2">
+    <!-- Request form -->
+    <div class="card">
+        <div class="card-header"><div class="card-title">➕ New Request</div></div>
+        <form method="POST" action="/sales/discounts">
+            <div class="form-group">
+                <label class="form-label">Reseller *</label>
+                <select name="reseller_id" id="drReseller" required onchange="updatePreview()">
+                    <option value="">-- Select reseller --</option>
+                    {% for r in resellers %}
+                    <option value="{{ r.id }}">{{ r.company_name }} ({{ r.tier_name or 'No plan' }})</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Merchant *</label>
+                <select name="merchant" id="drMerchant" required onchange="updatePreview()">
+                    <option value="">-- Select merchant --</option>
+                    {% for m in merchants %}
+                    <option value="{{ m.merchant }}">{{ m.merchant }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-row">
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Requested Margin Share % *</label>
+                    <input type="number" name="requested_share" id="drShare" required min="1" max="95" step="1" placeholder="e.g. 70" oninput="updatePreview()">
+                    <div class="form-hint">Current share: <span id="drCurrentShare">—</span></div>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Current Monthly Sales on this Merchant (SAR) *</label>
+                    <input type="number" name="current_sales" id="drCurSales" required min="0" step="1000" placeholder="e.g. 80000" oninput="updatePreview()">
+                </div>
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Projected Sales if Approved (SAR) *</label>
+                    <input type="number" name="projected_sales" id="drProjSales" required min="0" step="1000" placeholder="e.g. 150000" oninput="updatePreview()">
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Business Justification</label>
+                <textarea name="note" placeholder="Why does this reseller deserve a better rate on this merchant?" style="height:70px"></textarea>
+            </div>
+
+            <!-- Live economics preview for the CCO decision -->
+            <div class="card" style="background:var(--bg-2);border:1px dashed var(--border)">
+                <div style="font-size:13px;font-weight:600;margin-bottom:8px">📊 OneCard Profit Impact (estimate)</div>
+                <div id="drPreview" class="text-muted" style="font-size:13px">Fill the fields to preview profit before/after...</div>
+            </div>
+
+            <button type="submit" class="btn btn-primary btn-lg mt-16" style="width:100%;justify-content:center">
+                📨 Send to CCO for Approval
+            </button>
+        </form>
+    </div>
+
+    <!-- My requests -->
+    <div class="card">
+        <div class="card-header"><div class="card-title">📜 My Requests</div></div>
+        <div class="table-scroll" style="max-height:640px;overflow-y:auto">
+            <table>
+                <thead><tr><th>Reseller / Merchant</th><th>Share</th><th>Status</th></tr></thead>
+                <tbody>
+                {% for d in requests %}
+                <tr>
+                    <td>
+                        <div class="fw6">{{ d.company_name }}</div>
+                        <div class="text-muted" style="font-size:11px">{{ d.merchant }} · {{ d.created_at[:10] }}</div>
+                    </td>
+                    <td class="fw6">{{ d.current_share_pct|round|int }}% → <span class="text-accent">{{ d.requested_share_pct|round|int }}%</span></td>
+                    <td>
+                        {% if d.status == 'pending' %}<span class="badge badge-warning">⏳ Pending</span>
+                        {% elif d.status == 'approved' %}<span class="badge badge-success">✅ Approved</span>
+                        {% else %}<span class="badge badge-danger">❌ Rejected</span>{% endif %}
+                        {% if d.decision_note %}<div class="text-muted" style="font-size:11px;margin-top:4px">{{ d.decision_note }}</div>{% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="3" style="text-align:center;padding:30px;color:var(--text-3)">No requests yet</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const resellersData = {{ resellers_json|safe }};
+const merchantsData = {{ merchants_json|safe }};
+
+function updatePreview() {
+    const rid = parseInt(document.getElementById('drReseller').value);
+    const merch = document.getElementById('drMerchant').value;
+    const reqShare = parseFloat(document.getElementById('drShare').value) || 0;
+    const curSales = parseFloat(document.getElementById('drCurSales').value) || 0;
+    const projSales = parseFloat(document.getElementById('drProjSales').value) || 0;
+
+    const r = resellersData.find(x => x.id === rid);
+    const m = merchantsData.find(x => x.merchant === merch);
+    document.getElementById('drCurrentShare').textContent = r ? `${Math.round(r.share)}% (${r.tier_name} plan)` : '—';
+
+    const box = document.getElementById('drPreview');
+    if (!r || !m || !reqShare || !curSales) {
+        box.innerHTML = 'Fill the fields to preview profit before/after...';
+        return;
+    }
+    const marginRate = (m.avg_margin || 0) / 100;
+    const profitNow = curSales * marginRate * (1 - r.share / 100);
+    const profitAfter = projSales * marginRate * (1 - reqShare / 100);
+    const delta = profitAfter - profitNow;
+    const cls = delta >= 0 ? 'text-s' : 'text-d';
+    const sign = delta >= 0 ? '+' : '';
+    box.innerHTML = `
+        Merchant avg margin: <b>${(m.avg_margin || 0).toFixed(1)}%</b><br>
+        OneCard profit now: <b>${fmt(profitNow)} SAR</b> (share ${Math.round(r.share)}%, sales ${fmt(curSales)})<br>
+        OneCard profit after: <b>${fmt(profitAfter)} SAR</b> (share ${Math.round(reqShare)}%, sales ${fmt(projSales)})<br>
+        Impact: <b class="${cls}">${sign}${fmt(delta)} SAR / month</b>`;
+}
+</script>
+{% endblock %}

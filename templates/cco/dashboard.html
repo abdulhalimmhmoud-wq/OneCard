@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}CCO — Discount Approvals — OneCard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">🎯 Special Discount Approvals</h1>
+        <p class="page-subtitle">Approve or reject margin-share increases requested by sales managers — approved rates apply automatically</p>
+    </div>
+</div>
+
+<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr))">
+    <div class="stat-card">
+        <div class="stat-icon">⏳</div>
+        <div class="stat-value">{{ pending|length }}</div>
+        <div class="stat-label">Awaiting Decision</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">📜</div>
+        <div class="stat-value">{{ history|length }}</div>
+        <div class="stat-label">Recently Decided</div>
+    </div>
+</div>
+
+{% for d in pending %}
+<div class="card mb-24" style="border-left:3px solid var(--warning)">
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:16px">
+        <div style="flex:1;min-width:280px">
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                <span class="fw6" style="font-size:16px">{{ d.company_name }}</span>
+                <span class="badge badge-tier" style="background:{{ d.tier_color or '#64748b' }}20;color:{{ d.tier_color or '#64748b' }}">{{ d.tier_name or 'No plan' }}</span>
+                <span class="text-muted" style="font-size:12px">requested by {{ d.requester_name }} · {{ d.created_at[:16] }}</span>
+            </div>
+            <div style="margin-top:10px;font-size:14px">
+                Merchant: <b>{{ d.merchant }}</b> <span class="text-muted" style="font-size:11px">(avg OneCard margin {{ d.merchant_margin_pct|round(1) }}%)</span><br>
+                Margin share: <b>{{ d.current_share_pct|round|int }}%</b> → <b class="text-accent" style="font-size:16px">{{ d.requested_share_pct|round|int }}%</b>
+            </div>
+            {% if d.note %}
+            <div class="text-muted" style="font-size:13px;margin-top:8px;padding:8px 12px;background:var(--bg-2);border-radius:8px">
+                💬 {{ d.note }}
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Economics -->
+        <div style="min-width:300px">
+            <table style="width:100%;font-size:13px">
+                <tr>
+                    <td class="text-muted">Current monthly sales</td>
+                    <td class="fw6" style="text-align:right">SAR {{ d.current_monthly_sales|money }}</td>
+                </tr>
+                <tr>
+                    <td class="text-muted">Projected sales if approved</td>
+                    <td class="fw6" style="text-align:right">SAR {{ d.projected_monthly_sales|money }}</td>
+                </tr>
+                <tr>
+                    <td class="text-muted">OneCard profit now</td>
+                    <td class="fw6" style="text-align:right">SAR {{ d.profit_now|money }}</td>
+                </tr>
+                <tr>
+                    <td class="text-muted">OneCard profit after</td>
+                    <td class="fw6" style="text-align:right">SAR {{ d.profit_after|money }}</td>
+                </tr>
+                <tr style="border-top:1px solid var(--border)">
+                    <td class="fw6">Net impact / month</td>
+                    <td class="fw6 {{ 'text-s' if d.profit_delta >= 0 else 'text-d' }}" style="text-align:right;font-size:16px">
+                        {{ '+' if d.profit_delta >= 0 }}{{ d.profit_delta|money }} SAR
+                    </td>
+                </tr>
+            </table>
+        </div>
+    </div>
+
+    <form method="POST" action="/cco/decide/{{ d.id }}" style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;align-items:center">
+        <input type="text" name="decision_note" placeholder="Decision note (optional)" style="flex:1;min-width:200px">
+        <button type="submit" name="decision" value="approve" class="btn btn-primary" onclick="return confirm('Approve {{ d.requested_share_pct|round|int }}% margin share on {{ d.merchant }} for {{ d.company_name }}? It will apply automatically.')">✅ Approve & Apply</button>
+        <button type="submit" name="decision" value="reject" class="btn btn-danger" onclick="return confirm('Reject this request?')">❌ Reject</button>
+    </form>
+</div>
+{% else %}
+<div class="card mb-24" style="text-align:center;padding:50px">
+    <div style="font-size:40px;margin-bottom:12px">✅</div>
+    <div class="fw6">No pending discount requests</div>
+    <div class="text-muted" style="font-size:13px;margin-top:4px">Sales managers submit requests from Sales Portal → Discount Requests</div>
+</div>
+{% endfor %}
+
+<!-- History -->
+<div class="table-card">
+    <div class="table-header"><div class="table-title">📜 Decision History</div></div>
+    <div class="table-scroll">
+        <table>
+            <thead><tr><th>Reseller</th><th>Merchant</th><th>Share</th><th>Requested By</th><th>Decision</th><th>Decided</th></tr></thead>
+            <tbody>
+            {% for d in history %}
+            <tr>
+                <td class="fw6">{{ d.company_name }}</td>
+                <td>{{ d.merchant }}</td>
+                <td class="fw6">{{ d.current_share_pct|round|int }}% → {{ d.requested_share_pct|round|int }}%</td>
+                <td class="text-muted">{{ d.requester_name }}</td>
+                <td>
+                    {% if d.status == 'approved' %}<span class="badge badge-success">✅ Approved</span>
+                    {% else %}<span class="badge badge-danger">❌ Rejected</span>{% endif %}
+                    {% if d.decision_note %}<div class="text-muted" style="font-size:10px">{{ d.decision_note }}</div>{% endif %}
+                </td>
+                <td class="text-muted" style="font-size:12px">{{ d.decided_at[:16] if d.decided_at }}<br>by {{ d.decider_name }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-3)">No decisions yet</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

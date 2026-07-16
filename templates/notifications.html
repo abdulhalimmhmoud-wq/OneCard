@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Notifications — OneCard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">🔔 Notifications</h1>
+        <p class="page-subtitle">System alerts, approvals and workflow updates</p>
+    </div>
+</div>
+
+<div class="card">
+    {% for n in notes %}
+    <div style="display:flex;gap:14px;padding:14px 6px;border-bottom:1px solid var(--border);{% if not n.is_read %}background:rgba(99,102,241,0.05);{% endif %}">
+        <div style="font-size:20px">{% if not n.is_read %}🟣{% else %}▫️{% endif %}</div>
+        <div style="flex:1">
+            <div class="fw6">{{ n.title }}</div>
+            {% if n.body %}<div class="text-muted" style="font-size:13px;margin-top:4px">{{ n.body }}</div>{% endif %}
+            <div class="text-muted" style="font-size:11px;margin-top:6px">{{ n.created_at }}</div>
+        </div>
+        {% if n.link %}
+        <a href="{{ n.link }}" class="btn btn-sm btn-ghost" style="align-self:center">Open →</a>
+        {% endif %}
+    </div>
+    {% else %}
+    <div style="text-align:center;padding:50px;color:var(--text-3)">
+        <div style="font-size:40px;margin-bottom:12px">🔕</div>
+        No notifications yet.
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}

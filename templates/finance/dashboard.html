@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Finance — Wallet Approvals — OneCard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">💳 Wallet Top-up Verification</h1>
+        <p class="page-subtitle">Verify bank transfer receipts and credit reseller wallets</p>
+    </div>
+</div>
+
+<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr))">
+    <div class="stat-card">
+        <div class="stat-icon">⏳</div>
+        <div class="stat-value">{{ pending|length }}</div>
+        <div class="stat-label">Awaiting Verification</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">💰</div>
+        <div class="stat-value">SAR {{ total_balance|money }}</div>
+        <div class="stat-label">Total Wallet Balances</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">👥</div>
+        <div class="stat-value">{{ resellers|length }}</div>
+        <div class="stat-label">Reseller Accounts</div>
+    </div>
+</div>
+
+{% for t in pending %}
+<div class="card mb-24" style="border-left:3px solid var(--warning)">
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:16px;align-items:center">
+        <div style="flex:1;min-width:250px">
+            <div class="fw6" style="font-size:16px">{{ t.company_name }}</div>
+            <div class="text-muted" style="font-size:12px">{{ t.reseller_email }} · submitted {{ t.created_at[:16] }}</div>
+            <div style="margin-top:8px;font-size:13px">
+                Bank reference: <b>{{ t.bank_reference or '—' }}</b><br>
+                {% if t.note %}Note: <span class="text-muted">{{ t.note }}</span><br>{% endif %}
+                Current wallet: <b>SAR {{ t.wallet_balance|money }}</b>
+            </div>
+        </div>
+        <div style="text-align:center">
+            <div style="font-size:11px;color:var(--text-3)">Claimed Transfer</div>
+            <div style="font-size:28px;font-weight:800;color:var(--success)">SAR {{ t.amount|money }}</div>
+            {% if t.receipt_file %}
+            <a href="/receipts/{{ t.id }}" target="_blank" class="btn btn-sm btn-ghost mt-8">🧾 View Receipt</a>
+            {% endif %}
+        </div>
+    </div>
+    <form method="POST" action="/finance/review/{{ t.id }}" style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;align-items:center">
+        <input type="text" name="note" placeholder="Verification note (optional)" style="flex:1;min-width:200px">
+        <button type="submit" name="decision" value="approve" class="btn btn-primary" onclick="return confirm('Confirm transfer verified? SAR {{ t.amount|money }} will be credited to {{ t.company_name }}.')">✅ Verify & Credit</button>
+        <button type="submit" name="decision" value="reject" class="btn btn-danger" onclick="return confirm('Reject this top-up?')">❌ Reject</button>
+    </form>
+</div>
+{% else %}
+<div class="card mb-24" style="text-align:center;padding:50px">
+    <div style="font-size:40px;margin-bottom:12px">✅</div>
+    <div class="fw6">No pending top-ups</div>
+    <div class="text-muted" style="font-size:13px;margin-top:4px">Resellers submit transfers from their portal → Wallet</div>
+</div>
+{% endfor %}
+
+<div class="grid-2">
+    <!-- History -->
+    <div class="table-card">
+        <div class="table-header"><div class="table-title">📜 Verification History</div></div>
+        <div class="table-scroll" style="max-height:420px;overflow-y:auto">
+            <table>
+                <thead><tr><th>Reseller</th><th>Amount</th><th>Status</th><th>Reviewed</th></tr></thead>
+                <tbody>
+                {% for t in history %}
+                <tr>
+                    <td class="fw6">{{ t.company_name }}
+                        <div class="text-muted" style="font-size:10px">{{ t.created_at[:16] }}</div>
+                    </td>
+                    <td class="fw6">SAR {{ t.amount|money }}</td>
+                    <td>
+                        {% if t.status == 'approved' %}<span class="badge badge-success">✅ Approved</span>
+                        {% else %}<span class="badge badge-danger">❌ Rejected</span>{% endif %}
+                    </td>
+                    <td class="text-muted" style="font-size:12px">{{ t.reviewer_name or '—' }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4" style="text-align:center;padding:30px;color:var(--text-3)">No history yet</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Balances -->
+    <div class="table-card">
+        <div class="table-header"><div class="table-title">👛 Wallet Balances</div></div>
+        <div class="table-scroll" style="max-height:420px;overflow-y:auto">
+            <table>
+                <thead><tr><th>Reseller</th><th>Contract</th><th>Balance</th></tr></thead>
+                <tbody>
+                {% for r in resellers %}
+                <tr>
+                    <td class="fw6">{{ r.company_name }}</td>
+                    <td>
+                        {% if r.contract_status == 'contracted' %}<span class="badge badge-success">Signed</span>
+                        {% else %}<span class="badge badge-warning">Prospect</span>{% endif %}
+                    </td>
+                    <td class="fw6 {{ 'text-s' if r.wallet_balance > 0 }}">SAR {{ r.wallet_balance|money }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

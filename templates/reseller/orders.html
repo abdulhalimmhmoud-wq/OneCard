@@ -1,0 +1,223 @@
+{% extends "base.html" %}
+{% block title %}Orders — {{ profile.company_name }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">🛒 Orders</h1>
+        <p class="page-subtitle">Order products with your wallet balance — compare against your forecast anytime</p>
+    </div>
+    <div class="page-actions">
+        <div class="card" style="padding:10px 18px;display:flex;align-items:center;gap:10px">
+            <span style="font-size:20px">👛</span>
+            <div>
+                <div style="font-size:11px;color:var(--text-3)">Wallet Balance</div>
+                <div class="fw6" style="font-size:18px;color:var(--success)">SAR {{ profile.wallet_balance|money }}</div>
+            </div>
+            <a href="/reseller/wallet" class="btn btn-sm btn-ghost">Top up →</a>
+        </div>
+    </div>
+</div>
+
+<div class="grid-2" style="align-items:start">
+    <!-- LEFT: new order -->
+    <div>
+        <div class="card mb-24">
+            <div class="card-header"><div class="card-title">➕ Build New Order</div></div>
+            <div class="form-group">
+                <label class="form-label">Search Product</label>
+                <div class="search-box" style="width:100%">
+                    <span class="search-icon">🔍</span>
+                    <input type="search" id="odSearch" placeholder="Start typing a product name..." oninput="searchProducts()">
+                    <div class="search-suggestions" id="odSuggestions"></div>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Quantity</label>
+                    <input type="number" id="odQty" value="1" min="1" step="1">
+                </div>
+                <div class="form-group" style="flex:2;display:flex;align-items:flex-end">
+                    <button class="btn btn-primary" onclick="addToCart()" style="width:100%;justify-content:center">➕ Add to Order</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="table-card mb-24">
+            <div class="table-header">
+                <div class="table-title">🧺 Order Items (<span id="cartCount">0</span>)</div>
+                <button class="btn btn-sm btn-ghost" onclick="clearCart()">🗑️ Clear</button>
+            </div>
+            <div class="table-scroll">
+                <table>
+                    <thead><tr><th>Product</th><th>Qty</th><th>Unit Price</th><th>Total</th><th></th></tr></thead>
+                    <tbody id="cartBody">
+                        <tr><td colspan="5" style="text-align:center;padding:30px;color:var(--text-3)">Cart is empty</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="table-footer" style="display:flex;justify-content:space-between;align-items:center">
+                <span class="fw6">Order Total: <span class="text-accent" id="cartTotal">0</span> SAR</span>
+                <span class="text-muted" style="font-size:12px" id="cartBalanceCheck"></span>
+            </div>
+        </div>
+
+        <form method="POST" action="/reseller/orders" id="odForm">
+            <input type="hidden" name="items_json" id="odItemsJson">
+            <button type="submit" class="btn btn-primary btn-lg" style="width:100%;justify-content:center" onclick="return submitOrder()">
+                ✅ Place Order (paid from wallet)
+            </button>
+        </form>
+    </div>
+
+    <!-- RIGHT: forecast vs actual + history -->
+    <div>
+        <div class="table-card mb-24">
+            <div class="table-header">
+                <div class="table-title">📊 Forecast vs Actual — This Month</div>
+            </div>
+            <div class="table-scroll">
+                <table>
+                    <thead><tr><th>Merchant</th><th>Forecast</th><th>Ordered</th><th>Progress</th></tr></thead>
+                    <tbody>
+                    {% for c in comparison %}
+                    {% set pct = (c.actual / c.forecast * 100) if c.forecast > 0 else 100 %}
+                    <tr>
+                        <td class="fw6">{{ c.merchant }}</td>
+                        <td>SAR {{ c.forecast|money }}</td>
+                        <td class="fw6 text-accent">SAR {{ c.actual|money }}</td>
+                        <td style="min-width:130px">
+                            <div style="background:var(--bg-2);border-radius:100px;height:8px;overflow:hidden">
+                                <div style="height:100%;width:{{ [pct, 100]|min }}%;background:{{ 'var(--success)' if pct >= 100 else ('var(--warning)' if pct >= 50 else 'var(--danger)') }}"></div>
+                            </div>
+                            <span style="font-size:11px;color:var(--text-3)">{{ pct|round|int }}%{{ ' (above plan ✓)' if pct > 100 else '' }}</span>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="4" style="text-align:center;padding:24px;color:var(--text-3)">No forecast submitted — orders are unrestricted</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="table-card">
+            <div class="table-header"><div class="table-title">📜 Order History</div></div>
+            <div class="table-scroll" style="max-height:420px;overflow-y:auto">
+                <table>
+                    <thead><tr><th>#</th><th>Date</th><th>Items</th><th>Total</th><th>Your Gain</th></tr></thead>
+                    <tbody>
+                    {% for o in orders %}
+                    <tr style="cursor:pointer" onclick="document.getElementById('oi{{ o.id }}').style.display = document.getElementById('oi{{ o.id }}').style.display === 'none' ? 'table-row' : 'none'">
+                        <td class="fw6">#{{ o.id }}</td>
+                        <td class="text-muted">{{ o.created_at[:16] }}</td>
+                        <td>{{ o.item_count }}</td>
+                        <td class="fw6">SAR {{ o.total_cost|money }}</td>
+                        <td class="fw6 text-s">+{{ o.total_savings|money }}</td>
+                    </tr>
+                    <tr id="oi{{ o.id }}" style="display:none">
+                        <td colspan="5" style="background:var(--bg-2);padding:10px 16px">
+                            {% for it in o['items'] %}
+                            <div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)">
+                                <span class="truncate" style="max-width:280px">{{ it.product_name }} <span class="text-muted">× {{ it.quantity }}</span></span>
+                                <span class="fw6">{{ it.line_total|money }} SAR</span>
+                            </div>
+                            {% endfor %}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text-3)">No orders yet</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const products = {{ products_json|safe }};
+const walletBalance = {{ profile.wallet_balance }};
+let cart = [];   // {product_id, label, merchant, qty, unit_price, currency}
+let odPicked = null;
+
+function searchProducts() {
+    const q = document.getElementById('odSearch').value.toLowerCase();
+    const sugg = document.getElementById('odSuggestions');
+    if (q.length < 2) { sugg.classList.remove('show'); return; }
+    const matches = products.filter(p => p.product_name.toLowerCase().includes(q) || p.merchant.toLowerCase().includes(q)).slice(0, 10);
+    if (!matches.length) { sugg.classList.remove('show'); return; }
+    sugg.innerHTML = matches.map((p, i) => `<div class="sugg-item" onclick="pickOd(${i})">${esc(p.product_name)} <span class="text-muted" style="font-size:11px">· ${esc(p.merchant)} · ${fmt(p.client_price)} ${esc(p.currency)}</span></div>`).join('');
+    sugg.classList.add('show');
+    sugg._matches = matches;
+}
+
+function pickOd(idx) {
+    odPicked = document.getElementById('odSuggestions')._matches[idx];
+    document.getElementById('odSearch').value = odPicked.product_name;
+    document.getElementById('odSuggestions').classList.remove('show');
+}
+
+function addToCart() {
+    if (!odPicked) { alert('Search and select a product first.'); return; }
+    const qty = parseInt(document.getElementById('odQty').value) || 0;
+    if (qty <= 0) { alert('Enter a quantity.'); return; }
+    const existing = cart.find(c => c.product_id === odPicked.id);
+    if (existing) existing.qty += qty;
+    else cart.push({ product_id: odPicked.id, label: odPicked.product_name, merchant: odPicked.merchant,
+                     qty: qty, unit_price: odPicked.client_price, currency: odPicked.currency });
+    odPicked = null;
+    document.getElementById('odSearch').value = '';
+    renderCart();
+}
+
+function removeCartItem(i) { cart.splice(i, 1); renderCart(); }
+function clearCart() { cart = []; renderCart(); }
+
+function cartTotal() { return cart.reduce((s, c) => s + c.unit_price * c.qty, 0); }
+
+function renderCart() {
+    document.getElementById('cartCount').textContent = cart.length;
+    const body = document.getElementById('cartBody');
+    if (!cart.length) {
+        body.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:30px;color:var(--text-3)">Cart is empty</td></tr>';
+        document.getElementById('cartTotal').textContent = '0';
+        document.getElementById('cartBalanceCheck').textContent = '';
+        return;
+    }
+    body.innerHTML = cart.map((c, i) => `
+        <tr>
+            <td>
+                <div class="fw6 truncate" style="max-width:200px" title="${esc(c.label)}">${esc(c.label)}</div>
+                <div class="text-muted" style="font-size:11px">${esc(c.merchant)}</div>
+            </td>
+            <td class="fw6">${fmt(c.qty)}</td>
+            <td>${fmt(c.unit_price)} ${esc(c.currency)}</td>
+            <td class="fw6 text-accent">${fmt(c.unit_price * c.qty)}</td>
+            <td><button class="btn btn-sm btn-ghost" onclick="removeCartItem(${i})">✕</button></td>
+        </tr>`).join('');
+    const total = cartTotal();
+    document.getElementById('cartTotal').textContent = fmt(total);
+    const check = document.getElementById('cartBalanceCheck');
+    if (total > walletBalance) {
+        check.innerHTML = `<span class="text-d">⚠️ Exceeds wallet balance (${fmt(walletBalance)} SAR) — top up first</span>`;
+    } else {
+        check.innerHTML = `<span class="text-s">✓ Balance after order: ${fmt(walletBalance - total)} SAR</span>`;
+    }
+}
+
+function submitOrder() {
+    if (!cart.length) { alert('Your order is empty.'); return false; }
+    if (cartTotal() > walletBalance) {
+        alert('Order total exceeds your wallet balance. Please top up your wallet first.');
+        return false;
+    }
+    document.getElementById('odItemsJson').value = JSON.stringify(cart.map(c => ({ product_id: c.product_id, quantity: c.qty })));
+    return confirm(`Place order for ${fmt(cartTotal())} SAR? The amount is deducted from your wallet.`);
+}
+
+document.addEventListener('click', e => { if (!e.target.closest('.search-box')) document.getElementById('odSuggestions').classList.remove('show'); });
+</script>
+{% endblock %}

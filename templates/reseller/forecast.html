@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+{% block title %}Purchase Plan — {{ profile.company_name }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">📋 My Purchase Plan</h1>
+        <p class="page-subtitle">Tell us which merchants and products you plan to buy, and how much. Your account manager receives this as your monthly forecast before contract signing.</p>
+    </div>
+</div>
+
+<div class="grid-2" style="align-items:start">
+    <!-- LEFT: builders -->
+    <div>
+        <div class="card mb-24">
+            <div class="card-header"><div class="card-title">🏪 Add a Merchant (total value)</div></div>
+            <div class="form-group">
+                <label class="form-label">Merchant</label>
+                <select id="fcMerchant">
+                    <option value="">-- Choose merchant --</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Planned Monthly Purchase Value (SAR)</label>
+                <input type="number" id="fcMerchValue" min="0" step="1000" placeholder="e.g. 50000">
+            </div>
+            <button class="btn btn-primary" onclick="addMerchantLine()" style="width:100%;justify-content:center">➕ Add Merchant Line</button>
+        </div>
+
+        <div class="card mb-24">
+            <div class="card-header"><div class="card-title">📦 Add a Specific Product (quantity)</div></div>
+            <div class="form-group">
+                <label class="form-label">Search Product</label>
+                <div class="search-box" style="width:100%">
+                    <span class="search-icon">🔍</span>
+                    <input type="search" id="fcSearch" placeholder="Start typing a product name..." oninput="searchProducts()">
+                    <div class="search-suggestions" id="fcSuggestions"></div>
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Planned Monthly Quantity</label>
+                <input type="number" id="fcQty" value="10" min="1" step="1">
+            </div>
+            <button class="btn btn-primary" onclick="addProductLine()" style="width:100%;justify-content:center">➕ Add Product Line</button>
+        </div>
+
+        <!-- History -->
+        <div class="card">
+            <div class="card-header"><div class="card-title">📜 My Submitted Plans</div></div>
+            <table style="width:100%">
+                <thead><tr><th>Date</th><th>Lines</th><th>Value</th><th>Status</th></tr></thead>
+                <tbody>
+                {% for f in my_forecasts %}
+                <tr>
+                    <td class="text-muted">{{ f.created_at[:10] }}</td>
+                    <td>{{ f.item_count }}</td>
+                    <td class="fw6">SAR {{ f.total_value|money }}</td>
+                    <td>
+                        {% if f.status == 'submitted' %}<span class="badge badge-warning">Sent</span>
+                        {% else %}<span class="badge badge-success">Reviewed</span>{% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4" style="text-align:center;padding:20px;color:var(--text-3)">No plans submitted yet</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- RIGHT: current plan -->
+    <div>
+        <div class="table-card mb-24">
+            <div class="table-header">
+                <div class="table-title">🧾 Current Plan (<span id="planCount">0</span> lines)</div>
+                <button class="btn btn-sm btn-ghost" onclick="clearPlan()">🗑️ Clear</button>
+            </div>
+            <div class="table-scroll">
+                <table>
+                    <thead><tr><th>Line</th><th>Qty</th><th>Est. Value</th><th></th></tr></thead>
+                    <tbody id="planBody">
+                        <tr><td colspan="4" style="text-align:center;padding:30px;color:var(--text-3)">Plan is empty</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="table-footer">
+                <span class="fw6">Total Estimated: <span class="text-accent" id="planTotal">0</span> SAR</span>
+            </div>
+        </div>
+
+        <form method="POST" action="/reseller/forecast" id="fcForm">
+            <input type="hidden" name="items_json" id="itemsJson">
+            <div class="card">
+                <div class="form-group">
+                    <label class="form-label">Note to your account manager (optional)</label>
+                    <textarea name="note" placeholder="Anything else we should know about your plan..." style="height:70px"></textarea>
+                </div>
+                <button type="submit" class="btn btn-primary btn-lg" style="width:100%;justify-content:center" onclick="return submitPlan()">
+                    📨 Submit Purchase Plan
+                </button>
+                <div class="form-hint" style="text-align:center;margin-top:8px">Your account manager is notified instantly. No commitment is created until the contract is signed.</div>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const products = {{ products_json|safe }};
+const merchants = {{ merchants_json|safe }};
+let plan = [];   // {type:'merchant'|'product', merchant, product_id, label, quantity, value}
+let fcPicked = null;
+
+(function () {
+    const sel = document.getElementById('fcMerchant');
+    merchants.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m.merchant;
+        opt.textContent = `${m.merchant} (${m.count} products · avg margin ${m.avg_margin}%)`;
+        sel.appendChild(opt);
+    });
+})();
+
+function searchProducts() {
+    const q = document.getElementById('fcSearch').value.toLowerCase();
+    const sugg = document.getElementById('fcSuggestions');
+    if (q.length < 2) { sugg.classList.remove('show'); return; }
+    const matches = products.filter(p => p.product_name.toLowerCase().includes(q) || p.merchant.toLowerCase().includes(q)).slice(0, 10);
+    if (!matches.length) { sugg.classList.remove('show'); return; }
+    sugg.innerHTML = matches.map((p, i) => `<div class="sugg-item" onclick="pickFc(${i})">${esc(p.product_name)} <span class="text-muted" style="font-size:11px">· ${esc(p.merchant)} · ${fmt(p.client_price)} ${esc(p.currency)}</span></div>`).join('');
+    sugg.classList.add('show');
+    sugg._matches = matches;
+}
+
+function pickFc(idx) {
+    fcPicked = document.getElementById('fcSuggestions')._matches[idx];
+    document.getElementById('fcSearch').value = fcPicked.product_name;
+    document.getElementById('fcSuggestions').classList.remove('show');
+}
+
+function addMerchantLine() {
+    const m = document.getElementById('fcMerchant').value;
+    const v = parseFloat(document.getElementById('fcMerchValue').value) || 0;
+    if (!m || v <= 0) { alert('Choose a merchant and enter a planned value.'); return; }
+    plan.push({ type: 'merchant', merchant: m, label: m + ' (entire merchant)', quantity: null, value: v });
+    document.getElementById('fcMerchValue').value = '';
+    renderPlan();
+}
+
+function addProductLine() {
+    if (!fcPicked) { alert('Search and select a product first.'); return; }
+    const qty = parseInt(document.getElementById('fcQty').value) || 0;
+    if (qty <= 0) { alert('Enter a quantity.'); return; }
+    plan.push({ type: 'product', merchant: fcPicked.merchant, product_id: fcPicked.id,
+                label: fcPicked.product_name, quantity: qty, value: qty * fcPicked.client_price });
+    fcPicked = null;
+    document.getElementById('fcSearch').value = '';
+    renderPlan();
+}
+
+function removeLine(i) { plan.splice(i, 1); renderPlan(); }
+function clearPlan() { plan = []; renderPlan(); }
+
+function renderPlan() {
+    document.getElementById('planCount').textContent = plan.length;
+    const body = document.getElementById('planBody');
+    if (!plan.length) {
+        body.innerHTML = '<tr><td colspan="4" style="text-align:center;padding:30px;color:var(--text-3)">Plan is empty</td></tr>';
+        document.getElementById('planTotal').textContent = '0';
+        return;
+    }
+    body.innerHTML = plan.map((l, i) => `
+        <tr>
+            <td>
+                <div class="fw6 truncate" style="max-width:220px" title="${esc(l.label)}">${l.type === 'product' ? '📦' : '🏪'} ${esc(l.label)}</div>
+                <div class="text-muted" style="font-size:11px">${esc(l.merchant)}</div>
+            </td>
+            <td>${l.quantity != null ? fmt(l.quantity) : '—'}</td>
+            <td class="fw6 text-accent">${fmt(l.value)}</td>
+            <td><button class="btn btn-sm btn-ghost" onclick="removeLine(${i})">✕</button></td>
+        </tr>`).join('');
+    document.getElementById('planTotal').textContent = fmt(plan.reduce((s, l) => s + l.value, 0));
+}
+
+function submitPlan() {
+    if (!plan.length) { alert('Add at least one line to your plan.'); return false; }
+    document.getElementById('itemsJson').value = JSON.stringify(plan);
+    return true;
+}
+
+document.addEventListener('click', e => { if (!e.target.closest('.search-box')) document.getElementById('fcSuggestions').classList.remove('show'); });
+</script>
+{% endblock %}

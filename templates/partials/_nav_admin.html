@@ -1,0 +1,14 @@
+<div class="nav-section">Management</div>
+<a href="/admin" class="nav-item {{ 'active' if active_tab == 'dashboard' }}"><span class="icon">📊</span>Dashboard</a>
+<a href="/admin/tiers" class="nav-item {{ 'active' if active_tab == 'tiers' }}"><span class="icon">🎖️</span>Tier Rules</a>
+<a href="/admin/catalogue" class="nav-item {{ 'active' if active_tab == 'catalogue' }}"><span class="icon">📦</span>Product Catalogue</a>
+<a href="/admin/resellers" class="nav-item {{ 'active' if active_tab == 'resellers' }}"><span class="icon">👥</span>All Resellers</a>
+<div class="nav-section">Approvals</div>
+<a href="/sales/forecasts" class="nav-item {{ 'active' if active_tab == 'forecasts' }}"><span class="icon">📋</span>All Forecasts</a>
+<a href="/cco" class="nav-item {{ 'active' if active_tab == 'cco' }}"><span class="icon">🎯</span>Discount Approvals</a>
+<a href="/finance" class="nav-item {{ 'active' if active_tab == 'finance' }}"><span class="icon">💳</span>Wallet Approvals</a>
+<div class="nav-section">Settings</div>
+<a href="/admin/users" class="nav-item {{ 'active' if active_tab == 'users' }}"><span class="icon">⚙️</span>Manage Users</a>
+<a href="/notifications" class="nav-item {{ 'active' if active_tab == 'notifications' }}"><span class="icon">🔔</span>Notifications
+    {% if unread_notifications %}<span class="badge badge-danger" style="margin-left:auto">{{ unread_notifications }}</span>{% endif %}
+</a>

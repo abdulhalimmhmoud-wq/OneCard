@@ -1,18 +1,11 @@
 {% extends "base.html" %}
 {% block title %}My Resellers — OneCard Sales{% endblock %}
-{% block sidebar %}
-<div class="nav-section">Sales</div>
-<a href="/sales" class="nav-item"><span class="icon">📊</span>Dashboard</a>
-<a href="/sales/register" class="nav-item"><span class="icon">➕</span>Register Reseller</a>
-<a href="/sales/resellers" class="nav-item active"><span class="icon">👥</span>My Resellers</a>
-<a href="/sales/catalogue" class="nav-item"><span class="icon">📦</span>Product Catalogue</a>
-{% endblock %}
 
 {% block content %}
 <div class="page-header">
     <div>
         <h1 class="page-title">👥 My Registered Resellers</h1>
-        <p class="page-subtitle">Resellers you registered and manage</p>
+        <p class="page-subtitle">Manage accounts, contracts and business profiles</p>
     </div>
     <div class="page-actions">
         <a href="/sales/register" class="btn btn-primary">➕ Register New Reseller</a>
@@ -24,33 +17,60 @@
         <table>
             <thead>
                 <tr>
-                    <th>Company Name</th>
-                    <th>Contact Person</th>
-                    <th>Email Address</th>
-                    <th>Expected Monthly Sales</th>
-                    <th>Assigned Tier</th>
-                    <th>Registered On</th>
+                    <th>Company</th>
+                    <th>Contact</th>
+                    <th>Expected Monthly</th>
+                    <th>Plan</th>
+                    <th>Contract</th>
+                    <th>Wallet</th>
+                    <th>Compliance</th>
                     <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
             {% for r in resellers %}
             <tr>
-                <td class="fw6">{{ r.company_name }}</td>
-                <td>{{ r.contact_name }}</td>
-                <td class="text-muted">{{ r.email }}</td>
-                <td class="fw6">SAR {{ "{:,.0f}".format(r.expected_monthly_sales) }}</td>
+                <td class="fw6">{{ r.company_name }}
+                    <div class="text-muted" style="font-size:11px">{{ r.client_type or 'Type not set' }}</div>
+                </td>
+                <td>{{ r.contact_name }}<br><span class="text-muted" style="font-size:11px">{{ r.email }}</span></td>
+                <td class="fw6">SAR {{ r.expected_monthly_sales|money }}</td>
                 <td><span class="badge badge-tier" style="background:{{ r.tier_color or '#64748b' }}20;color:{{ r.tier_color or '#64748b' }}">{{ r.tier_name or 'Unassigned' }}</span></td>
-                <td class="text-muted">{{ r.created_at[:10] if r.created_at else '—' }}</td>
                 <td>
-                    <div style="display:flex;gap:8px">
-                        <a href="/sales/preview/{{ r.user_id }}" class="btn btn-sm btn-ghost">👁️ Preview Portal</a>
+                    {% if r.contract_status == 'contracted' %}
+                        <span class="badge badge-success">✍️ Signed</span>
+                    {% else %}
+                        <span class="badge badge-warning">Prospect</span>
+                    {% endif %}
+                </td>
+                <td class="fw6">SAR {{ r.wallet_balance|money }}</td>
+                <td>
+                    {% if r.compliance_status == 'warning' %}
+                        <span class="badge badge-danger" title="Grace until {{ r.grace_until }}">⚠️ Grace period</span>
+                    {% else %}
+                        <span class="badge badge-success">On track</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap">
+                        <a href="/sales/preview/{{ r.user_id }}" class="btn btn-sm btn-ghost">👁️ Preview</a>
+                        {% if r.contract_status != 'contracted' %}
+                        <form method="POST" action="/resellers/{{ r.id }}/contract" onsubmit="return confirm('Mark contract as SIGNED for {{ r.company_name }}? This enables ordering.')">
+                            <input type="hidden" name="status" value="contracted">
+                            <button class="btn btn-sm btn-primary" type="submit">✍️ Sign Contract</button>
+                        </form>
+                        {% else %}
+                        <form method="POST" action="/resellers/{{ r.id }}/contract" onsubmit="return confirm('Set {{ r.company_name }} back to prospect? Ordering will be disabled.')">
+                            <input type="hidden" name="status" value="prospect">
+                            <button class="btn btn-sm btn-ghost" type="submit">↩︎ Revoke</button>
+                        </form>
+                        {% endif %}
                     </div>
                 </td>
             </tr>
             {% else %}
             <tr>
-                <td colspan="7" style="text-align:center;padding:40px;color:var(--text-3)">
+                <td colspan="8" style="text-align:center;padding:40px;color:var(--text-3)">
                     You have not registered any resellers yet.<br>
                     <a href="/sales/register" class="btn btn-primary btn-sm mt-8">Register a Reseller</a>
                 </td>

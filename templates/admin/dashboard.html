@@ -1,20 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Admin Dashboard — OneCard{% endblock %}
-{% block sidebar %}
-<div class="nav-section">Management</div>
-<a href="/admin" class="nav-item {{ 'active' if active_tab == 'dashboard' }}"><span class="icon">📊</span>Dashboard</a>
-<a href="/admin/tiers" class="nav-item {{ 'active' if active_tab == 'tiers' }}"><span class="icon">🎖️</span>Tier Rules</a>
-<a href="/admin/catalogue" class="nav-item {{ 'active' if active_tab == 'catalogue' }}"><span class="icon">📦</span>Product Catalogue</a>
-<a href="/admin/resellers" class="nav-item {{ 'active' if active_tab == 'resellers' }}"><span class="icon">👥</span>All Resellers</a>
-<div class="nav-section">Settings</div>
-<a href="/admin/users" class="nav-item {{ 'active' if active_tab == 'users' }}"><span class="icon">⚙️</span>Manage Users</a>
-{% endblock %}
 
 {% block content %}
 <div class="page-header">
     <div>
         <h1 class="page-title">📊 Admin Dashboard</h1>
-        <p class="page-subtitle">Overview of the OneCard Catalogue Platform</p>
+        <p class="page-subtitle">Overview of the OneCard Platform</p>
+    </div>
+    <div class="page-actions">
+        <a href="/admin/compliance/run" class="btn btn-ghost" onclick="return confirm('Run the monthly tier-compliance check now? Warnings/downgrades will be applied and everyone notified.')">🛡️ Run Compliance Check</a>
     </div>
 </div>
 
@@ -30,16 +24,6 @@
         <div class="stat-label">Merchants</div>
     </div>
     <div class="stat-card">
-        <div class="stat-icon">🌍</div>
-        <div class="stat-value">{{ stats.total_countries | default(0) }}</div>
-        <div class="stat-label">Countries</div>
-    </div>
-    <div class="stat-card">
-        <div class="stat-icon">📂</div>
-        <div class="stat-value">{{ stats.total_categories | default(0) }}</div>
-        <div class="stat-label">Categories</div>
-    </div>
-    <div class="stat-card">
         <div class="stat-icon">👤</div>
         <div class="stat-value">{{ stats.total_resellers | default(0) }}</div>
         <div class="stat-label">Registered Resellers</div>
@@ -49,6 +33,16 @@
         <div class="stat-value">{{ "%.1f" | format(stats.avg_margin | default(0)) }}%</div>
         <div class="stat-label">Avg. Margin</div>
     </div>
+    <div class="stat-card {{ 'pulse' if pending_topups }}" style="{{ 'border:2px solid var(--warning)' if pending_topups }}">
+        <div class="stat-icon">💳</div>
+        <div class="stat-value">{{ pending_topups }}</div>
+        <div class="stat-label"><a href="/finance" style="color:inherit">Pending Wallet Top-ups →</a></div>
+    </div>
+    <div class="stat-card" style="{{ 'border:2px solid var(--warning)' if pending_discounts }}">
+        <div class="stat-icon">🎯</div>
+        <div class="stat-value">{{ pending_discounts }}</div>
+        <div class="stat-label"><a href="/cco" style="color:inherit">Pending Discount Requests →</a></div>
+    </div>
 </div>
 
 <div class="grid-2">
@@ -56,13 +50,12 @@
     <div class="card">
         <div class="card-header"><div class="card-title">🎖️ Active Tier Rules</div></div>
         <table style="width:100%">
-            <thead><tr><th>Tier</th><th>Min Monthly (SAR)</th><th>Min Merchants</th><th>Margin Share</th></tr></thead>
+            <thead><tr><th>Tier</th><th>Min Monthly (SAR)</th><th>Margin Share</th></tr></thead>
             <tbody>
             {% for t in tiers %}
             <tr>
                 <td><span class="badge badge-tier" style="background:{{ t.color }}20;color:{{ t.color }}">{{ t.name }}</span></td>
-                <td class="fw6">{{ "{:,.0f}".format(t.min_monthly_sales) }}</td>
-                <td>{{ t.min_merchants }}+</td>
+                <td class="fw6">{{ t.min_monthly_sales|money }}</td>
                 <td class="fw6">{{ t.margin_share_pct }}%</td>
             </tr>
             {% endfor %}
@@ -75,13 +68,20 @@
         <div class="card-header"><div class="card-title">👥 Recent Resellers</div></div>
         {% if resellers %}
         <table style="width:100%">
-            <thead><tr><th>Company</th><th>Tier</th><th>Sales Manager</th></tr></thead>
+            <thead><tr><th>Company</th><th>Tier</th><th>Contract</th><th>Compliance</th></tr></thead>
             <tbody>
             {% for r in resellers[:8] %}
             <tr>
                 <td>{{ r.company_name }}</td>
                 <td><span class="badge badge-tier" style="background:{{ r.tier_color or '#64748b' }}20;color:{{ r.tier_color or '#64748b' }}">{{ r.tier_name or 'Unassigned' }}</span></td>
-                <td class="text-muted">{{ r.sales_name or '—' }}</td>
+                <td>
+                    {% if r.contract_status == 'contracted' %}<span class="badge badge-success">Signed</span>
+                    {% else %}<span class="badge badge-warning">Prospect</span>{% endif %}
+                </td>
+                <td>
+                    {% if r.compliance_status == 'warning' %}<span class="badge badge-danger">⚠️ Grace</span>
+                    {% else %}<span class="badge badge-success">OK</span>{% endif %}
+                </td>
             </tr>
             {% endfor %}
             </tbody>

@@ -1,8 +1,9 @@
 /* OneCard Platform — Shared JS Utilities */
 
+// Business rule: all money values are shown as WHOLE numbers (no decimals)
 function fmt(v) {
     if (v == null || isNaN(v)) return '--';
-    return Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return Math.round(Number(v)).toLocaleString();
 }
 
 function esc(s) {

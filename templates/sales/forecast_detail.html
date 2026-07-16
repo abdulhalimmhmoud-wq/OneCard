@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Forecast #{{ forecast.id }} — OneCard Sales{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">📋 Forecast #{{ forecast.id }} — {{ forecast.company_name }}</h1>
+        <p class="page-subtitle">Submitted {{ forecast.created_at[:16] }} · This is the reseller's purchase intent (pre-contract)</p>
+    </div>
+    <div class="page-actions">
+        <a href="/sales/forecasts" class="btn btn-ghost">← All Forecasts</a>
+    </div>
+</div>
+
+{% set total = items|sum(attribute='est_value') %}
+<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr))">
+    <div class="stat-card">
+        <div class="stat-icon">💰</div>
+        <div class="stat-value">SAR {{ total|money }}</div>
+        <div class="stat-label">Total Estimated Value</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🏪</div>
+        <div class="stat-value">{{ items|selectattr('item_type','equalto','merchant')|list|length }}</div>
+        <div class="stat-label">Merchant-level Lines</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">📦</div>
+        <div class="stat-value">{{ items|selectattr('item_type','equalto','product')|list|length }}</div>
+        <div class="stat-label">Product-level Lines</div>
+    </div>
+</div>
+
+{% if forecast.note %}
+<div class="card mb-24">
+    <div class="card-header"><div class="card-title">🗒️ Reseller Note</div></div>
+    <p style="color:var(--text-2)">{{ forecast.note }}</p>
+</div>
+{% endif %}
+
+<div class="table-card">
+    <div class="table-header"><div class="table-title">Plan Lines</div></div>
+    <div class="table-scroll">
+        <table>
+            <thead>
+                <tr><th>Type</th><th>Merchant</th><th>Product</th><th>Quantity</th><th>Estimated Value</th></tr>
+            </thead>
+            <tbody>
+            {% for it in items %}
+            <tr>
+                <td>
+                    {% if it.item_type == 'merchant' %}<span class="badge badge-info">🏪 Merchant</span>
+                    {% else %}<span class="badge badge-accent">📦 Product</span>{% endif %}
+                </td>
+                <td class="fw6">{{ it.merchant }}</td>
+                <td>{{ it.product_name or '— entire merchant —' }}</td>
+                <td>{{ it.quantity or '—' }}</td>
+                <td class="fw6 text-accent">SAR {{ it.est_value|money }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card mt-24" style="border:1px dashed var(--border)">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
+        <div>
+            <div class="fw6">Next step</div>
+            <div class="text-muted" style="font-size:13px">If terms are agreed, sign the contract from <a href="/sales/resellers" style="color:var(--accent)">My Resellers</a> to enable ordering for this account.</div>
+        </div>
+    </div>
+</div>
+{% endblock %}

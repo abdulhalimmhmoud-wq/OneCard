@@ -1,18 +1,11 @@
 {% extends "base.html" %}
 {% block title %}Register Reseller — OneCard Sales{% endblock %}
-{% block sidebar %}
-<div class="nav-section">Sales</div>
-<a href="/sales" class="nav-item"><span class="icon">📊</span>Dashboard</a>
-<a href="/sales/register" class="nav-item active"><span class="icon">➕</span>Register Reseller</a>
-<a href="/sales/resellers" class="nav-item"><span class="icon">👥</span>My Resellers</a>
-<a href="/sales/catalogue" class="nav-item"><span class="icon">📦</span>Product Catalogue</a>
-{% endblock %}
 
 {% block content %}
 <div class="page-header">
     <div>
         <h1 class="page-title">➕ Register New Reseller</h1>
-        <p class="page-subtitle">Enter reseller details. The pricing tier is auto-assigned based on expected monthly sales.</p>
+        <p class="page-subtitle">Enter reseller details. The pricing plan is auto-assigned based on expected monthly sales. Business profile powers personalized recommendations.</p>
     </div>
 </div>
 
@@ -39,16 +32,37 @@
             <input type="password" name="password" required placeholder="Min 6 characters" minlength="6">
             <div class="form-hint">Set a temporary password for the reseller to log in</div>
         </div>
+
+        <div class="card-header mt-16"><div class="card-title">🎯 Business Profile <span class="text-muted" style="font-size:11px;font-weight:400">(drives the Recommended page)</span></div></div>
+        <div class="form-group">
+            <label class="form-label">Client Type *</label>
+            <select name="client_type" required>
+                <option value="">-- Select client type --</option>
+                {% for t in client_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+            </select>
+            <div class="form-hint">What kind of business is this reseller? Used to recommend the right products.</div>
+        </div>
+        <div class="form-group">
+            <label class="form-label">Operating Countries / Markets</label>
+            <div style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px;background:var(--bg-2);display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:4px">
+                {% for c in countries %}
+                <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding:3px 6px;border-radius:6px">
+                    <input type="checkbox" name="countries" value="{{ c }}" style="width:auto"> {{ c }}
+                </label>
+                {% endfor %}
+            </div>
+            <div class="form-hint">Select every market where the reseller sells. Recommendations prioritize these countries.</div>
+        </div>
     </div>
 
     <!-- Financials & Tier preview -->
     <div class="card">
         <div class="card-header"><div class="card-title">💰 Financial Scope & Pricing</div></div>
-        
+
         <div class="form-group">
             <label class="form-label">Expected Monthly Sales (SAR) *</label>
             <input type="number" name="expected_sales" required min="0" step="1000" placeholder="e.g. 150000" id="salesInput">
-            <div class="form-hint">Monthly purchasing power. This determines the account pricing rate.</div>
+            <div class="form-hint">Monthly purchasing commitment. Determines the pricing plan — and is monitored monthly: accounts below commitment get one grace month before moving to the lower plan.</div>
         </div>
 
         <div class="form-group">
@@ -58,14 +72,14 @@
 
         <!-- Tier Preview -->
         <div class="card mt-16" style="background:var(--bg-2);border:1px dashed var(--border)">
-            <div style="font-size:13px;font-weight:600;margin-bottom:8px">🔮 Auto-Tier Assignment Preview</div>
+            <div style="font-size:13px;font-weight:600;margin-bottom:8px">🔮 Auto-Plan Assignment Preview</div>
             <div id="tierPreview" style="font-size:14px;color:var(--text-2)">
-                Enter sales amount to see pricing tier assignment...
+                Enter sales amount to see pricing plan assignment...
             </div>
         </div>
 
         <button type="submit" class="btn btn-primary btn-lg mt-24" style="width:100%;justify-content:center">
-            ✅ Register Reseller & Assign Tier
+            ✅ Register Reseller & Assign Plan
         </button>
     </div>
 </div>
@@ -81,17 +95,13 @@ function updateTierPreview() {
     const preview = document.getElementById('tierPreview');
 
     if (sales === 0) {
-        preview.innerHTML = 'Enter sales amount to see pricing tier assignment...';
+        preview.innerHTML = 'Enter sales amount to see pricing plan assignment...';
         return;
     }
 
-    // Find best tier (sorted by min_monthly_sales DESC)
     let assigned = null;
     for (const t of tierRules) {
-        if (sales >= t.min_monthly_sales) {
-            assigned = t;
-            break;
-        }
+        if (sales >= t.min_monthly_sales) { assigned = t; break; }
     }
 
     if (assigned) {

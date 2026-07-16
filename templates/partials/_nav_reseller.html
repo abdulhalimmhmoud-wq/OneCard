@@ -1,0 +1,15 @@
+<div class="nav-section">My Catalogue</div>
+<a href="/reseller" class="nav-item {{ 'active' if active_tab == 'dashboard' }}"><span class="icon">🏠</span>Home</a>
+<a href="/reseller/merchants" class="nav-item {{ 'active' if active_tab == 'merchants' }}"><span class="icon">🏪</span>By Merchant</a>
+<a href="/reseller/products" class="nav-item {{ 'active' if active_tab == 'products' }}"><span class="icon">📦</span>Products</a>
+<a href="/reseller/calculator" class="nav-item {{ 'active' if active_tab == 'calculator' }}"><span class="icon">🧮</span>Profit Calculator</a>
+<a href="/reseller/recommended" class="nav-item {{ 'active' if active_tab == 'recommended' }}"><span class="icon">⭐</span>Recommended</a>
+<div class="nav-section">My Business</div>
+<a href="/reseller/forecast" class="nav-item {{ 'active' if active_tab == 'forecast' }}"><span class="icon">📋</span>Purchase Plan</a>
+<a href="/reseller/orders" class="nav-item {{ 'active' if active_tab == 'orders' }}"><span class="icon">🛒</span>Orders</a>
+<a href="/reseller/wallet" class="nav-item {{ 'active' if active_tab == 'wallet' }}"><span class="icon">👛</span>Wallet</a>
+<a href="/reseller/analysis" class="nav-item {{ 'active' if active_tab == 'analysis' }}"><span class="icon">📈</span>Analysis</a>
+<div class="nav-section">Account</div>
+<a href="/notifications" class="nav-item {{ 'active' if active_tab == 'notifications' }}"><span class="icon">🔔</span>Notifications
+    {% if unread_notifications %}<span class="badge badge-danger" style="margin-left:auto">{{ unread_notifications }}</span>{% endif %}
+</a>

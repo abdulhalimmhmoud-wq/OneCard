@@ -1,12 +1,5 @@
 {% extends "base.html" %}
 {% block title %}Sales Dashboard — OneCard{% endblock %}
-{% block sidebar %}
-<div class="nav-section">Sales</div>
-<a href="/sales" class="nav-item {{ 'active' if active_tab == 'dashboard' }}"><span class="icon">📊</span>Dashboard</a>
-<a href="/sales/register" class="nav-item {{ 'active' if active_tab == 'register' }}"><span class="icon">➕</span>Register Reseller</a>
-<a href="/sales/resellers" class="nav-item {{ 'active' if active_tab == 'resellers' }}"><span class="icon">👥</span>My Resellers</a>
-<a href="/sales/catalogue" class="nav-item {{ 'active' if active_tab == 'catalogue' }}"><span class="icon">📦</span>Product Catalogue</a>
-{% endblock %}
 
 {% block content %}
 <div class="page-header">
@@ -26,49 +19,85 @@
         <div class="stat-label">My Resellers</div>
     </div>
     <div class="stat-card">
-        <div class="stat-icon">📦</div>
-        <div class="stat-value">{{ stats.total_products }}</div>
-        <div class="stat-label">Products Available</div>
+        <div class="stat-icon">✍️</div>
+        <div class="stat-value">{{ resellers|selectattr('contract_status','equalto','contracted')|list|length }}</div>
+        <div class="stat-label">Contracts Signed</div>
     </div>
     <div class="stat-card">
-        <div class="stat-icon">🏪</div>
-        <div class="stat-value">{{ stats.total_merchants }}</div>
-        <div class="stat-label">Merchants</div>
+        <div class="stat-icon">📋</div>
+        <div class="stat-value">{{ forecasts|length }}</div>
+        <div class="stat-label">Recent Forecasts</div>
     </div>
     <div class="stat-card">
-        <div class="stat-icon">🌍</div>
-        <div class="stat-value">{{ stats.total_countries }}</div>
-        <div class="stat-label">Countries</div>
+        <div class="stat-icon">🎯</div>
+        <div class="stat-value">{{ pending_discounts }}</div>
+        <div class="stat-label">Pending Discount Requests</div>
     </div>
 </div>
 
-<div class="table-card">
-    <div class="table-header">
-        <div class="table-title">👥 My Registered Resellers</div>
-        <a href="/sales/register" class="btn btn-sm btn-ghost">+ Register New</a>
+<div class="grid-2">
+    <div class="table-card">
+        <div class="table-header">
+            <div class="table-title">👥 My Registered Resellers</div>
+            <a href="/sales/resellers" class="btn btn-sm btn-ghost">Manage All →</a>
+        </div>
+        <div class="table-scroll">
+            <table>
+                <thead>
+                    <tr><th>Company</th><th>Plan</th><th>Contract</th><th>Actions</th></tr>
+                </thead>
+                <tbody>
+                {% for r in resellers[:8] %}
+                <tr>
+                    <td class="fw6">{{ r.company_name }}
+                        <div class="text-muted" style="font-size:11px">SAR {{ r.expected_monthly_sales|money }}/mo</div>
+                    </td>
+                    <td><span class="badge badge-tier" style="background:{{ r.tier_color or '#64748b' }}20;color:{{ r.tier_color or '#64748b' }}">{{ r.tier_name or 'Unassigned' }}</span></td>
+                    <td>
+                        {% if r.contract_status == 'contracted' %}<span class="badge badge-success">Signed</span>
+                        {% else %}<span class="badge badge-warning">Prospect</span>{% endif %}
+                    </td>
+                    <td><a href="/sales/preview/{{ r.user_id }}" class="btn btn-sm btn-ghost">👁️ Preview</a></td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4" style="text-align:center;padding:30px;color:var(--text-3)">
+                    No resellers yet. <a href="/sales/register" style="color:var(--accent)">Register your first reseller →</a>
+                </td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
     </div>
-    <div class="table-scroll">
-        <table>
-            <thead>
-                <tr><th>Company</th><th>Contact</th><th>Expected Sales</th><th>Tier</th><th>Registered</th><th>Actions</th></tr>
-            </thead>
-            <tbody>
-            {% for r in resellers %}
-            <tr>
-                <td class="fw6">{{ r.company_name }}</td>
-                <td>{{ r.contact_name }}<br><span class="text-muted" style="font-size:11px">{{ r.email }}</span></td>
-                <td class="fw6">SAR {{ "{:,.0f}".format(r.expected_monthly_sales) }}</td>
-                <td><span class="badge badge-tier" style="background:{{ r.tier_color or '#64748b' }}20;color:{{ r.tier_color or '#64748b' }}">{{ r.tier_name or 'Unassigned' }}</span></td>
-                <td class="text-muted">{{ r.created_at[:10] if r.created_at else '—' }}</td>
-                <td><a href="/sales/preview/{{ r.user_id }}" class="btn btn-sm btn-ghost">👁️ Preview</a></td>
-            </tr>
-            {% else %}
-            <tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-3)">
-                No resellers yet. <a href="/sales/register" style="color:var(--accent)">Register your first reseller →</a>
-            </td></tr>
-            {% endfor %}
-            </tbody>
-        </table>
+
+    <div class="table-card">
+        <div class="table-header">
+            <div class="table-title">📋 Latest Purchase Forecasts</div>
+            <a href="/sales/forecasts" class="btn btn-sm btn-ghost">View All →</a>
+        </div>
+        <div class="table-scroll">
+            <table>
+                <thead>
+                    <tr><th>Reseller</th><th>Value</th><th>Status</th><th></th></tr>
+                </thead>
+                <tbody>
+                {% for f in forecasts %}
+                <tr>
+                    <td class="fw6">{{ f.company_name }}
+                        <div class="text-muted" style="font-size:11px">{{ f.created_at[:10] }}</div>
+                    </td>
+                    <td class="fw6">SAR {{ f.total_value|money }}</td>
+                    <td>
+                        {% if f.status == 'submitted' %}<span class="badge badge-warning">New</span>
+                        {% else %}<span class="badge badge-success">Reviewed</span>{% endif %}
+                    </td>
+                    <td><a href="/sales/forecasts/{{ f.id }}" class="btn btn-sm btn-ghost">Open →</a></td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4" style="text-align:center;padding:30px;color:var(--text-3)">No forecasts submitted yet</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
 {% endblock %}

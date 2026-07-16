@@ -84,7 +84,19 @@ body {
     font-size: 11px; color: var(--text-3); font-weight: 400;
 }
 
-.sidebar-nav { flex: 1; padding: 0 12px; }
+.sidebar-nav {
+    flex: 1;
+    padding: 0 12px;
+    overflow-y: auto;      /* nav scrolls on its own; logout stays pinned below */
+    min-height: 0;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+}
+.sidebar-nav::-webkit-scrollbar { width: 6px; }
+.sidebar-nav::-webkit-scrollbar-thumb { background: var(--border); border-radius: 100px; }
+.sidebar-nav::-webkit-scrollbar-track { background: transparent; }
+.sidebar-logo { flex-shrink: 0; }
+.sidebar-user { flex-shrink: 0; }
 .nav-item {
     display: flex; align-items: center; gap: 12px;
     padding: 10px 16px;

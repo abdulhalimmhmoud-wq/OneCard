@@ -1,0 +1,12 @@
+<div class="nav-section">Sales</div>
+<a href="/sales" class="nav-item {{ 'active' if active_tab == 'dashboard' }}"><span class="icon">📊</span>Dashboard</a>
+<a href="/sales/register" class="nav-item {{ 'active' if active_tab == 'register' }}"><span class="icon">➕</span>Register Reseller</a>
+<a href="/sales/resellers" class="nav-item {{ 'active' if active_tab == 'resellers' }}"><span class="icon">👥</span>My Resellers</a>
+<a href="/sales/catalogue" class="nav-item {{ 'active' if active_tab == 'catalogue' }}"><span class="icon">📦</span>Product Catalogue</a>
+<div class="nav-section">Workflows</div>
+<a href="/sales/forecasts" class="nav-item {{ 'active' if active_tab == 'forecasts' }}"><span class="icon">📋</span>Purchase Forecasts</a>
+<a href="/sales/discounts" class="nav-item {{ 'active' if active_tab == 'discounts' }}"><span class="icon">🎯</span>Discount Requests</a>
+<div class="nav-section">Account</div>
+<a href="/notifications" class="nav-item {{ 'active' if active_tab == 'notifications' }}"><span class="icon">🔔</span>Notifications
+    {% if unread_notifications %}<span class="badge badge-danger" style="margin-left:auto">{{ unread_notifications }}</span>{% endif %}
+</a>

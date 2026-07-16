@@ -1,13 +1,5 @@
 {% extends "base.html" %}
 {% block title %}Merchants — {{ profile.company_name }}{% endblock %}
-{% block sidebar %}
-<div class="nav-section">My Catalogue</div>
-<a href="/reseller" class="nav-item"><span class="icon">🏠</span>Home</a>
-<a href="/reseller/products" class="nav-item"><span class="icon">📦</span>Products</a>
-<a href="/reseller/merchants" class="nav-item active"><span class="icon">🏪</span>By Merchant</a>
-<a href="/reseller/calculator" class="nav-item"><span class="icon">🧮</span>Profit Calculator</a>
-<a href="/reseller/recommended" class="nav-item"><span class="icon">⭐</span>Recommended</a>
-{% endblock %}
 
 {% block content %}
 <div class="page-header">
@@ -19,11 +11,27 @@
 
 <div class="card mb-24">
     <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-        <div class="search-box" style="flex:1;max-width:400px">
+        <div class="search-box" style="flex:1;max-width:320px">
             <span class="search-icon">🔍</span>
             <input type="search" id="merchSearch" placeholder="Search merchants..." oninput="filterMerchants()">
         </div>
-        <select id="merchSort" style="width:220px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterMerchants()">
+        <select id="merchCat" style="width:180px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterMerchants()">
+            <option value="">All Categories</option>
+            {% for c in categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+        </select>
+        <select id="merchCountry" style="width:160px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterMerchants()">
+            <option value="">All Countries</option>
+            {% for c in countries %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+        </select>
+        <select id="merchRegion" style="width:150px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterMerchants()">
+            <option value="">All Regions</option>
+            {% for r in regions %}<option value="{{ r }}">{{ r }}</option>{% endfor %}
+        </select>
+        <select id="merchCurrency" style="width:130px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterMerchants()">
+            <option value="">All Currencies</option>
+            {% for c in currencies %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+        </select>
+        <select id="merchSort" style="width:200px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterMerchants()">
             <option value="count_desc">Products Count (High to Low)</option>
             <option value="count_asc">Products Count (Low to High)</option>
             <option value="margin_desc">Avg Margin % (High to Low)</option>
@@ -38,15 +46,14 @@
 <div class="table-card mt-24" id="merchProducts" style="display:none">
     <div class="table-header">
         <div class="table-title" id="merchTitle">Products</div>
-        <button class="btn btn-sm btn-primary" onclick="exportMerchantCSV()">📥 Export</button>
     </div>
     <div class="table-scroll">
         <table>
             <thead>
                 <tr>
                     <th onclick="sortTable(0)">Product ↕</th>
-                    <th onclick="sortTable(1)">Category</th>
-                    <th onclick="sortTable(2)">Country</th>
+                    <th>Category</th>
+                    <th>Country</th>
                     <th>Your Price</th>
                     <th>Discount</th>
                     <th onclick="sortTable(5)">Margin ↕</th>
@@ -67,28 +74,43 @@ let selectedMerchant = null;
 let merchProductsList = [];
 let sortCol = -1, sortAsc = true;
 
-// Build merchant list
-function getMerchants() {
+// Build merchant list from a (possibly filtered) product set
+function getMerchants(list) {
     const map = {};
-    products.forEach(p => {
-        if (!map[p.merchant]) map[p.merchant] = { name: p.merchant, count: 0, avgMargin: 0, totalMargin: 0, totalPop: 0, avgPop: 0, cats: new Set() };
+    list.forEach(p => {
+        if (!map[p.merchant]) map[p.merchant] = { name: p.merchant, count: 0, totalMargin: 0, totalPop: 0, cats: new Set(), hasOverride: false };
         map[p.merchant].count++;
         map[p.merchant].totalMargin += p.margin_pct || 0;
         map[p.merchant].totalPop += p.popularity || 0;
         map[p.merchant].cats.add(p.category);
+        if (p.has_override) map[p.merchant].hasOverride = true;
     });
-    return Object.values(map).map(m => { 
-        m.avgMargin = m.totalMargin / m.count; 
-        m.avgPop = m.totalPop / m.count; 
-        return m; 
+    return Object.values(map).map(m => {
+        m.avgMargin = m.totalMargin / m.count;
+        m.avgPop = m.totalPop / m.count;
+        return m;
+    });
+}
+
+function currentProductFilter() {
+    const cat = document.getElementById('merchCat').value;
+    const country = document.getElementById('merchCountry').value;
+    const reg = document.getElementById('merchRegion').value;
+    const curr = document.getElementById('merchCurrency').value;
+    return products.filter(p => {
+        if (cat && p.category !== cat) return false;
+        if (country && p.country !== country) return false;
+        if (reg && p.region !== reg) return false;
+        if (curr && p.currency !== curr) return false;
+        return true;
     });
 }
 
 function filterMerchants() {
     const q = document.getElementById('merchSearch').value.toLowerCase();
     const sort = document.getElementById('merchSort').value;
-    let list = getMerchants().filter(m => !q || m.name.toLowerCase().includes(q));
-    
+    let list = getMerchants(currentProductFilter()).filter(m => !q || m.name.toLowerCase().includes(q));
+
     switch (sort) {
         case 'count_desc': list.sort((a, b) => b.count - a.count); break;
         case 'count_asc': list.sort((a, b) => a.count - b.count); break;
@@ -99,9 +121,10 @@ function filterMerchants() {
 
     document.getElementById('merchantCards').innerHTML = list.map(m => {
         const popLabel = m.avgPop > 80 ? '🔥 High' : m.avgPop > 50 ? '📈 Medium' : 'Standard';
+        const star = m.hasOverride ? ' <span class="badge badge-success" title="Special approved rate">★ Special rate</span>' : '';
         return `
-            <div class="product-card" style="cursor:pointer" onclick="selectMerchant('${esc(m.name)}')">
-                <div class="pc-name">${esc(m.name)}</div>
+            <div class="product-card" style="cursor:pointer" onclick="selectMerchant('${esc(m.name).replace(/'/g, "\\'")}')">
+                <div class="pc-name">${esc(m.name)}${star}</div>
                 <div class="pc-merchant">${m.count} products · ${m.cats.size} categories</div>
                 <div class="pc-prices">
                     <div><div class="pc-price-label">Products</div><div class="pc-price-value">${m.count}</div></div>
@@ -118,7 +141,7 @@ function filterMerchants() {
 
 function selectMerchant(name) {
     selectedMerchant = name;
-    merchProductsList = products.filter(p => p.merchant === name);
+    merchProductsList = currentProductFilter().filter(p => p.merchant === name);
     document.getElementById('merchTitle').textContent = `${name} — ${merchProductsList.length} Products`;
     document.getElementById('merchProducts').style.display = 'block';
     sortCol = -1;
@@ -147,22 +170,12 @@ function renderMerchProducts() {
             <td class="fw6 truncate" title="${esc(p.product_name)}">${esc(p.product_name)}</td>
             <td><span class="badge badge-accent">${esc(p.category)}</span></td>
             <td><span class="badge badge-info">${esc(p.country)}</span></td>
-            <td class="fw6" style="color:${tierColor}">${fmt(p.client_price)} ${p.currency}</td>
-            <td class="fw6 text-s">${fmt(p.discount)} ${p.currency}</td>
+            <td class="fw6" style="color:${tierColor}">${fmt(p.client_price)} ${esc(p.currency)}</td>
+            <td class="fw6 text-s">${fmt(p.discount)} ${esc(p.currency)}</td>
             <td class="fw6 text-s">${p.margin_pct.toFixed(1)}%</td>
             <td><span class="badge ${p.popularity > 80 ? 'badge-warning' : 'badge-ghost'}">${popTag}</span></td>
         </tr>`;
     }).join('');
-}
-
-function exportMerchantCSV() {
-    if (!selectedMerchant) return;
-    const prods = products.filter(p => p.merchant === selectedMerchant);
-    downloadCSV(
-        ['Product', 'Category', 'Country', 'Currency', 'Your Price', 'Discount', 'Margin %'],
-        prods.map(p => [p.product_name, p.category, p.country, p.currency, p.client_price, p.discount, p.margin_pct]),
-        `${selectedMerchant}_products.csv`
-    );
 }
 
 filterMerchants();

@@ -1,21 +1,11 @@
 {% extends "base.html" %}
 {% block title %}Product Catalogue — OneCard Sales{% endblock %}
-{% block sidebar %}
-<div class="nav-section">Sales</div>
-<a href="/sales" class="nav-item"><span class="icon">📊</span>Dashboard</a>
-<a href="/sales/register" class="nav-item"><span class="icon">➕</span>Register Reseller</a>
-<a href="/sales/resellers" class="nav-item"><span class="icon">👥</span>My Resellers</a>
-<a href="/sales/catalogue" class="nav-item active"><span class="icon">📦</span>Product Catalogue</a>
-{% endblock %}
 
 {% block content %}
 <div class="page-header">
     <div>
         <h1 class="page-title">📦 Master Product Catalogue</h1>
-        <p class="page-subtitle">{{ products|length }} products registered in system database</p>
-    </div>
-    <div class="page-actions">
-        <button class="btn btn-primary" onclick="exportMasterCSV()">📥 Export master catalog</button>
+        <p class="page-subtitle">{{ products|length }} products registered in system database · view-only (exports are disabled for data confidentiality)</p>
     </div>
 </div>
 
@@ -34,6 +24,12 @@
             <option value="">All Regions</option>
             {% for r in regions %}<option value="{{ r }}">{{ r }}</option>{% endfor %}
         </select>
+        <select id="countryFilter" style="width:160px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterTable()">
+            <option value="">All Countries</option>
+        </select>
+        <select id="currencyFilter" style="width:130px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterTable()">
+            <option value="">All Currencies</option>
+        </select>
         <span id="resultCount" class="text-muted" style="font-size:13px"></span>
     </div>
 </div>
@@ -46,8 +42,8 @@
                 <tr>
                     <th onclick="sortTable(0)">Product ↕</th>
                     <th onclick="sortTable(1)">Merchant ↕</th>
-                    <th onclick="sortTable(2)">Category</th>
-                    <th onclick="sortTable(3)">Country</th>
+                    <th>Category</th>
+                    <th>Country</th>
                     <th>Cost</th>
                     <th>Default Price</th>
                     <th>Margin</th>
@@ -75,14 +71,26 @@ let currentPage = 1;
 const pageSize = 50;
 let sortCol = -1, sortAsc = true;
 
+// Populate country + currency filters from data
+(function () {
+    const countries = [...new Set(allProducts.map(p => p.country))].sort();
+    const currencies = [...new Set(allProducts.map(p => p.currency).filter(Boolean))].sort();
+    document.getElementById('countryFilter').innerHTML += countries.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
+    document.getElementById('currencyFilter').innerHTML += currencies.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
+})();
+
 function filterTable() {
     const search = document.getElementById('searchInput').value.toLowerCase();
     const cat = document.getElementById('catFilter').value;
     const reg = document.getElementById('regionFilter').value;
+    const country = document.getElementById('countryFilter').value;
+    const curr = document.getElementById('currencyFilter').value;
     filtered = allProducts.filter(p => {
         if (search && !p.product_name.toLowerCase().includes(search) && !p.merchant.toLowerCase().includes(search)) return false;
         if (cat && p.category !== cat) return false;
         if (reg && p.region !== reg) return false;
+        if (country && p.country !== country) return false;
+        if (curr && p.currency !== curr) return false;
         return true;
     });
     currentPage = 1;
@@ -92,11 +100,10 @@ function filterTable() {
 function sortTable(col) {
     if (sortCol === col) sortAsc = !sortAsc;
     else { sortCol = col; sortAsc = true; }
-    const keys = ['product_name', 'merchant', 'category', 'country'];
-    if (col < 4) {
+    const keys = ['product_name', 'merchant'];
+    if (col < 2) {
         filtered.sort((a, b) => {
-            let va = a[keys[col]], vb = b[keys[col]];
-            if (typeof va === 'string') { va = va.toLowerCase(); vb = (vb || '').toLowerCase(); }
+            let va = (a[keys[col]] || '').toLowerCase(), vb = (b[keys[col]] || '').toLowerCase();
             if (va < vb) return sortAsc ? -1 : 1;
             if (va > vb) return sortAsc ? 1 : -1;
             return 0;
@@ -114,20 +121,20 @@ function renderTable() {
         const tierCells = tiers.map(t => {
             const disc = (p.oc_margin || 0) * (t.margin_share_pct / 100);
             const pr = Math.max((p.default_price || 0) - disc, p.cost || 0);
-            return `<td class="fw6" style="color:${t.color}">${fmt(pr)} ${p.currency}</td>`;
+            return `<td class="fw6" style="color:${t.color}">${fmt(pr)} ${esc(p.currency)}</td>`;
         }).join('');
         return `<tr>
             <td class="fw6 truncate" title="${esc(p.product_name)}">${esc(p.product_name)}</td>
             <td class="text-muted truncate" title="${esc(p.merchant)}">${esc(p.merchant)}</td>
             <td><span class="badge badge-accent">${esc(p.category)}</span></td>
             <td><span class="badge badge-info">${esc(p.country)}</span></td>
-            <td class="fw6">${fmt(p.cost)} ${p.currency}</td>
-            <td class="fw6">${fmt(p.default_price)} ${p.currency}</td>
+            <td class="fw6">${fmt(p.cost)} ${esc(p.currency)}</td>
+            <td class="fw6">${fmt(p.default_price)} ${esc(p.currency)}</td>
             <td class="fw6 ${p.oc_margin_pct > 3 ? 'text-s' : p.oc_margin_pct > 1 ? 'text-w' : 'text-d'}">${p.oc_margin_pct.toFixed(1)}%</td>
             ${tierCells}
         </tr>`;
     }).join('');
-    document.getElementById('pageInfo').textContent = `${start + 1}-${end} of ${filtered.length}`;
+    document.getElementById('pageInfo').textContent = filtered.length ? `${start + 1}-${end} of ${filtered.length}` : '0 results';
     renderPagination();
 }
 
@@ -144,18 +151,6 @@ function renderPagination() {
 }
 
 function goPage(p) { currentPage = p; renderTable(); }
-
-function exportMasterCSV() {
-    const headers = ['Product', 'Merchant', 'Category', 'Country', 'Currency', 'Cost', 'Default Price', 'OC Margin', ...tiers.map(t => t.name + ' Price')];
-    const rows = filtered.map(p => {
-        const prices = tiers.map(t => {
-            const disc = (p.oc_margin || 0) * (t.margin_share_pct / 100);
-            return Math.max((p.default_price || 0) - disc, p.cost || 0).toFixed(2);
-        });
-        return [p.product_name, p.merchant, p.category, p.country, p.currency, p.cost, p.default_price, p.oc_margin, ...prices];
-    });
-    downloadCSV(headers, rows, 'master_catalogue.csv');
-}
 
 filterTable();
 </script>

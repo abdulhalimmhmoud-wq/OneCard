@@ -141,26 +141,36 @@ def seed_products():
     # Normalize columns
     df.columns = [c.strip() for c in df.columns]
 
+    # Exact-name preferred mapping (matches OneCard system export headers).
+    # INTEGRATION NOTE: when the technical team connects the live company system,
+    # this mapping is the single place that defines which source fields feed the platform.
+    PREFERRED = {
+        'product_id':    ['product id'],
+        'product_name':  ['product name'],
+        'merchant':      ['merchant name'],
+        'merchant_id':   ['merchant id'],
+        'currency':      ['product currency'],
+        'cost':          ['cost price'],
+        'default_price': ['default reseller price'],
+        'face_value':    ['recommended retail price (resellers currency)'],
+    }
     col_map = {}
+    cols_lower = {c.lower().strip(): c for c in df.columns}
+    for key, names in PREFERRED.items():
+        for n in names:
+            if n in cols_lower:
+                col_map[key] = cols_lower[n]
+                break
+
+    # Fallbacks for slightly different header spellings
     for c in df.columns:
         cl = c.lower()
-        if 'product' in cl and 'name' in cl:  col_map['product_name'] = c
-        elif 'product' in cl and 'id' in cl:  col_map['product_id'] = c
-        elif 'merchant' in cl and 'name' in cl: col_map['merchant'] = c
-        elif 'merchant' in cl and 'id' in cl: col_map['merchant_id'] = c
-        elif 'cost' in cl:                    col_map['cost'] = c
-        elif 'default' in cl and 'price' in cl: col_map['default_price'] = c
-        elif 'price' in cl and 'default' not in cl and 'face' not in cl:
-            if 'default_price' not in col_map: col_map['default_price'] = c
-        elif 'face' in cl:                    col_map['face_value'] = c
-        elif 'currency' in cl:               col_map['currency'] = c
-
-    # Fallbacks
-    if 'merchant' not in col_map:
-        for c in df.columns:
-            if 'merchant' in c.lower():
-                col_map['merchant'] = c
-                break
+        if 'product_name' not in col_map and 'product' in cl and 'name' in cl: col_map['product_name'] = c
+        if 'merchant' not in col_map and 'merchant' in cl and 'name' in cl:    col_map['merchant'] = c
+        if 'cost' not in col_map and cl.strip() == 'cost price':               col_map['cost'] = c
+        if 'default_price' not in col_map and 'default' in cl and 'price' in cl: col_map['default_price'] = c
+        if 'currency' not in col_map and cl.strip() == 'product currency':     col_map['currency'] = c
+        if 'face_value' not in col_map and 'recommended retail price' in cl and 'vat' not in cl: col_map['face_value'] = c
 
     from models import get_db
     conn = get_db()
