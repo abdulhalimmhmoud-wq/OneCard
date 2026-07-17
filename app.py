@@ -522,9 +522,11 @@ def finance_dashboard():
     history = [t for t in models.get_topups() if t['status'] != 'pending'][:30]
     resellers = models.get_all_resellers()
     total_balance = sum(r['wallet_balance'] or 0 for r in resellers)
+    pending_batches = len(models.get_batches(status='awaiting_reconciliation'))
     return render_template('finance/dashboard.html', active_tab='finance',
                            pending=pending, history=history,
-                           resellers=resellers, total_balance=total_balance)
+                           resellers=resellers, total_balance=total_balance,
+                           pending_batches=pending_batches)
 
 
 @app.route('/finance/review/<int:txn_id>', methods=['POST'])
@@ -706,6 +708,198 @@ def ops_delete_supplier(sid):
 def ops_pricelog():
     log = models.get_price_log(limit=300)
     return render_template('ops/pricelog.html', active_tab='ops_pricelog', log=log)
+
+
+# ── Ops: Multi-Supplier Sourcing (v6) ────────────────────────────
+
+@app.route('/ops/sourcing')
+@auth.ops_required
+def ops_sourcing():
+    search = request.args.get('q', '').strip()
+    merchant = request.args.get('merchant', '').strip()
+    only_multi = request.args.get('multi') == '1'
+    matrix = models.get_sourcing_matrix(search or None, merchant or None, only_multi)
+    merchant_summary = models.get_merchant_sourcing_summary()[:10]
+    suppliers = models.get_suppliers()
+    return render_template('ops/sourcing.html', active_tab='ops_sourcing',
+                           matrix=matrix, matrix_json=json.dumps(matrix),
+                           merchant_summary=merchant_summary,
+                           suppliers=suppliers,
+                           suppliers_json=json.dumps([{'id': s['id'], 'name': s['name']} for s in suppliers]),
+                           merchants=[m['merchant'] for m in models.get_all_merchants()],
+                           q=search, sel_merchant=merchant, only_multi=only_multi)
+
+
+@app.route('/ops/sourcing/price', methods=['POST'])
+@auth.ops_required
+def ops_sourcing_price():
+    curr = auth.get_current_user()
+    sid = int(request.form.get('supplier_id'))
+    pid = int(request.form.get('product_rowid'))
+    cost = float(request.form.get('cost') or 0)
+    if cost <= 0:
+        flash("Enter a valid cost.", "error")
+    else:
+        changed = models.upsert_supplier_price(sid, pid, cost, source='manual', changed_by=curr['id'])
+        flash("Offer saved." if changed else "Price unchanged.", "success" if changed else "info")
+    return redirect(request.referrer or url_for('ops_sourcing'))
+
+
+@app.route('/ops/sourcing/availability', methods=['POST'])
+@auth.ops_required
+def ops_sourcing_availability():
+    models.set_offer_availability(int(request.form.get('supplier_id')),
+                                  int(request.form.get('product_rowid')),
+                                  request.form.get('available') == '1')
+    flash("Offer availability updated.", "info")
+    return redirect(request.referrer or url_for('ops_sourcing'))
+
+
+@app.route('/ops/suppliers/<int:sid>/prices/upload', methods=['POST'])
+@auth.ops_required
+def ops_supplier_price_upload(sid):
+    curr = auth.get_current_user()
+    file = request.files.get('pricefile')
+    if not file or not file.filename:
+        flash("Choose a price file.", "error")
+        return redirect(url_for('ops_suppliers'))
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in ALLOWED_PRICEFILE_EXT:
+        flash("Price file must be .xls or .xlsx", "error")
+        return redirect(url_for('ops_suppliers'))
+    path = os.path.join(PRICEFILE_DIR, f"sp_{uuid.uuid4().hex[:10]}{ext}")
+    file.save(path)
+    summary, err = models.bulk_import_supplier_prices(sid, path, curr['id'])
+    os.remove(path)
+    if err:
+        flash(err, "error")
+    else:
+        flash(f"Supplier price list imported — {summary['updated']} updated, "
+              f"{summary['unchanged']} unchanged, {summary['unmatched']} unmatched.", "success")
+    return redirect(url_for('ops_sourcing'))
+
+
+@app.route('/ops/suppliers/<int:sid>/apikey', methods=['POST'])
+@auth.ops_required
+def ops_supplier_apikey(sid):
+    key = f"oc_{uuid.uuid4().hex}"
+    models.set_supplier_api_key(sid, key)
+    flash(f"API key generated for automated price sync: {key}", "success")
+    return redirect(url_for('ops_suppliers'))
+
+
+@app.route('/api/supplier-prices', methods=['POST'])
+def api_supplier_prices():
+    """INTEGRATION ENDPOINT — suppliers (or the company middleware) push price updates.
+    Body: {"api_key": "...", "items": [{"product_id": "6017", "cost": 95.5}, ...]}"""
+    data = request.get_json(silent=True) or {}
+    supplier = models.get_supplier_by_api_key(data.get('api_key', ''))
+    if not supplier:
+        return {'ok': False, 'error': 'invalid api_key'}, 401
+    conn = models.get_db()
+    id_map = {str(r['product_id']): r['id'] for r in conn.execute("SELECT id, product_id FROM products")}
+    conn.close()
+    updated = unmatched = 0
+    for it in data.get('items', []):
+        pid = id_map.get(str(it.get('product_id', '')).strip())
+        try:
+            cost = float(it.get('cost'))
+        except (TypeError, ValueError):
+            continue
+        if pid and cost > 0:
+            if models.upsert_supplier_price(supplier['id'], pid, cost, source='api'):
+                updated += 1
+        else:
+            unmatched += 1
+    return {'ok': True, 'supplier': supplier['name'], 'updated': updated, 'unmatched': unmatched}
+
+
+@app.route('/ops/batches', methods=['GET', 'POST'])
+@auth.ops_required
+def ops_batches():
+    curr = auth.get_current_user()
+    if request.method == 'POST':
+        sid = int(request.form.get('supplier_id') or 0)
+        pid = int(request.form.get('product_rowid') or 0)
+        qty = int(request.form.get('quantity') or 0)
+        unit_cost = float(request.form.get('unit_cost') or 0)
+        invoice = request.form.get('invoice_ref', '').strip()
+        reason = request.form.get('reason', '').strip()
+        if not sid or not pid or qty <= 0 or unit_cost <= 0:
+            flash("Supplier, product, quantity and unit cost are required.", "error")
+        else:
+            bid, err = models.create_batch(sid, pid, qty, unit_cost, invoice, reason, curr['id'])
+            if err:
+                flash(err, "error")
+            else:
+                flash(f"Batch #{bid} recorded — sent to Finance for reconciliation.", "success")
+                return redirect(url_for('ops_batches'))
+
+    batches = models.get_batches()
+    suppliers = models.get_suppliers()
+    products = models.get_products(include_inactive=False)
+    products_json = json.dumps([{'id': p['id'], 'product_name': p['product_name'],
+                                 'merchant': p['merchant'], 'cost': p['cost'],
+                                 'currency': p['currency']} for p in products])
+    # per-product best offers for the live warning
+    offers = {}
+    for row in models.get_sourcing_matrix():
+        if row['best_cost'] is not None:
+            offers[row['id']] = {'best_cost': row['best_cost'], 'best_supplier': row['best_supplier']}
+    return render_template('ops/batches.html', active_tab='ops_batches',
+                           batches=batches, suppliers=suppliers,
+                           products_json=products_json, offers_json=json.dumps(offers))
+
+
+# ── Finance: Batch Reconciliation (v6) ───────────────────────────
+
+@app.route('/finance/batches')
+@auth.finance_required
+def finance_batches():
+    pending = models.get_batches(status='awaiting_reconciliation')
+    history = [b for b in models.get_batches() if b['status'] != 'awaiting_reconciliation'][:30]
+    return render_template('finance/batches.html', active_tab='finance_batches',
+                           pending=pending, history=history)
+
+
+@app.route('/finance/batches/<int:bid>/review', methods=['POST'])
+@auth.finance_required
+def finance_batch_review(bid):
+    curr = auth.get_current_user()
+    ok = request.form.get('decision') == 'reconcile'
+    note = request.form.get('note', '')
+    b = models.reconcile_batch(bid, ok, curr['id'], note)
+    if not b:
+        flash("Batch not found or already reviewed.", "error")
+    elif ok:
+        flash(f"Batch #{bid} reconciled against invoice.", "success")
+    else:
+        flash(f"Batch #{bid} marked as disputed — Ops notified.", "warning")
+    return redirect(url_for('finance_batches'))
+
+
+# ── BD / CCO: Sourcing Intelligence (v6) ─────────────────────────
+
+@app.route('/sourcing-intel')
+@auth.cco_required
+def sourcing_intel():
+    ym = request.args.get('ym') or datetime.now().strftime('%Y-%m')
+    kpis = models.get_sourcing_kpis()
+    sales_by_supplier = models.get_sales_by_supplier(ym)
+    sales_all_time = models.get_sales_by_supplier(None)
+    scorecards = models.get_supplier_scorecards()
+    opportunities = [r for r in models.get_sourcing_matrix() if r['saving_vs_std'] > 0]
+    opportunities.sort(key=lambda x: -x['saving_vs_std'])
+    improvements = models.get_margin_improvements()
+    variance_batches = [b for b in models.get_batches() if b['sourcing_variance'] > 0][:15]
+    return render_template('sourcing_intel.html', active_tab='sourcing_intel',
+                           kpis=kpis, ym=ym,
+                           sales_by_supplier=sales_by_supplier,
+                           sales_all_time=sales_all_time,
+                           scorecards=scorecards,
+                           opportunities=opportunities[:15],
+                           improvements=improvements,
+                           variance_batches=variance_batches)
 
 
 # ── Governance: Team Performance (v5) ────────────────────────────

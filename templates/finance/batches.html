@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Batch Reconciliation — OneCard Finance{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">📥 Purchase Batch Reconciliation</h1>
+        <p class="page-subtitle">Match every stock purchase against the supplier invoice — the financial gate of the sourcing cycle</p>
+    </div>
+</div>
+
+<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr))">
+    <div class="stat-card" style="{{ 'border:2px solid var(--warning)' if pending }}">
+        <div class="stat-icon">⏳</div>
+        <div class="stat-value">{{ pending|length }}</div>
+        <div class="stat-label">Awaiting Reconciliation</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">💰</div>
+        <div class="stat-value">{{ pending|sum(attribute='total_cost')|money }}</div>
+        <div class="stat-label">Value Pending (SAR-equiv)</div>
+    </div>
+</div>
+
+{% for b in pending %}
+<div class="card mb-24" style="border-left:3px solid var(--warning)">
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:16px;align-items:center">
+        <div style="flex:1;min-width:280px">
+            <div class="fw6" style="font-size:15px">Batch #{{ b.id }} — {{ b.product_name }}</div>
+            <div class="text-muted" style="font-size:12px;margin-top:4px">
+                {{ b.merchant }} · recorded by {{ b.created_by_name or 'Ops' }} · {{ b.created_at[:16] }}
+            </div>
+            <div style="margin-top:8px;font-size:13px">
+                Supplier: <b>{{ b.supplier_name }}</b> · Invoice: <b>{{ b.invoice_ref or '—' }}</b><br>
+                {{ b.quantity|money }} units × {{ b.unit_cost }} = <b>{{ b.total_cost|money }} {{ b.currency }}</b>
+                {% if b.sourcing_variance > 0 %}
+                <span class="badge badge-danger" style="margin-left:8px" title="Bought above best available price at purchase time">⚠️ variance +{{ b.sourcing_variance|money }}</span>
+                {% endif %}
+            </div>
+            {% if b.reason %}
+            <div class="text-muted" style="font-size:12px;margin-top:6px;padding:6px 10px;background:var(--bg-2);border-radius:8px">
+                🗒️ Ops reason: {{ b.reason }}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    <form method="POST" action="/finance/batches/{{ b.id }}/review" style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;align-items:center">
+        <input type="text" name="note" placeholder="Reconciliation note / discrepancy details (optional)" style="flex:1;min-width:220px">
+        <button type="submit" name="decision" value="reconcile" class="btn btn-primary"
+                onclick="return confirm('Confirm this batch matches the supplier invoice?')">✅ Reconcile</button>
+        <button type="submit" name="decision" value="dispute" class="btn btn-danger"
+                onclick="return confirm('Mark as disputed? Ops will be notified.')">❌ Dispute</button>
+    </form>
+</div>
+{% else %}
+<div class="card mb-24" style="text-align:center;padding:50px">
+    <div style="font-size:40px;margin-bottom:12px">✅</div>
+    <div class="fw6">No batches awaiting reconciliation</div>
+    <div class="text-muted" style="font-size:13px;margin-top:4px">Ops records purchases from Operations → Purchase Batches</div>
+</div>
+{% endfor %}
+
+<div class="table-card">
+    <div class="table-header"><div class="table-title">📜 Reconciliation History</div></div>
+    <div class="table-scroll">
+        <table>
+            <thead><tr><th>Batch</th><th>Supplier</th><th>Value</th><th>Status</th><th>Reviewed By</th></tr></thead>
+            <tbody>
+            {% for b in history %}
+            <tr>
+                <td class="fw6">#{{ b.id }}
+                    <div class="text-muted" style="font-size:10px;max-width:220px" title="{{ b.product_name }}">{{ b.product_name[:40] }}</div>
+                </td>
+                <td>{{ b.supplier_name }}</td>
+                <td class="fw6">{{ b.total_cost|money }}</td>
+                <td>
+                    {% if b.status == 'reconciled' %}<span class="badge badge-success">✅ Reconciled</span>
+                    {% else %}<span class="badge badge-danger">❌ Disputed</span>{% endif %}
+                    {% if b.reconcile_note %}<div class="text-muted" style="font-size:10px">{{ b.reconcile_note }}</div>{% endif %}
+                </td>
+                <td class="text-muted" style="font-size:12px">{{ b.reconciled_by_name or '—' }}<br>{{ b.reconciled_at[:16] if b.reconciled_at }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" style="text-align:center;padding:30px;color:var(--text-3)">No history yet</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

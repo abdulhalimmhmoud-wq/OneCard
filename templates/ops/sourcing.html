@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}Sourcing Matrix — OneCard Ops{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">⚖️ Sourcing Matrix</h1>
+        <p class="page-subtitle">Every supplier offer per product — the cheapest source is always highlighted</p>
+    </div>
+    <div class="page-actions">
+        <a href="/ops/batches" class="btn btn-primary">📥 Record Purchase Batch</a>
+    </div>
+</div>
+
+<!-- Merchant savings summary -->
+{% if merchant_summary %}
+<div class="card mb-24">
+    <div class="card-header"><div class="card-title">💡 Biggest Saving Opportunities by Merchant</div></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+        {% for m in merchant_summary if m.total_saving > 0 %}
+        <a href="/ops/sourcing?merchant={{ m.merchant|urlencode }}" class="btn btn-sm btn-ghost" style="text-decoration:none">
+            {{ m.merchant }} <span class="badge badge-success" style="margin-left:4px">save {{ m.total_saving|round(1) }}/unit-set · {{ m.improvable }} products</span>
+        </a>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+<!-- Filters -->
+<div class="card mb-24">
+    <form method="GET" action="/ops/sourcing" style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
+        <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input type="search" name="q" value="{{ q }}" placeholder="Search product or merchant...">
+        </div>
+        <select name="merchant" style="width:220px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px">
+            <option value="">All Merchants</option>
+            {% for m in merchants %}<option value="{{ m }}" {{ 'selected' if m == sel_merchant }}>{{ m }}</option>{% endfor %}
+        </select>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+            <input type="checkbox" name="multi" value="1" {{ 'checked' if only_multi }} style="width:auto"> Multi-supplier only
+        </label>
+        <button type="submit" class="btn btn-sm btn-primary">Filter</button>
+        <span class="text-muted" style="font-size:13px">{{ matrix|length }} products with offers</span>
+    </form>
+</div>
+
+<!-- Matrix -->
+{% for r in matrix[:80] %}
+<div class="card mb-24" style="padding:16px 20px">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+        <div style="flex:1;min-width:260px">
+            <div class="fw6">{{ r.product_name }}</div>
+            <div class="text-muted" style="font-size:11px">{{ r.merchant }} · ID {{ r.product_id }} · Std cost: <b>{{ r.std_cost }}</b> {{ r.currency }}</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            {% if r.best_cost is not none %}
+                <span class="badge badge-success">🏆 Best: {{ r.best_supplier }} @ {{ r.best_cost }}</span>
+                {% if r.saving_vs_std > 0 %}
+                <span class="badge badge-warning">⬇ {{ r.saving_vs_std }} below std cost</span>
+                {% endif %}
+            {% endif %}
+            <span class="badge badge-ghost">{{ r.offer_count }} offer(s)</span>
+        </div>
+    </div>
+    <!-- offers -->
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
+        {% for o in r.offers %}
+        <div style="border:1px solid {{ 'var(--success)' if o.supplier_id == r.best_supplier_id and o.is_available else 'var(--border)' }};border-radius:10px;padding:8px 12px;min-width:200px;{{ 'opacity:.45' if not o.is_available }}">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+                <span class="fw6" style="font-size:12px">{{ o.supplier_name }}</span>
+                {% if o.supplier_id == r.best_supplier_id and o.is_available %}<span style="font-size:12px">🏆</span>{% endif %}
+            </div>
+            <form method="POST" action="/ops/sourcing/price" style="display:flex;gap:6px;margin-top:6px;align-items:center">
+                <input type="hidden" name="supplier_id" value="{{ o.supplier_id }}">
+                <input type="hidden" name="product_rowid" value="{{ r.id }}">
+                <input type="number" name="cost" value="{{ o.supplier_cost }}" step="0.001" min="0.001" style="width:90px;padding:5px 8px;font-size:12px">
+                <button class="btn btn-sm btn-ghost" type="submit" title="Save price">💾</button>
+            </form>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px">
+                <span class="text-muted" style="font-size:10px">{{ o.source }} · {{ o.updated_at[:10] }}</span>
+                <form method="POST" action="/ops/sourcing/availability">
+                    <input type="hidden" name="supplier_id" value="{{ o.supplier_id }}">
+                    <input type="hidden" name="product_rowid" value="{{ r.id }}">
+                    <input type="hidden" name="available" value="{{ 0 if o.is_available else 1 }}">
+                    <button class="btn btn-sm btn-ghost" style="font-size:10px;padding:2px 8px" type="submit">
+                        {{ 'Mark unavailable' if o.is_available else 'Mark available' }}
+                    </button>
+                </form>
+            </div>
+        </div>
+        {% endfor %}
+        <!-- add offer -->
+        <form method="POST" action="/ops/sourcing/price" style="border:1px dashed var(--border);border-radius:10px;padding:8px 12px;display:flex;flex-direction:column;gap:6px;min-width:210px">
+            <span class="text-muted" style="font-size:11px">➕ Add supplier offer</span>
+            <input type="hidden" name="product_rowid" value="{{ r.id }}">
+            <select name="supplier_id" style="padding:5px 8px;font-size:12px">
+                {% for s in suppliers %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}
+            </select>
+            <div style="display:flex;gap:6px">
+                <input type="number" name="cost" placeholder="cost" step="0.001" min="0.001" style="width:90px;padding:5px 8px;font-size:12px" required>
+                <button class="btn btn-sm btn-primary" type="submit">Add</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% else %}
+<div class="card" style="text-align:center;padding:50px">
+    <div style="font-size:40px;margin-bottom:12px">⚖️</div>
+    <div class="fw6">No supplier offers yet</div>
+    <div class="text-muted" style="font-size:13px;margin-top:6px">
+        Add offers here per product, upload a supplier price list from the
+        <a href="/ops/suppliers" style="color:var(--accent)">Suppliers</a> page,
+        or connect the supplier API.
+    </div>
+</div>
+{% endfor %}
+{% if matrix|length > 80 %}
+<div class="text-muted" style="text-align:center;font-size:12px">Showing first 80 — refine the filters to narrow down.</div>
+{% endif %}
+{% endblock %}

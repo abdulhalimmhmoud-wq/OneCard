@@ -25,6 +25,11 @@
         <div class="stat-value">{{ resellers|length }}</div>
         <div class="stat-label">Reseller Accounts</div>
     </div>
+    <div class="stat-card" style="{{ 'border:2px solid var(--warning)' if pending_batches }}">
+        <div class="stat-icon">📥</div>
+        <div class="stat-value">{{ pending_batches }}</div>
+        <div class="stat-label"><a href="/finance/batches" style="color:inherit">Batches to Reconcile →</a></div>
+    </div>
 </div>
 
 {% for t in pending %}

@@ -79,6 +79,21 @@
                     </form>
                 </div>
             </div>
+            <!-- v6: price feed tools -->
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
+                <form method="POST" action="/ops/suppliers/{{ s.id }}/prices/upload" enctype="multipart/form-data" style="display:flex;gap:8px;align-items:center">
+                    <input type="file" name="pricefile" accept=".xls,.xlsx" required
+                           style="padding:5px;background:var(--bg-2);border:1px dashed var(--border);border-radius:8px;font-size:11px;color:var(--text-2);max-width:220px">
+                    <button class="btn btn-sm btn-primary" type="submit">📄 Import Price List</button>
+                </form>
+                <form method="POST" action="/ops/suppliers/{{ s.id }}/apikey"
+                      onsubmit="return confirm('Generate a new API key for {{ s.name }}? Any old key stops working.')">
+                    <button class="btn btn-sm btn-ghost" type="submit">🔑 {{ 'Rotate' if s.api_key else 'Generate' }} API Key</button>
+                </form>
+                {% if s.api_key %}
+                <span class="text-muted" style="font-size:10px;font-family:monospace">key: {{ s.api_key[:14] }}··· <span title="POST /api/supplier-prices — automated price sync enabled">🟢 API sync ready</span></span>
+                {% endif %}
+            </div>
         </div>
         {% else %}
         <div class="card" style="text-align:center;padding:50px">

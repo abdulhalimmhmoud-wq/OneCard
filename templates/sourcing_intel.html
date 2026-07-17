@@ -1,0 +1,200 @@
+{% extends "base.html" %}
+{% block title %}Sourcing Intelligence — OneCard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">⚖️ Sourcing Intelligence</h1>
+        <p class="page-subtitle">Who we buy from, who we sell from, where the margin leaks — and where it improves</p>
+    </div>
+</div>
+
+<!-- KPIs -->
+<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">
+    <div class="stat-card">
+        <div class="stat-icon">🧾</div>
+        <div class="stat-value">{{ kpis.products_with_offers|money }}</div>
+        <div class="stat-label">Products with Supplier Offers</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">⚖️</div>
+        <div class="stat-value">{{ kpis.multi_source_products|money }}</div>
+        <div class="stat-label">Multi-Supplier Products</div>
+    </div>
+    <div class="stat-card" style="{{ 'border:2px solid var(--success)' if kpis.potential_saving > 0 }}">
+        <div class="stat-icon">💡</div>
+        <div class="stat-value" style="color:var(--success)">{{ kpis.potential_saving|money }}</div>
+        <div class="stat-label">Potential Saving / Unit-Set (best vs std)</div>
+    </div>
+    <div class="stat-card" style="{{ 'border:2px solid var(--danger)' if kpis.open_variance > 0 }}">
+        <div class="stat-icon">⚠️</div>
+        <div class="stat-value" style="{{ 'color:var(--danger)' if kpis.open_variance > 0 }}">{{ kpis.open_variance|money }}</div>
+        <div class="stat-label">Total Sourcing Variance (overpaid)</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">📦</div>
+        <div class="stat-value">{{ kpis.stock_value|money }}</div>
+        <div class="stat-label">Stock Value on Hand</div>
+    </div>
+    <div class="stat-card" style="{{ 'border:2px solid var(--warning)' if kpis.unreconciled }}">
+        <div class="stat-icon">⏳</div>
+        <div class="stat-value">{{ kpis.unreconciled }}</div>
+        <div class="stat-label">Batches Awaiting Finance</div>
+    </div>
+</div>
+
+<div class="grid-2">
+    <!-- Selling from which supplier -->
+    <div class="card">
+        <div class="card-header">
+            <div class="card-title">🛒 Who Are We Selling From? — {{ ym }}</div>
+        </div>
+        {% set max_rev = (sales_by_supplier | map(attribute='revenue') | max) if sales_by_supplier else 1 %}
+        {% for s in sales_by_supplier %}
+        <div style="margin-bottom:14px">
+            <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:4px">
+                <span class="fw6">{{ s.supplier_name }}</span>
+                <span>{{ s.units|money }} units · rev {{ s.revenue|money }} · <b class="{{ 'text-s' if s.profit >= 0 else 'text-d' }}">profit {{ s.profit|money }}</b> · {{ s.share_pct }}%</span>
+            </div>
+            <div style="background:var(--bg-2);border-radius:100px;height:9px;overflow:hidden">
+                <div style="height:100%;width:{{ (s.revenue / max_rev * 100)|round|int if max_rev else 0 }}%;background:linear-gradient(90deg,var(--accent),#8b5cf6)"></div>
+            </div>
+        </div>
+        {% else %}
+        <div style="text-align:center;padding:30px;color:var(--text-3)">No allocated sales this month yet</div>
+        {% endfor %}
+        {% if sales_all_time %}
+        <div style="border-top:1px solid var(--border);padding-top:10px;margin-top:6px">
+            <div class="text-muted" style="font-size:11px;margin-bottom:6px">ALL TIME</div>
+            {% for s in sales_all_time[:5] %}
+            <div style="display:flex;justify-content:space-between;font-size:11.5px;padding:3px 0">
+                <span>{{ s.supplier_name }}</span>
+                <span class="text-muted">{{ s.units|money }} units · profit <b class="{{ 'text-s' if s.profit >= 0 else 'text-d' }}">{{ s.profit|money }}</b></span>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Margin improvements -->
+    <div class="card">
+        <div class="card-header">
+            <div class="card-title">📈 Margin Improvements — cheaper batches</div>
+            <span class="badge badge-success">BD wins</span>
+        </div>
+        <div class="table-scroll" style="max-height:420px;overflow-y:auto">
+            <table>
+                <thead><tr><th>Product</th><th>Cost Δ</th><th>Since</th></tr></thead>
+                <tbody>
+                {% for i in improvements %}
+                <tr>
+                    <td class="truncate" style="max-width:220px" title="{{ i.product_name }}">
+                        <span class="fw6">{{ i.product_name }}</span>
+                        <div class="text-muted" style="font-size:10px">{{ i.merchant }} · now via {{ i.supplier_name }}</div>
+                    </td>
+                    <td>
+                        <span class="fw6">{{ i.prev_cost }} → <span class="text-s">{{ i.new_cost }}</span></span>
+                        <div><span class="badge badge-success" style="font-size:9px">-{{ i.improvement_pct }}% ({{ i.saving_per_unit }}/unit)</span></div>
+                    </td>
+                    <td class="text-muted" style="font-size:11px">Batch #{{ i.batch_id }}<br>{{ i.improved_at[:10] }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="3" style="text-align:center;padding:30px;color:var(--text-3)">No cost improvements recorded yet — they appear when a new batch beats the previous cost</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="grid-2 mt-24">
+    <!-- Opportunities -->
+    <div class="card">
+        <div class="card-header">
+            <div class="card-title">💡 Top Saving Opportunities</div>
+            <span class="badge badge-warning">best offer below our std cost</span>
+        </div>
+        <div class="table-scroll" style="max-height:420px;overflow-y:auto">
+            <table>
+                <thead><tr><th>Product</th><th>Std Cost</th><th>Best Offer</th><th>Saving</th></tr></thead>
+                <tbody>
+                {% for o in opportunities %}
+                <tr>
+                    <td class="truncate" style="max-width:220px" title="{{ o.product_name }}">
+                        <span class="fw6">{{ o.product_name }}</span>
+                        <div class="text-muted" style="font-size:10px">{{ o.merchant }}</div>
+                    </td>
+                    <td>{{ o.std_cost }}</td>
+                    <td><span class="fw6 text-s">{{ o.best_cost }}</span>
+                        <div class="text-muted" style="font-size:10px">{{ o.best_supplier }}</div></td>
+                    <td><span class="badge badge-success">{{ o.saving_vs_std }}/unit</span></td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4" style="text-align:center;padding:30px;color:var(--text-3)">No opportunities — either no offers registered or std cost is already the best</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Variance batches -->
+    <div class="card">
+        <div class="card-header">
+            <div class="card-title">⚠️ Sourcing Variance — bought above best</div>
+            <span class="badge badge-danger">governance</span>
+        </div>
+        <div class="table-scroll" style="max-height:420px;overflow-y:auto">
+            <table>
+                <thead><tr><th>Batch</th><th>Supplier / Reason</th><th>Paid vs Best</th><th>Overpaid</th></tr></thead>
+                <tbody>
+                {% for b in variance_batches %}
+                <tr>
+                    <td class="fw6">#{{ b.id }}
+                        <div class="text-muted" style="font-size:10px;max-width:160px" title="{{ b.product_name }}">{{ b.product_name[:30] }}</div>
+                    </td>
+                    <td style="font-size:12px">{{ b.supplier_name }}
+                        <div class="text-muted" style="font-size:10px;max-width:200px">{{ b.reason or 'No reason given ⚠️' }}</div>
+                    </td>
+                    <td class="fw6">{{ b.unit_cost }} vs {{ b.best_cost_at_purchase }}</td>
+                    <td><span class="badge badge-danger">+{{ b.sourcing_variance|money }}</span></td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4" style="text-align:center;padding:30px;color:var(--text-3)">✅ No overpaid batches — Ops is buying at the best available prices</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Supplier scorecards -->
+<div class="table-card mt-24">
+    <div class="table-header"><div class="table-title">🚚 Supplier Scorecards</div></div>
+    <div class="table-scroll">
+        <table>
+            <thead>
+                <tr><th>Supplier</th><th>Offers</th><th>Best-Price Offers</th><th>Batches</th><th>Total Spend</th><th>Overpaid (variance)</th><th>Units Sold From</th><th>Realized Profit</th></tr>
+            </thead>
+            <tbody>
+            {% for s in scorecards %}
+            <tr>
+                <td class="fw6">{{ s.name }}</td>
+                <td>{{ s.offers }}</td>
+                <td>
+                    {{ s.best_offers }}
+                    {% if s.offers %}<span class="text-muted" style="font-size:10px">({{ (s.best_offers / s.offers * 100)|round|int }}%)</span>{% endif %}
+                </td>
+                <td>{{ s.batches }}</td>
+                <td class="fw6">{{ s.spend|money }}</td>
+                <td>{% if s.variance > 0 %}<span class="badge badge-danger">+{{ s.variance|money }}</span>{% else %}<span class="badge badge-success">0</span>{% endif %}</td>
+                <td>{{ s.units_sold|money }}</td>
+                <td class="fw6 {{ 'text-s' if s.realized_profit >= 0 else 'text-d' }}">{{ s.realized_profit|money }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-3)">No suppliers yet</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

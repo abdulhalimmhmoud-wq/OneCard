@@ -301,6 +301,68 @@ def init_db():
             key TEXT PRIMARY KEY,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+
+        -- ── v6: Multi-supplier sourcing ───────────────────────
+        -- One product can be offered by many suppliers, each at their own cost.
+        CREATE TABLE IF NOT EXISTS supplier_products (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+            product_rowid INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            supplier_cost REAL NOT NULL,
+            is_available INTEGER NOT NULL DEFAULT 1,
+            source TEXT NOT NULL DEFAULT 'manual',    -- manual / bulk / api
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(supplier_id, product_rowid)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_supplier_products_product ON supplier_products(product_rowid);
+
+        CREATE TABLE IF NOT EXISTS supplier_price_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+            product_rowid INTEGER NOT NULL,
+            old_cost REAL,
+            new_cost REAL NOT NULL,
+            source TEXT NOT NULL DEFAULT 'manual',
+            changed_by INTEGER REFERENCES users(id),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        -- ── v6: Purchase batches (inventory lots) ─────────────
+        CREATE TABLE IF NOT EXISTS purchase_batches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
+            product_rowid INTEGER NOT NULL REFERENCES products(id),
+            quantity INTEGER NOT NULL,
+            remaining_qty INTEGER NOT NULL,
+            unit_cost REAL NOT NULL,
+            total_cost REAL NOT NULL,
+            best_cost_at_purchase REAL,               -- cheapest available offer at buy time
+            sourcing_variance REAL NOT NULL DEFAULT 0, -- (unit_cost - best) * qty, >0 = overpaid
+            reason TEXT,                               -- why this supplier (governance)
+            invoice_ref TEXT,
+            status TEXT NOT NULL DEFAULT 'awaiting_reconciliation'
+                CHECK(status IN ('awaiting_reconciliation','reconciled','disputed')),
+            created_by INTEGER REFERENCES users(id),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            reconciled_by INTEGER REFERENCES users(id),
+            reconciled_at TIMESTAMP,
+            reconcile_note TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_batches_product ON purchase_batches(product_rowid, created_at);
+
+        -- Which batch every sold unit came from (FIFO) → true COGS per sale
+        CREATE TABLE IF NOT EXISTS order_item_allocations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_item_id INTEGER NOT NULL REFERENCES order_items(id) ON DELETE CASCADE,
+            batch_id INTEGER REFERENCES purchase_batches(id),   -- NULL = unsourced (no stock recorded)
+            quantity INTEGER NOT NULL,
+            unit_cost REAL NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_allocations_batch ON order_item_allocations(batch_id);
     """)
     conn.commit()
     conn.close()
@@ -357,6 +419,11 @@ def migrate_db():
     fcols = {r['name'] for r in conn.execute("PRAGMA table_info(forecasts)")}
     if 'reviewed_at' not in fcols:
         conn.execute("ALTER TABLE forecasts ADD COLUMN reviewed_at TIMESTAMP")
+
+    # 5. suppliers: API key for automated price sync (v6)
+    scols = {r['name'] for r in conn.execute("PRAGMA table_info(suppliers)")}
+    if 'api_key' not in scols:
+        conn.execute("ALTER TABLE suppliers ADD COLUMN api_key TEXT")
 
     conn.commit()
     conn.close()
@@ -942,6 +1009,8 @@ def create_order(reseller_id, items):
     conn.execute("""INSERT INTO wallet_transactions (reseller_id, type, amount, status, note)
                     VALUES (?,?,?,?,?)""",
                  (reseller_id, 'order', -total_cost, 'approved', f'Order #{oid}'))
+    # v6: tie every sold unit to the supplier batch it came from (FIFO)
+    _allocate_order_fifo(conn, oid)
     conn.commit()
     conn.close()
     return oid, None
@@ -1361,6 +1430,404 @@ def delete_supplier(sid):
     conn.close()
 
 
+def set_supplier_api_key(sid, key):
+    conn = get_db()
+    conn.execute("UPDATE suppliers SET api_key=? WHERE id=?", (key, sid))
+    conn.commit()
+    conn.close()
+
+
+def get_supplier_by_api_key(key):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM suppliers WHERE api_key=? AND api_key IS NOT NULL", (key,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+# ── v6: Supplier Price Lists ─────────────────────────────────────
+
+def upsert_supplier_price(supplier_id, product_rowid, cost, source='manual', changed_by=None):
+    """Set a supplier's offer for a product. Logs history when the price changes.
+    INTEGRATION NOTE: the supplier API endpoint calls this with source='api'."""
+    conn = get_db()
+    old = conn.execute("""SELECT supplier_cost FROM supplier_products
+                          WHERE supplier_id=? AND product_rowid=?""",
+                       (supplier_id, product_rowid)).fetchone()
+    if old and abs(old['supplier_cost'] - cost) < 0.0005:
+        conn.close()
+        return False   # unchanged
+    conn.execute("""INSERT INTO supplier_products (supplier_id, product_rowid, supplier_cost, source, updated_at)
+                    VALUES (?,?,?,?,CURRENT_TIMESTAMP)
+                    ON CONFLICT(supplier_id, product_rowid)
+                    DO UPDATE SET supplier_cost=excluded.supplier_cost, source=excluded.source,
+                                  is_available=1, updated_at=CURRENT_TIMESTAMP""",
+                 (supplier_id, product_rowid, cost, source))
+    conn.execute("""INSERT INTO supplier_price_history
+                    (supplier_id, product_rowid, old_cost, new_cost, source, changed_by)
+                    VALUES (?,?,?,?,?,?)""",
+                 (supplier_id, product_rowid, old['supplier_cost'] if old else None,
+                  cost, source, changed_by))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def set_offer_availability(supplier_id, product_rowid, available):
+    conn = get_db()
+    conn.execute("""UPDATE supplier_products SET is_available=?, updated_at=CURRENT_TIMESTAMP
+                    WHERE supplier_id=? AND product_rowid=?""",
+                 (1 if available else 0, supplier_id, product_rowid))
+    conn.commit()
+    conn.close()
+
+
+def get_product_offers(product_rowid):
+    """All supplier offers for one product, cheapest first."""
+    conn = get_db()
+    rows = conn.execute("""SELECT sp.*, s.name as supplier_name
+                           FROM supplier_products sp JOIN suppliers s ON sp.supplier_id=s.id
+                           WHERE sp.product_rowid=? ORDER BY sp.supplier_cost""",
+                        (product_rowid,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_best_source(product_rowid):
+    """Cheapest AVAILABLE supplier offer for a product (or None)."""
+    conn = get_db()
+    row = conn.execute("""SELECT sp.supplier_id, sp.supplier_cost, s.name as supplier_name
+                          FROM supplier_products sp JOIN suppliers s ON sp.supplier_id=s.id
+                          WHERE sp.product_rowid=? AND sp.is_available=1
+                          ORDER BY sp.supplier_cost LIMIT 1""", (product_rowid,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_sourcing_matrix(search=None, merchant=None, only_multi=False):
+    """Per product: every supplier offer + the cheapest, vs our standard cost.
+    The heart of 'who is the cheapest supplier for every product / merchant'."""
+    conn = get_db()
+    q = """SELECT p.id, p.product_id, p.product_name, p.merchant, p.cost as std_cost,
+                  p.currency, p.oc_margin_pct,
+                  COUNT(sp.id) as offer_count,
+                  MIN(CASE WHEN sp.is_available=1 THEN sp.supplier_cost END) as best_cost
+           FROM products p
+           JOIN supplier_products sp ON sp.product_rowid = p.id
+           WHERE p.is_active=1"""
+    params = []
+    if search:
+        q += " AND (p.product_name LIKE ? OR p.merchant LIKE ?)"
+        params += [f'%{search}%', f'%{search}%']
+    if merchant:
+        q += " AND p.merchant=?"
+        params.append(merchant)
+    q += " GROUP BY p.id"
+    if only_multi:
+        q += " HAVING COUNT(sp.id) > 1"
+    q += " ORDER BY p.merchant, p.product_name"
+    rows = [dict(r) for r in conn.execute(q, params)]
+
+    # attach offers + best supplier name
+    ids = [r['id'] for r in rows]
+    offers_by_product = {}
+    if ids:
+        ph = ','.join('?' * len(ids))
+        for o in conn.execute(f"""SELECT sp.*, s.name as supplier_name
+                                  FROM supplier_products sp JOIN suppliers s ON sp.supplier_id=s.id
+                                  WHERE sp.product_rowid IN ({ph})
+                                  ORDER BY sp.supplier_cost""", ids):
+            offers_by_product.setdefault(o['product_rowid'], []).append(dict(o))
+    conn.close()
+    for r in rows:
+        r['offers'] = offers_by_product.get(r['id'], [])
+        best = next((o for o in r['offers'] if o['is_available']), None)
+        r['best_supplier'] = best['supplier_name'] if best else None
+        r['best_supplier_id'] = best['supplier_id'] if best else None
+        r['saving_vs_std'] = round(r['std_cost'] - r['best_cost'], 3) if r['best_cost'] is not None else 0
+    return rows
+
+
+def get_merchant_sourcing_summary():
+    """Per merchant: how much we'd save buying everything from the cheapest source."""
+    matrix = get_sourcing_matrix()
+    agg = {}
+    for r in matrix:
+        m = agg.setdefault(r['merchant'], {'merchant': r['merchant'], 'products': 0,
+                                           'improvable': 0, 'total_saving': 0.0})
+        m['products'] += 1
+        if r['saving_vs_std'] > 0:
+            m['improvable'] += 1
+            m['total_saving'] += r['saving_vs_std']
+    return sorted(agg.values(), key=lambda x: -x['total_saving'])
+
+
+def bulk_import_supplier_prices(supplier_id, path, changed_by):
+    """Import a supplier price file (columns: Product ID, Cost). Returns summary."""
+    import pandas as pd
+    df = pd.read_excel(path)
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    id_col = next((c for c in df.columns if 'product' in c and 'id' in c), None)
+    cost_col = next((c for c in df.columns if 'cost' in c or 'price' in c), None)
+    if not id_col or not cost_col:
+        return None, "File must contain 'Product ID' and 'Cost' columns."
+    conn = get_db()
+    db_products = {str(r['product_id']): r['id'] for r in
+                   conn.execute("SELECT id, product_id FROM products")}
+    conn.close()
+    updated = unchanged = unmatched = 0
+    for _, row in df.iterrows():
+        ext = str(row.get(id_col, '')).strip().replace('.0', '')
+        pid = db_products.get(ext)
+        try:
+            cost = float(row.get(cost_col))
+        except (TypeError, ValueError):
+            continue
+        if not pid or cost <= 0:
+            unmatched += 1
+            continue
+        if upsert_supplier_price(supplier_id, pid, cost, source='bulk', changed_by=changed_by):
+            updated += 1
+        else:
+            unchanged += 1
+    return {'updated': updated, 'unchanged': unchanged, 'unmatched': unmatched}, None
+
+
+# ── v6: Purchase Batches (inventory lots + sourcing governance) ──
+
+SOURCING_VARIANCE_TOLERANCE = 0.02   # alert BD/CCO if bought >2% above best available
+
+
+def create_batch(supplier_id, product_rowid, quantity, unit_cost, invoice_ref='',
+                 reason='', created_by=None):
+    """Ops records a stock purchase. Captures the best available cost at this moment;
+    overpaying beyond tolerance alerts BD + CCO automatically (governance)."""
+    best = get_best_source(product_rowid)
+    best_cost = best['supplier_cost'] if best else None
+    variance = round((unit_cost - best_cost) * quantity, 2) if best_cost is not None else 0
+
+    conn = get_db()
+    p = conn.execute("SELECT product_name, merchant FROM products WHERE id=?", (product_rowid,)).fetchone()
+    s = conn.execute("SELECT name FROM suppliers WHERE id=?", (supplier_id,)).fetchone()
+    if not p or not s:
+        conn.close()
+        return None, "Product or supplier not found."
+    conn.execute("""INSERT INTO purchase_batches
+                    (supplier_id, product_rowid, quantity, remaining_qty, unit_cost, total_cost,
+                     best_cost_at_purchase, sourcing_variance, reason, invoice_ref, created_by)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                 (supplier_id, product_rowid, quantity, quantity, unit_cost,
+                  round(unit_cost * quantity, 2), best_cost, max(variance, 0),
+                  reason, invoice_ref, created_by))
+    bid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit()
+    conn.close()
+
+    # Finance reconciliation queue
+    notify(get_user_ids_by_role('finance'),
+           "New purchase batch to reconcile 🧾",
+           f"Batch #{bid}: {quantity:,} × '{p['product_name']}' from {s['name']} "
+           f"({unit_cost * quantity:,.0f} total, invoice {invoice_ref or '—'}).",
+           "/finance/batches")
+
+    # Governance: bought above the cheapest available source
+    if best_cost is not None and unit_cost > best_cost * (1 + SOURCING_VARIANCE_TOLERANCE):
+        notify(get_user_ids_by_role('admin', 'cco'),
+               "⚠️ Sourcing variance — bought above best price",
+               f"Batch #{bid}: '{p['product_name']}' bought from {s['name']} at {unit_cost:,.2f} "
+               f"while {best['supplier_name']} offers {best_cost:,.2f}. "
+               f"Overpaid ≈ {variance:,.0f} on this batch."
+               + (f" Ops reason: {reason}" if reason else " No reason given."),
+               "/sourcing-intel")
+    return bid, None
+
+
+def get_batches(status=None, product_rowid=None, supplier_id=None, limit=200):
+    conn = get_db()
+    q = """SELECT b.*, p.product_name, p.merchant, p.currency, s.name as supplier_name,
+                  u.name as created_by_name, ru.name as reconciled_by_name
+           FROM purchase_batches b
+           JOIN products p ON b.product_rowid=p.id
+           JOIN suppliers s ON b.supplier_id=s.id
+           LEFT JOIN users u ON b.created_by=u.id
+           LEFT JOIN users ru ON b.reconciled_by=ru.id
+           WHERE 1=1"""
+    params = []
+    if status:
+        q += " AND b.status=?"
+        params.append(status)
+    if product_rowid:
+        q += " AND b.product_rowid=?"
+        params.append(product_rowid)
+    if supplier_id:
+        q += " AND b.supplier_id=?"
+        params.append(supplier_id)
+    q += " ORDER BY b.created_at DESC, b.id DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def reconcile_batch(batch_id, ok, reviewer_id, note=''):
+    """Finance matches the batch against the supplier invoice."""
+    conn = get_db()
+    b = conn.execute("""SELECT b.*, p.product_name, s.name as supplier_name
+                        FROM purchase_batches b
+                        JOIN products p ON b.product_rowid=p.id
+                        JOIN suppliers s ON b.supplier_id=s.id
+                        WHERE b.id=? AND b.status='awaiting_reconciliation'""", (batch_id,)).fetchone()
+    if not b:
+        conn.close()
+        return None
+    status = 'reconciled' if ok else 'disputed'
+    conn.execute("""UPDATE purchase_batches SET status=?, reconciled_by=?,
+                    reconciled_at=CURRENT_TIMESTAMP, reconcile_note=? WHERE id=?""",
+                 (status, reviewer_id, note, batch_id))
+    conn.commit()
+    conn.close()
+    if b['created_by']:
+        verdict = "reconciled ✅" if ok else "DISPUTED ❌"
+        notify(b['created_by'], f"Batch #{batch_id} {verdict}",
+               f"{b['quantity']:,} × '{b['product_name']}' from {b['supplier_name']} — "
+               + (note or "matched against invoice."), "/ops/batches")
+    return dict(b)
+
+
+def _allocate_order_fifo(conn, order_id):
+    """Consume purchase batches oldest-first for every item of an order.
+    Units without recorded stock get a NULL-batch allocation at standard cost."""
+    items = conn.execute("""SELECT oi.id, oi.product_rowid, oi.quantity, p.cost as std_cost
+                            FROM order_items oi LEFT JOIN products p ON oi.product_rowid=p.id
+                            WHERE oi.order_id=?""", (order_id,)).fetchall()
+    for it in items:
+        need = it['quantity']
+        batches = conn.execute("""SELECT id, remaining_qty, unit_cost FROM purchase_batches
+                                  WHERE product_rowid=? AND remaining_qty>0
+                                  ORDER BY created_at, id""", (it['product_rowid'],)).fetchall()
+        for b in batches:
+            if need <= 0:
+                break
+            take = min(need, b['remaining_qty'])
+            conn.execute("""INSERT INTO order_item_allocations (order_item_id, batch_id, quantity, unit_cost)
+                            VALUES (?,?,?,?)""", (it['id'], b['id'], take, b['unit_cost']))
+            conn.execute("UPDATE purchase_batches SET remaining_qty=remaining_qty-? WHERE id=?",
+                         (take, b['id']))
+            need -= take
+        if need > 0:   # no (more) recorded stock → unsourced at standard cost
+            conn.execute("""INSERT INTO order_item_allocations (order_item_id, batch_id, quantity, unit_cost)
+                            VALUES (?,NULL,?,?)""", (it['id'], need, it['std_cost'] or 0))
+
+
+# ── v6: Sourcing intelligence (BD / CCO) ─────────────────────────
+
+def get_sales_by_supplier(ym=None):
+    """'Which supplier are we actually selling from?' — allocations grouped by supplier."""
+    conn = get_db()
+    q = """SELECT COALESCE(s.name, '— Unsourced (no batch) —') as supplier_name,
+                  b.supplier_id,
+                  SUM(a.quantity) as units,
+                  SUM(a.quantity * a.unit_cost) as cogs,
+                  SUM(a.quantity * oi.unit_price) as revenue
+           FROM order_item_allocations a
+           JOIN order_items oi ON a.order_item_id=oi.id
+           JOIN orders o ON oi.order_id=o.id
+           LEFT JOIN purchase_batches b ON a.batch_id=b.id
+           LEFT JOIN suppliers s ON b.supplier_id=s.id"""
+    params = []
+    if ym:
+        q += " WHERE strftime('%Y-%m', o.created_at)=?"
+        params.append(ym)
+    q += " GROUP BY supplier_name ORDER BY revenue DESC"
+    rows = [dict(r) for r in conn.execute(q, params)]
+    conn.close()
+    total_rev = sum(r['revenue'] or 0 for r in rows) or 1
+    for r in rows:
+        r['profit'] = round((r['revenue'] or 0) - (r['cogs'] or 0), 2)
+        r['share_pct'] = round((r['revenue'] or 0) / total_rev * 100, 1)
+    return rows
+
+
+def get_supplier_scorecards():
+    """Per supplier: offers, competitiveness, spend, variance and realized profit."""
+    conn = get_db()
+    suppliers = [dict(r) for r in conn.execute("SELECT id, name FROM suppliers ORDER BY name")]
+    for s in suppliers:
+        sid = s['id']
+        s['offers'] = conn.execute(
+            "SELECT COUNT(*) FROM supplier_products WHERE supplier_id=? AND is_available=1", (sid,)).fetchone()[0]
+        s['best_offers'] = conn.execute("""
+            SELECT COUNT(*) FROM supplier_products sp
+            WHERE sp.supplier_id=? AND sp.is_available=1
+              AND sp.supplier_cost = (SELECT MIN(sp2.supplier_cost) FROM supplier_products sp2
+                                      WHERE sp2.product_rowid=sp.product_rowid AND sp2.is_available=1)""",
+            (sid,)).fetchone()[0]
+        row = conn.execute("""SELECT COUNT(*) as batches, COALESCE(SUM(total_cost),0) as spend,
+                                     COALESCE(SUM(sourcing_variance),0) as variance
+                              FROM purchase_batches WHERE supplier_id=?""", (sid,)).fetchone()
+        s['batches'], s['spend'], s['variance'] = row['batches'], row['spend'], row['variance']
+        sold = conn.execute("""SELECT COALESCE(SUM(a.quantity),0) as units,
+                                      COALESCE(SUM(a.quantity*a.unit_cost),0) as cogs,
+                                      COALESCE(SUM(a.quantity*oi.unit_price),0) as revenue
+                               FROM order_item_allocations a
+                               JOIN purchase_batches b ON a.batch_id=b.id
+                               JOIN order_items oi ON a.order_item_id=oi.id
+                               WHERE b.supplier_id=?""", (sid,)).fetchone()
+        s['units_sold'] = sold['units']
+        s['realized_profit'] = round(sold['revenue'] - sold['cogs'], 2)
+    conn.close()
+    return suppliers
+
+
+def get_margin_improvements(limit=25):
+    """BD view: products whose newest batch is cheaper than the previous one —
+    'our margin improved since batch #X from supplier Y on date Z'."""
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT b.product_rowid, p.product_name, p.merchant, p.currency,
+               b.id as batch_id, b.unit_cost as new_cost, b.created_at as improved_at,
+               s.name as supplier_name,
+               (SELECT b2.unit_cost FROM purchase_batches b2
+                WHERE b2.product_rowid=b.product_rowid AND b2.created_at < b.created_at
+                ORDER BY b2.created_at DESC, b2.id DESC LIMIT 1) as prev_cost
+        FROM purchase_batches b
+        JOIN products p ON b.product_rowid=p.id
+        JOIN suppliers s ON b.supplier_id=s.id
+        WHERE b.id IN (SELECT MAX(b3.id) FROM purchase_batches b3 GROUP BY b3.product_rowid)
+        ORDER BY b.created_at DESC LIMIT ?""", (limit * 3,)).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        if d['prev_cost'] is not None and d['new_cost'] < d['prev_cost']:
+            d['saving_per_unit'] = round(d['prev_cost'] - d['new_cost'], 3)
+            d['improvement_pct'] = round((d['prev_cost'] - d['new_cost']) / d['prev_cost'] * 100, 1)
+            out.append(d)
+    return out[:limit]
+
+
+def get_sourcing_kpis():
+    conn = get_db()
+    k = {}
+    k['products_with_offers'] = conn.execute(
+        "SELECT COUNT(DISTINCT product_rowid) FROM supplier_products WHERE is_available=1").fetchone()[0]
+    k['multi_source_products'] = conn.execute("""
+        SELECT COUNT(*) FROM (SELECT product_rowid FROM supplier_products WHERE is_available=1
+                              GROUP BY product_rowid HAVING COUNT(*)>1)""").fetchone()[0]
+    k['potential_saving'] = conn.execute("""
+        SELECT COALESCE(SUM(p.cost - x.best),0) FROM products p
+        JOIN (SELECT product_rowid, MIN(supplier_cost) as best FROM supplier_products
+              WHERE is_available=1 GROUP BY product_rowid) x ON x.product_rowid=p.id
+        WHERE p.is_active=1 AND x.best < p.cost""").fetchone()[0]
+    k['open_variance'] = conn.execute(
+        "SELECT COALESCE(SUM(sourcing_variance),0) FROM purchase_batches").fetchone()[0]
+    k['unreconciled'] = conn.execute(
+        "SELECT COUNT(*) FROM purchase_batches WHERE status='awaiting_reconciliation'").fetchone()[0]
+    k['stock_value'] = conn.execute(
+        "SELECT COALESCE(SUM(remaining_qty*unit_cost),0) FROM purchase_batches").fetchone()[0]
+    conn.close()
+    return k
+
+
 # ── Governance: Targets + Team Performance (v5) ──────────────────
 
 def upsert_sales_target(sales_user_id, ym, target_new_resellers, target_sales_value):
@@ -1491,6 +1958,11 @@ def run_sla_nudges():
            JOIN reseller_profiles cp ON wt.reseller_id=cp.id
            WHERE wt.type='topup' AND wt.status='pending'
              AND wt.created_at <= datetime('now','-1 day')""").fetchall()
+    stale_batches = conn.execute(
+        """SELECT b.id, b.total_cost, s.name as supplier_name FROM purchase_batches b
+           JOIN suppliers s ON b.supplier_id=s.id
+           WHERE b.status='awaiting_reconciliation'
+             AND b.created_at <= datetime('now','-3 days')""").fetchall()
     conn.close()
 
     finance_ids = get_user_ids_by_role('finance')
@@ -1504,6 +1976,11 @@ def run_sla_nudges():
                     "⏰ Top-up pending verification 24h+",
                     f"{t['company_name']}'s transfer of {t['amount']:,.0f} SAR is still unverified.",
                     "/finance")
+    for b in stale_batches:
+        _nudge_once(f"batch:{b['id']}", finance_ids,
+                    "⏰ Purchase batch unreconciled 3+ days",
+                    f"Batch #{b['id']} from {b['supplier_name']} ({b['total_cost']:,.0f}) still needs "
+                    "invoice reconciliation.", "/finance/batches")
 
 
 def expire_new_flags():

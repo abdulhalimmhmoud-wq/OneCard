@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title %}Purchase Batches — OneCard Ops{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">📥 Purchase Batches</h1>
+        <p class="page-subtitle">Record every stock purchase — sales are tied to batches automatically (FIFO), so we always know which supplier we're selling from</p>
+    </div>
+</div>
+
+<div class="grid-2" style="align-items:start">
+    <!-- Record batch -->
+    <div class="card">
+        <div class="card-header"><div class="card-title">➕ Record New Batch</div></div>
+        <form method="POST" action="/ops/batches">
+            <div class="form-group">
+                <label class="form-label">Supplier *</label>
+                <select name="supplier_id" id="bSupplier" required onchange="warnCheck()">
+                    <option value="">-- Choose supplier --</option>
+                    {% for s in suppliers %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Product *</label>
+                <div class="search-box" style="width:100%">
+                    <span class="search-icon">🔍</span>
+                    <input type="search" id="bSearch" placeholder="Start typing a product name..." oninput="searchProducts()" autocomplete="off">
+                    <div class="search-suggestions" id="bSuggestions"></div>
+                </div>
+                <input type="hidden" name="product_rowid" id="bProductId">
+            </div>
+            <div class="form-row">
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Quantity *</label>
+                    <input type="number" name="quantity" id="bQty" required min="1" step="1" oninput="warnCheck()">
+                </div>
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Unit Cost *</label>
+                    <input type="number" name="unit_cost" id="bCost" required min="0.001" step="0.001" oninput="warnCheck()">
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Supplier Invoice Ref</label>
+                <input type="text" name="invoice_ref" placeholder="e.g. INV-2026-04471">
+            </div>
+
+            <!-- Governance warning -->
+            <div class="card" id="bWarnBox" style="background:var(--bg-2);border:1px dashed var(--border)">
+                <div style="font-size:13px;font-weight:600;margin-bottom:6px">⚖️ Best-Source Check</div>
+                <div id="bWarn" class="text-muted" style="font-size:12.5px">Select a product to compare against the cheapest available offer…</div>
+            </div>
+
+            <div class="form-group mt-16">
+                <label class="form-label">Reason for supplier choice <span class="text-muted" style="font-weight:400">(required if not the cheapest)</span></label>
+                <textarea name="reason" id="bReason" placeholder="e.g. Cheapest supplier out of stock / faster settlement / credit terms..." style="height:56px"></textarea>
+            </div>
+
+            <button type="submit" class="btn btn-primary btn-lg" style="width:100%;justify-content:center"
+                    onclick="return validateBatch()">📥 Record Batch</button>
+            <div class="form-hint" style="text-align:center;margin-top:8px">
+                Finance is notified for invoice reconciliation. Buying above the best available price alerts BD &amp; CCO automatically.
+            </div>
+        </form>
+    </div>
+
+    <!-- Batch list -->
+    <div class="table-card">
+        <div class="table-header"><div class="table-title">📦 Batches & Remaining Stock</div></div>
+        <div class="table-scroll" style="max-height:700px;overflow-y:auto">
+            <table>
+                <thead><tr><th>#</th><th>Product / Supplier</th><th>Qty</th><th>Unit Cost</th><th>Variance</th><th>Status</th></tr></thead>
+                <tbody>
+                {% for b in batches %}
+                <tr>
+                    <td class="fw6">#{{ b.id }}
+                        <div class="text-muted" style="font-size:10px">{{ b.created_at[:10] }}</div>
+                    </td>
+                    <td>
+                        <div class="fw6 truncate" style="max-width:210px" title="{{ b.product_name }}">{{ b.product_name }}</div>
+                        <div class="text-muted" style="font-size:10px">{{ b.supplier_name }}{% if b.invoice_ref %} · {{ b.invoice_ref }}{% endif %}</div>
+                    </td>
+                    <td>
+                        <span class="fw6">{{ b.remaining_qty|money }}</span><span class="text-muted" style="font-size:10px">/{{ b.quantity|money }}</span>
+                        {% if b.remaining_qty == 0 %}<div><span class="badge badge-ghost" style="font-size:9px">sold out</span></div>{% endif %}
+                    </td>
+                    <td class="fw6">{{ b.unit_cost }}</td>
+                    <td>
+                        {% if b.sourcing_variance > 0 %}
+                        <span class="badge badge-danger" title="Bought above best available ({{ b.best_cost_at_purchase }})">+{{ b.sourcing_variance|money }}</span>
+                        {% else %}<span class="badge badge-success">best ✓</span>{% endif %}
+                    </td>
+                    <td>
+                        {% if b.status == 'awaiting_reconciliation' %}<span class="badge badge-warning">⏳ Finance</span>
+                        {% elif b.status == 'reconciled' %}<span class="badge badge-success">✅ Reconciled</span>
+                        {% else %}<span class="badge badge-danger">❌ Disputed</span>{% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text-3)">No batches recorded yet</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const products = {{ products_json|safe }};
+const bestOffers = {{ offers_json|safe }};
+let bPicked = null;
+
+function searchProducts() {
+    const q = document.getElementById('bSearch').value.toLowerCase();
+    const sugg = document.getElementById('bSuggestions');
+    if (q.length < 2) { sugg.classList.remove('show'); return; }
+    const matches = products.filter(p => p.product_name.toLowerCase().includes(q) || p.merchant.toLowerCase().includes(q)).slice(0, 10);
+    if (!matches.length) { sugg.classList.remove('show'); return; }
+    sugg.innerHTML = matches.map((p, i) => `<div class="sugg-item" onclick="pickB(${i})">${esc(p.product_name)} <span class="text-muted" style="font-size:11px">· ${esc(p.merchant)} · std ${p.cost}</span></div>`).join('');
+    sugg.classList.add('show');
+    sugg._matches = matches;
+}
+
+function pickB(idx) {
+    bPicked = document.getElementById('bSuggestions')._matches[idx];
+    document.getElementById('bSearch').value = bPicked.product_name;
+    document.getElementById('bProductId').value = bPicked.id;
+    document.getElementById('bSuggestions').classList.remove('show');
+    warnCheck();
+}
+
+function warnCheck() {
+    const box = document.getElementById('bWarn');
+    if (!bPicked) { box.innerHTML = 'Select a product to compare against the cheapest available offer…'; return; }
+    const cost = parseFloat(document.getElementById('bCost').value) || 0;
+    const qty = parseInt(document.getElementById('bQty').value) || 0;
+    const best = bestOffers[bPicked.id];
+    if (!best) {
+        box.innerHTML = `No supplier offers registered for this product yet — <a href="/ops/sourcing" style="color:var(--accent)">add offers</a> to enable the best-source check.`;
+        return;
+    }
+    let html = `Cheapest available: <b>${esc(best.best_supplier)}</b> @ <b>${best.best_cost}</b>`;
+    if (cost > 0) {
+        if (cost > best.best_cost * 1.02) {
+            const over = ((cost - best.best_cost) * (qty || 1)).toFixed(0);
+            html += `<br><b class="text-d">⚠️ You are buying ABOVE the best price — overpay ≈ ${over}${qty ? '' : ' /unit'}. BD & CCO will be alerted. A reason is required.</b>`;
+        } else {
+            html += `<br><b class="text-s">✓ At or near the best available price.</b>`;
+        }
+    }
+    box.innerHTML = html;
+}
+
+function validateBatch() {
+    if (!document.getElementById('bProductId').value) { alert('Select a product from the search list.'); return false; }
+    const cost = parseFloat(document.getElementById('bCost').value) || 0;
+    const best = bestOffers[bPicked ? bPicked.id : -1];
+    if (best && cost > best.best_cost * 1.02 && !document.getElementById('bReason').value.trim()) {
+        alert('You are buying above the cheapest available offer — please write the reason for this supplier choice.');
+        return false;
+    }
+    return true;
+}
+
+document.addEventListener('click', e => { if (!e.target.closest('.search-box')) document.getElementById('bSuggestions').classList.remove('show'); });
+</script>
+{% endblock %}
