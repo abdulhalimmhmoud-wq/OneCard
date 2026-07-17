@@ -109,6 +109,8 @@
 <script>
 const products = {{ products_json|safe }};
 const merchants = {{ merchants_json|safe }};
+const fxRates = {{ rates_json|safe }};
+function toSar(amount, currency) { return amount * (fxRates[currency || 'SAR'] || 1); }
 let plan = [];   // {type:'merchant'|'product', merchant, product_id, label, quantity, value}
 let fcPicked = null;
 
@@ -153,7 +155,8 @@ function addProductLine() {
     const qty = parseInt(document.getElementById('fcQty').value) || 0;
     if (qty <= 0) { alert('Enter a quantity.'); return; }
     plan.push({ type: 'product', merchant: fcPicked.merchant, product_id: fcPicked.id,
-                label: fcPicked.product_name, quantity: qty, value: qty * fcPicked.client_price });
+                label: fcPicked.product_name, quantity: qty,
+                value: toSar(qty * fcPicked.client_price, fcPicked.currency) });
     fcPicked = null;
     document.getElementById('fcSearch').value = '';
     renderPlan();

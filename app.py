@@ -15,20 +15,63 @@ from flask import (Flask, render_template, request, redirect, url_for, session,
                    flash, send_from_directory, abort)
 import os
 import json
+import time
 import uuid
-from datetime import datetime
+import secrets as _secrets
+from datetime import datetime, timezone
 import models
 import auth
 
-app = Flask(__name__)
-app.secret_key = os.urandom(24)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads', 'receipts')
-PRICEFILE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads', 'pricefiles')
+app = Flask(__name__)
+
+# ── Hardening: stable secret key (env first, else persisted file) ──
+# A random-per-boot key logs everyone out on restart and breaks multi-worker.
+_key = os.environ.get('ONECARD_SECRET_KEY')
+if not _key:
+    _key_file = os.path.join(BASE_DIR, 'instance_secret.key')
+    if os.path.exists(_key_file):
+        _key = open(_key_file).read().strip()
+    else:
+        _key = _secrets.token_hex(32)
+        with open(_key_file, 'w') as f:
+            f.write(_key)
+app.secret_key = _key
+
+# ── Hardening: upload size cap (largest legit upload is a price file) ──
+app.config['MAX_CONTENT_LENGTH'] = 8 * 1024 * 1024   # 8 MB
+
+DEBUG_MODE = os.environ.get('ONECARD_DEBUG', '0') == '1'
+
+UPLOAD_DIR = os.path.join(BASE_DIR, 'uploads', 'receipts')
+PRICEFILE_DIR = os.path.join(BASE_DIR, 'uploads', 'pricefiles')
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(PRICEFILE_DIR, exist_ok=True)
 ALLOWED_RECEIPT_EXT = {'.png', '.jpg', '.jpeg', '.pdf', '.webp'}
 ALLOWED_PRICEFILE_EXT = {'.xls', '.xlsx'}
+
+
+def jdump(obj):
+    """JSON for inline <script> use — escapes '</' so markup in data can't
+    break out of the script tag (XSS guard for |safe payloads)."""
+    return json.dumps(obj).replace('</', '<\\/')
+
+
+# ── Hardening: simple login rate-limit (per email+IP, in-memory) ──
+_login_attempts = {}
+LOGIN_MAX_TRIES = 5
+LOGIN_WINDOW_SEC = 15 * 60
+
+
+def login_blocked(key):
+    tries = [t for t in _login_attempts.get(key, []) if time.time() - t < LOGIN_WINDOW_SEC]
+    _login_attempts[key] = tries
+    return len(tries) >= LOGIN_MAX_TRIES
+
+
+def record_login_failure(key):
+    _login_attempts.setdefault(key, []).append(time.time())
 
 
 # ── Context Processor ─────────────────────────────────────────────
@@ -44,11 +87,15 @@ def inject_user():
         if profile:
             preview_company = profile['company_name']
     unread = models.unread_count(curr['id']) if curr else 0
+    # CSRF token: created once per session, injected into every form by app.js
+    if '_csrf' not in session:
+        session['_csrf'] = _secrets.token_hex(16)
     return {
         'current_user': curr,
         'is_preview': is_preview,
         'preview_company': preview_company,
         'unread_notifications': unread,
+        'csrf_token': session['_csrf'],
     }
 
 
@@ -62,10 +109,46 @@ def money_filter(v):
 
 
 @app.before_request
+def csrf_protect():
+    """Reject any state-changing request without the session CSRF token.
+    The supplier API is exempt (authenticated by per-supplier api_key)."""
+    if request.method == 'POST' and not request.path.startswith('/api/'):
+        token = session.get('_csrf')
+        sent = request.form.get('_csrf') or request.headers.get('X-CSRF-Token')
+        if not token or sent != token:
+            abort(403, description='CSRF token missing or invalid. Refresh the page and try again.')
+
+
+@app.before_request
 def daily_compliance_check():
     """Lazy daily tier-compliance run (throttled inside the function)."""
     if request.endpoint not in ('static',):
         models.run_tier_compliance()
+
+
+# ── Hardening: friendly error pages ──────────────────────────────
+
+@app.errorhandler(403)
+def err_403(e):
+    return render_template('error.html', code=403,
+                           message=getattr(e, 'description', 'Access denied.')), 403
+
+
+@app.errorhandler(404)
+def err_404(e):
+    return render_template('error.html', code=404, message='Page not found.'), 404
+
+
+@app.errorhandler(413)
+def err_413(e):
+    return render_template('error.html', code=413,
+                           message='File too large — maximum upload size is 8 MB.'), 413
+
+
+@app.errorhandler(500)
+def err_500(e):
+    return render_template('error.html', code=500,
+                           message='Something went wrong. The error was logged — please try again.'), 500
 
 
 def get_active_reseller_uid():
@@ -105,15 +188,21 @@ def login():
     if auth.get_current_user():
         return redirect(url_for('index'))
     if request.method == 'POST':
-        email = request.form.get('email')
+        email = (request.form.get('email') or '').lower().strip()
         password = request.form.get('password')
+        rl_key = f"{email}|{request.remote_addr}"
+        if login_blocked(rl_key):
+            flash("Too many failed attempts — try again in 15 minutes.", "error")
+            return render_template('login.html'), 429
         user = auth.login_user(email, password)
         if user:
+            _login_attempts.pop(rl_key, None)
             session['user_id'] = user['id']
             session.permanent = True
             flash(f"Welcome back, {user['name']}!", "success")
             return redirect(url_for('index'))
         else:
+            record_login_failure(rl_key)
             flash("Invalid email or password.", "error")
     return render_template('login.html')
 
@@ -182,7 +271,7 @@ def admin_tiers():
     return render_template('admin/tiers.html', active_tab='tiers', tiers=tiers)
 
 
-@app.route('/admin/tiers/add')
+@app.route('/admin/tiers/add', methods=['POST'])
 @auth.admin_required
 def admin_add_tier():
     models.upsert_tier(None, "New Tier", 0, 1, 20, "#64748b", 99)
@@ -190,7 +279,7 @@ def admin_add_tier():
     return redirect(url_for('admin_tiers'))
 
 
-@app.route('/admin/tiers/delete/<int:tid>')
+@app.route('/admin/tiers/delete/<int:tid>', methods=['POST'])
 @auth.admin_required
 def admin_delete_tier(tid):
     models.delete_tier(tid)
@@ -205,8 +294,8 @@ def admin_catalogue():
     categories = models.get_all_categories()
     regions = models.get_all_regions()
     tiers = models.get_all_tiers()
-    products_json = json.dumps(products)
-    tiers_json = json.dumps([dict(t) for t in tiers])
+    products_json = jdump(products)
+    tiers_json = jdump([dict(t) for t in tiers])
     return render_template('admin/catalogue.html', active_tab='catalogue',
                            products=products, products_json=products_json,
                            categories=categories, regions=regions,
@@ -245,7 +334,7 @@ def admin_create_user():
     return redirect(url_for('admin_users'))
 
 
-@app.route('/admin/compliance/run')
+@app.route('/admin/compliance/run', methods=['POST'])
 @auth.admin_required
 def admin_run_compliance():
     actions = models.run_tier_compliance(force=True)
@@ -325,7 +414,7 @@ def sales_register():
             flash("Reseller email address is already in use.", "error")
 
     tiers = models.get_all_tiers()
-    tiers_json = json.dumps([dict(t) for t in tiers])
+    tiers_json = jdump([dict(t) for t in tiers])
     return render_template('sales/register.html', active_tab='register',
                            tiers_json=tiers_json,
                            client_types=models.CLIENT_TYPES,
@@ -362,8 +451,8 @@ def sales_catalogue():
     categories = models.get_all_categories()
     regions = models.get_all_regions()
     tiers = models.get_all_tiers()
-    products_json = json.dumps(products)
-    tiers_json = json.dumps([dict(t) for t in tiers])
+    products_json = jdump(products)
+    tiers_json = jdump([dict(t) for t in tiers])
     return render_template('sales/catalogue.html', active_tab='catalogue',
                            products=products, products_json=products_json,
                            categories=categories, regions=regions,
@@ -429,11 +518,11 @@ def sales_discounts():
     merchants = models.get_all_merchants()
     my_requests = models.get_discount_requests(requested_by=curr['id'])
     # tier + override data for the form's live preview
-    resellers_json = json.dumps([{
+    resellers_json = jdump([{
         'id': r['id'], 'company_name': r['company_name'],
         'share': r['margin_share_pct'] or 20, 'tier_name': r['tier_name'] or 'None',
     } for r in resellers])
-    merchants_json = json.dumps([{'merchant': m['merchant'], 'avg_margin': m['avg_margin'] or 0}
+    merchants_json = jdump([{'merchant': m['merchant'], 'avg_margin': m['avg_margin'] or 0}
                                  for m in merchants])
     return render_template('sales/discounts.html', active_tab='discounts',
                            resellers=resellers, merchants=merchants, requests=my_requests,
@@ -569,7 +658,7 @@ def ops_dashboard():
 def ops_products():
     products = models.get_products(include_inactive=True)
     return render_template('ops/products.html', active_tab='ops_products',
-                           products=products, products_json=json.dumps(products))
+                           products=products, products_json=jdump(products))
 
 
 @app.route('/ops/products/add', methods=['GET', 'POST'])
@@ -722,10 +811,10 @@ def ops_sourcing():
     merchant_summary = models.get_merchant_sourcing_summary()[:10]
     suppliers = models.get_suppliers()
     return render_template('ops/sourcing.html', active_tab='ops_sourcing',
-                           matrix=matrix, matrix_json=json.dumps(matrix),
+                           matrix=matrix, matrix_json=jdump(matrix),
                            merchant_summary=merchant_summary,
                            suppliers=suppliers,
-                           suppliers_json=json.dumps([{'id': s['id'], 'name': s['name']} for s in suppliers]),
+                           suppliers_json=jdump([{'id': s['id'], 'name': s['name']} for s in suppliers]),
                            merchants=[m['merchant'] for m in models.get_all_merchants()],
                            q=search, sel_merchant=merchant, only_multi=only_multi)
 
@@ -838,7 +927,7 @@ def ops_batches():
     batches = models.get_batches()
     suppliers = models.get_suppliers()
     products = models.get_products(include_inactive=False)
-    products_json = json.dumps([{'id': p['id'], 'product_name': p['product_name'],
+    products_json = jdump([{'id': p['id'], 'product_name': p['product_name'],
                                  'merchant': p['merchant'], 'cost': p['cost'],
                                  'currency': p['currency']} for p in products])
     # per-product best offers for the live warning
@@ -848,7 +937,7 @@ def ops_batches():
             offers[row['id']] = {'best_cost': row['best_cost'], 'best_supplier': row['best_supplier']}
     return render_template('ops/batches.html', active_tab='ops_batches',
                            batches=batches, suppliers=suppliers,
-                           products_json=products_json, offers_json=json.dumps(offers))
+                           products_json=products_json, offers_json=jdump(offers))
 
 
 # ── Finance: Batch Reconciliation (v6) ───────────────────────────
@@ -878,12 +967,36 @@ def finance_batch_review(bid):
     return redirect(url_for('finance_batches'))
 
 
+# ── Finance: FX Rates (v7 hardening) ─────────────────────────────
+
+@app.route('/finance/rates', methods=['GET', 'POST'])
+@auth.finance_required
+def finance_rates():
+    curr = auth.get_current_user()
+    if request.method == 'POST':
+        currencies = request.form.getlist('currency')
+        rates = request.form.getlist('rate')
+        updated = 0
+        for c, r in zip(currencies, rates):
+            try:
+                val = float(r)
+            except (TypeError, ValueError):
+                continue
+            if val > 0:
+                models.set_fx_rate(c.strip(), val, curr['id'])
+                updated += 1
+        flash(f"FX rates saved ({updated} currencies). All new orders convert at these rates.", "success")
+        return redirect(url_for('finance_rates'))
+    return render_template('finance/rates.html', active_tab='finance_rates',
+                           rates=models.get_fx_rates_full())
+
+
 # ── BD / CCO: Sourcing Intelligence (v6) ─────────────────────────
 
 @app.route('/sourcing-intel')
 @auth.cco_required
 def sourcing_intel():
-    ym = request.args.get('ym') or datetime.now().strftime('%Y-%m')
+    ym = request.args.get('ym') or datetime.now(timezone.utc).strftime('%Y-%m')
     kpis = models.get_sourcing_kpis()
     sales_by_supplier = models.get_sales_by_supplier(ym)
     sales_all_time = models.get_sales_by_supplier(None)
@@ -907,11 +1020,11 @@ def sourcing_intel():
 @app.route('/team')
 @auth.cco_required
 def team_performance():
-    ym = request.args.get('ym') or datetime.now().strftime('%Y-%m')
+    ym = request.args.get('ym') or datetime.now(timezone.utc).strftime('%Y-%m')
     team = models.get_team_performance(ym)
     # month options: last 12 months
     months = []
-    y, m = datetime.now().year, datetime.now().month
+    y, m = datetime.now(timezone.utc).year, datetime.now(timezone.utc).month
     for _ in range(12):
         months.append(f"{y}-{m:02d}")
         m -= 1
@@ -938,7 +1051,7 @@ def team_set_targets():
 @auth.sales_required
 def sales_scorecard():
     curr = auth.get_current_user()
-    ym = request.args.get('ym') or datetime.now().strftime('%Y-%m')
+    ym = request.args.get('ym') or datetime.now(timezone.utc).strftime('%Y-%m')
     card = models.get_sales_scorecard(curr['id'], ym)
     resellers = models.get_all_resellers(registered_by=curr['id'])
     return render_template('sales/scorecard.html', active_tab='scorecard',
@@ -992,7 +1105,7 @@ def reseller_products():
     currencies = sorted({p['currency'] for p in enriched if p['currency']})
     return render_template('reseller/products.html', active_tab='products',
                            profile=profile, products=enriched,
-                           products_json=json.dumps(enriched),
+                           products_json=jdump(enriched),
                            merchants=merchants, categories=categories,
                            countries=countries, regions=regions, currencies=currencies)
 
@@ -1009,7 +1122,7 @@ def reseller_merchants():
     regions = sorted({p['region'] for p in enriched})
     currencies = sorted({p['currency'] for p in enriched if p['currency']})
     return render_template('reseller/merchants.html', active_tab='merchants',
-                           profile=profile, products_json=json.dumps(enriched),
+                           profile=profile, products_json=jdump(enriched),
                            merchants=merchants, categories=categories,
                            countries=countries, regions=regions, currencies=currencies)
 
@@ -1021,7 +1134,7 @@ def reseller_calculator():
     if not profile:
         return redirect(url_for('logout'))
     return render_template('reseller/calculator.html', active_tab='calculator',
-                           profile=profile, products_json=json.dumps(enriched))
+                           profile=profile, products_json=jdump(enriched))
 
 
 @app.route('/reseller/recommended')
@@ -1066,7 +1179,7 @@ def reseller_recommended():
     categories = sorted({p['category'] for p in enriched})
 
     return render_template('reseller/recommended.html', active_tab='recommended',
-                           profile=profile, products_json=json.dumps(enriched[:200]),
+                           profile=profile, products_json=jdump(enriched[:200]),
                            top_for_type=top_for_type, top_markets=top_markets,
                            categories=categories)
 
@@ -1098,9 +1211,11 @@ def reseller_forecast():
                 p = by_id[it['product_id']]
                 qty = int(it.get('quantity') or 0)
                 if qty > 0:
+                    # est_value is stored in SAR (v7: single reporting currency)
+                    est_sar = models.to_sar(qty * p['client_price'], p['currency'])
                     clean.append({'item_type': 'product', 'merchant': p['merchant'],
                                   'product_rowid': p['id'], 'product_name': p['product_name'],
-                                  'quantity': qty, 'est_value': qty * p['client_price']})
+                                  'quantity': qty, 'est_value': round(est_sar, 2)})
         if not clean:
             flash("Add at least one merchant or product to your plan.", "error")
         else:
@@ -1126,8 +1241,9 @@ def reseller_forecast():
     my_forecasts = models.get_reseller_forecasts(profile['id'])
     return render_template('reseller/forecast.html', active_tab='forecast',
                            profile=profile,
-                           products_json=json.dumps(enriched),
-                           merchants_json=json.dumps(sorted(merchants_data.values(),
+                           rates_json=jdump(models.get_fx_rates()),
+                           products_json=jdump(enriched),
+                           merchants_json=jdump(sorted(merchants_data.values(),
                                                             key=lambda x: x['merchant'])),
                            my_forecasts=my_forecasts)
 
@@ -1187,7 +1303,8 @@ def reseller_orders():
         o['items'] = models.get_order_items(o['id'])
 
     return render_template('reseller/orders.html', active_tab='orders',
-                           profile=profile, products_json=json.dumps(enriched),
+                           profile=profile, products_json=jdump(enriched),
+                           rates_json=jdump(models.get_fx_rates()),
                            orders=orders, comparison=comparison)
 
 
@@ -1266,7 +1383,7 @@ def reseller_analysis():
                 insights.append("Untapped categories that perform well for similar businesses: "
                                 + ", ".join(sorted(missing)) + ".")
     if profile['contract_status'] == 'contracted' and profile['expected_monthly_sales']:
-        ym = datetime.now().strftime('%Y-%m')
+        ym = datetime.now(timezone.utc).strftime('%Y-%m')
         this_month = models.get_month_total_orders(profile['id'], ym)
         pct = this_month / profile['expected_monthly_sales'] * 100
         insights.append(f"This month you've ordered {this_month:,.0f} SAR of your "
@@ -1281,4 +1398,5 @@ def reseller_analysis():
 if __name__ == '__main__':
     models.init_db()
     models.seed_default_data()
-    app.run(debug=True, port=8000)
+    # Debug/reloader only when explicitly requested: set ONECARD_DEBUG=1
+    app.run(debug=DEBUG_MODE, port=8000)

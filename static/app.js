@@ -11,6 +11,21 @@ function esc(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// ── CSRF: inject the session token into every POST form ─────
+// (submit-event delegation also covers forms rendered dynamically by JS)
+document.addEventListener('submit', e => {
+    const form = e.target;
+    if (!form || (form.method || '').toLowerCase() !== 'post') return;
+    if (form.querySelector('input[name="_csrf"]')) return;
+    const meta = document.querySelector('meta[name="csrf-token"]');
+    if (!meta) return;
+    const inp = document.createElement('input');
+    inp.type = 'hidden';
+    inp.name = '_csrf';
+    inp.value = meta.content;
+    form.appendChild(inp);
+}, true);
+
 // ── Flash auto-dismiss ──────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.flash').forEach(f => {

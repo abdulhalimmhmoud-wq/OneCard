@@ -8,7 +8,9 @@
         <p class="page-subtitle">Overview of the OneCard Platform</p>
     </div>
     <div class="page-actions">
-        <a href="/admin/compliance/run" class="btn btn-ghost" onclick="return confirm('Run the monthly tier-compliance check now? Warnings/downgrades will be applied and everyone notified.')">🛡️ Run Compliance Check</a>
+        <form method="POST" action="/admin/compliance/run" onsubmit="return confirm('Run the monthly tier-compliance check now? Warnings/downgrades will be applied and everyone notified.')">
+            <button type="submit" class="btn btn-ghost">🛡️ Run Compliance Check</button>
+        </form>
     </div>
 </div>
 

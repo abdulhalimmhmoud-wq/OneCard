@@ -33,3 +33,10 @@ onecard.db
 !static/**
 !templates/
 !templates/**
+
+# Allow the end-to-end test suite (handover to the technical team)
+!tests/
+!tests/**
+
+# Never commit the local session secret
+instance_secret.key

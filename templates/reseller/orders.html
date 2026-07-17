@@ -140,8 +140,13 @@
 <script>
 const products = {{ products_json|safe }};
 const walletBalance = {{ profile.wallet_balance }};
+const fxRates = {{ rates_json|safe }};   // wallet & totals are SAR; lines convert at these rates
 let cart = [];   // {product_id, label, merchant, qty, unit_price, currency}
 let odPicked = null;
+
+function toSar(amount, currency) {
+    return amount * (fxRates[currency || 'SAR'] || 1);
+}
 
 function searchProducts() {
     const q = document.getElementById('odSearch').value.toLowerCase();
@@ -176,7 +181,7 @@ function addToCart() {
 function removeCartItem(i) { cart.splice(i, 1); renderCart(); }
 function clearCart() { cart = []; renderCart(); }
 
-function cartTotal() { return cart.reduce((s, c) => s + c.unit_price * c.qty, 0); }
+function cartTotal() { return cart.reduce((s, c) => s + toSar(c.unit_price * c.qty, c.currency), 0); }
 
 function renderCart() {
     document.getElementById('cartCount').textContent = cart.length;
@@ -187,7 +192,11 @@ function renderCart() {
         document.getElementById('cartBalanceCheck').textContent = '';
         return;
     }
-    body.innerHTML = cart.map((c, i) => `
+    body.innerHTML = cart.map((c, i) => {
+        const lineSar = toSar(c.unit_price * c.qty, c.currency);
+        const fx = (c.currency && c.currency !== 'SAR')
+            ? `<div class="text-muted" style="font-size:10px">${fmt(c.unit_price * c.qty)} ${esc(c.currency)}</div>` : '';
+        return `
         <tr>
             <td>
                 <div class="fw6 truncate" style="max-width:200px" title="${esc(c.label)}">${esc(c.label)}</div>
@@ -195,9 +204,10 @@ function renderCart() {
             </td>
             <td class="fw6">${fmt(c.qty)}</td>
             <td>${fmt(c.unit_price)} ${esc(c.currency)}</td>
-            <td class="fw6 text-accent">${fmt(c.unit_price * c.qty)}</td>
+            <td class="fw6 text-accent">${fmt(lineSar)} SAR${fx}</td>
             <td><button class="btn btn-sm btn-ghost" onclick="removeCartItem(${i})">✕</button></td>
-        </tr>`).join('');
+        </tr>`;
+    }).join('');
     const total = cartTotal();
     document.getElementById('cartTotal').textContent = fmt(total);
     const check = document.getElementById('cartBalanceCheck');

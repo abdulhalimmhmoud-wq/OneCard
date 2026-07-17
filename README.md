@@ -1,4 +1,4 @@
-# OneCard — Reseller Operations Platform (v6)
+# OneCard — Reseller Operations Platform (v7)
 
 A **6-role web platform** that digitizes OneCard's full reseller lifecycle — from first contact
 to contract, wallet funding, ordering, monthly commitment tracking, catalogue operations and
@@ -16,6 +16,22 @@ in `models.py`.
 | **Finance** | Verifies bank-transfer receipts and credits reseller wallets. |
 | **Operations** | Owns the catalogue: adds products, updates supplier prices (manual or bulk file), activates/deactivates products, manages the supplier directory. Every change is audited in the Price Change Log with automatic low-margin alerts to BD/CCO. |
 | **Reseller** | Browses the catalogue with tier pricing, submits purchase plans (forecasts), tops up a wallet, places orders, and tracks their own purchase analysis. |
+
+## Production Hardening (v7)
+
+- **Single reporting currency (SAR)**: product prices stay in their own currency; at checkout every
+  order line converts at the stored FX rate (`currency_rates`, editable by Finance at `/finance/rates`),
+  the SAR total is deducted from the wallet, and each line stores the rate used — historical reports
+  never drift when rates change. All analytics (analysis, sourcing intelligence, team performance)
+  aggregate in SAR. Historical orders were backfilled automatically.
+- **CSRF protection** on every state-changing request (session token, auto-injected into all forms by
+  `static/app.js`; the supplier API stays key-authenticated). State-changing GET links converted to POST.
+- **Stable secret key**: `ONECARD_SECRET_KEY` env var, else auto-persisted `instance_secret.key`
+  (git-ignored) — sessions survive restarts and multi-worker setups work.
+- **Debug off by default** (`ONECARD_DEBUG=1` to enable), **8 MB upload cap**, friendly 403/404/413/500
+  pages, and **login rate-limiting** (5 tries / 15 min per email+IP).
+- **UTC everywhere** for month bucketing — compliance and reporting match the DB clock.
+- **XSS guard** on all inline JSON payloads; **hot-path DB indexes** added; requirements pinned.
 
 ## Multi-Supplier Sourcing & Batch Governance (v6)
 
@@ -98,6 +114,25 @@ All reads/writes go through `models.py`. To connect production systems, swap the
 - **Payments** → `wallet_transactions` (manual finance verification; replace with bank API/webhooks)
 - **Supplier procurement** → `suppliers` table is a directory in v5; extend with PO/inventory when required
 
+## Handover Notes for the Technical Team
+
+**What is already production-grade**: role model & permissions, all business workflows, audit trails,
+CSRF/session/upload hardening, FX-consistent money math, automated migrations, and the e2e test
+suite in `tests/` (103 checks across three files — run the app, then `python tests/e2e_*.py`).
+
+**Deliberately left for the integration phase** (by design, not omission):
+
+| Area | Current state | Recommended move |
+|------|---------------|------------------|
+| Database | SQLite (single-writer) | PostgreSQL + `DECIMAL` money columns + Alembic migrations; use `SELECT … FOR UPDATE` on wallet ops |
+| Catalogue payloads | Full catalogue rendered per page (~1.4 MB) | Server-side pagination/search API + cache (rates change rarely) |
+| Background jobs | Daily checks piggyback on requests (`run_tier_compliance`) | Move to cron/Celery; the functions are already self-contained |
+| APIs | Supplier price sync only (`POST /api/supplier-prices`) | Full REST layer for mobile/external systems; add idempotency keys + outbound webhooks |
+| Sales data | Platform orders stand in for real sales | Point `get_month_total_orders()` at the company sales feed |
+| Payments | Manual receipt verification | Bank API/webhooks writing into the same `wallet_transactions` ledger |
+| Deployment | `python app.py` (Waitress/Gunicorn ready) | WSGI server behind a reverse proxy + `ONECARD_SECRET_KEY` env + Docker |
+| Order lifecycle | `placed` only | Add fulfillment/delivery states when connected to provisioning |
+
 ---
 
-*Built for OneCard Digital Distribution — v5, July 2026*
+*Built for OneCard Digital Distribution — v7, July 2026*

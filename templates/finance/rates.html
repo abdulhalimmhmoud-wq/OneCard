@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}FX Rates — OneCard Finance{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">💱 Currency Exchange Rates</h1>
+        <p class="page-subtitle">The wallet and all reporting run in SAR — every order line in another currency converts at these rates</p>
+    </div>
+</div>
+
+<div class="card" style="max-width:760px">
+    <form method="POST" action="/finance/rates">
+        <table style="width:100%">
+            <thead>
+                <tr><th>Currency</th><th>Rate → SAR</th><th>Products Priced In It</th><th>Last Updated</th></tr>
+            </thead>
+            <tbody>
+            {% for r in rates %}
+            <tr>
+                <td class="fw6">{{ r.currency }}
+                    <input type="hidden" name="currency" value="{{ r.currency }}">
+                </td>
+                <td>
+                    <input type="number" name="rate" value="{{ r.rate_to_sar }}" step="0.000001" min="0.000001"
+                           style="max-width:160px" {{ 'readonly style=opacity:.6;max-width:160px' if r.currency == 'SAR' }}>
+                </td>
+                <td>{{ r.product_count }}</td>
+                <td class="text-muted" style="font-size:12px">{{ r.updated_at[:16] if r.updated_at }}{% if r.updated_by_name %}<br>by {{ r.updated_by_name }}{% endif %}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        <button type="submit" class="btn btn-primary mt-16"
+                onclick="return confirm('Save FX rates? New orders will convert at these rates immediately.')">💾 Save Rates</button>
+    </form>
+</div>
+
+<div class="card mt-24" style="max-width:760px;border:1px dashed var(--border)">
+    <div class="fw6" style="margin-bottom:6px">ℹ️ How conversion works</div>
+    <div class="text-muted" style="font-size:13px;line-height:1.7">
+        Product prices stay in their own currency in the catalogue. At checkout, every line is converted to SAR
+        at the rate above and the SAR total is deducted from the reseller wallet. Each order line stores the rate
+        used, so historical reports never change when rates are updated.<br>
+        <b>Integration note:</b> the technical team can point this table at the live company FX feed —
+        one table, one place.
+    </div>
+</div>
+{% endblock %}

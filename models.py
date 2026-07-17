@@ -21,7 +21,7 @@ import os
 import math
 import calendar
 import bcrypt
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'onecard.db')
 
@@ -363,6 +363,21 @@ def init_db():
         );
 
         CREATE INDEX IF NOT EXISTS idx_allocations_batch ON order_item_allocations(batch_id);
+
+        -- ── v7 hardening: FX rates (wallet & reporting currency = SAR) ──
+        -- INTEGRATION NOTE: replace/refresh these rates from the company FX feed.
+        CREATE TABLE IF NOT EXISTS currency_rates (
+            currency TEXT PRIMARY KEY,
+            rate_to_sar REAL NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_by INTEGER REFERENCES users(id)
+        );
+
+        -- Hot-path indexes (order history, analysis, wallet statements)
+        CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id);
+        CREATE INDEX IF NOT EXISTS idx_orders_reseller ON orders(reseller_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_wallet_reseller ON wallet_transactions(reseller_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_allocations_item ON order_item_allocations(order_item_id);
     """)
     conn.commit()
     conn.close()
@@ -424,6 +439,39 @@ def migrate_db():
     scols = {r['name'] for r in conn.execute("PRAGMA table_info(suppliers)")}
     if 'api_key' not in scols:
         conn.execute("ALTER TABLE suppliers ADD COLUMN api_key TEXT")
+
+    # 6. v7 hardening: FX-aware order items + backfill of historical data
+    oicols = {r['name'] for r in conn.execute("PRAGMA table_info(order_items)")}
+    needs_fx_backfill = 'line_total_sar' not in oicols
+    if 'fx_rate' not in oicols:
+        conn.execute("ALTER TABLE order_items ADD COLUMN fx_rate REAL NOT NULL DEFAULT 1")
+    if 'line_total_sar' not in oicols:
+        conn.execute("ALTER TABLE order_items ADD COLUMN line_total_sar REAL")
+    conn.commit()
+
+    # Seed default FX rates once (Finance can edit them in the app)
+    if conn.execute("SELECT COUNT(*) FROM currency_rates").fetchone()[0] == 0:
+        defaults = [('SAR', 1.0), ('USD', 3.75), ('AED', 1.021), ('KWD', 12.22),
+                    ('QAR', 1.030), ('JOD', 5.290), ('EGP', 0.078),
+                    ('EUR', 4.06), ('LBP1', 0.000042)]
+        for cur, rate in defaults:
+            conn.execute("INSERT OR IGNORE INTO currency_rates (currency, rate_to_sar) VALUES (?,?)",
+                         (cur, rate))
+        conn.commit()
+
+    if needs_fx_backfill:
+        # Backfill historical order lines + recompute order totals in SAR
+        rates = {r['currency']: r['rate_to_sar'] for r in conn.execute("SELECT * FROM currency_rates")}
+        for oi in conn.execute("SELECT id, currency, line_total FROM order_items").fetchall():
+            rate = rates.get(oi['currency'], 1.0)
+            conn.execute("UPDATE order_items SET fx_rate=?, line_total_sar=? WHERE id=?",
+                         (rate, round(oi['line_total'] * rate, 2), oi['id']))
+        for o in conn.execute("SELECT id FROM orders").fetchall():
+            tot = conn.execute("SELECT COALESCE(SUM(line_total_sar),0), COALESCE(SUM(unit_face*quantity*fx_rate),0) "
+                               "FROM order_items WHERE order_id=?", (o['id'],)).fetchone()
+            conn.execute("UPDATE orders SET total_cost=?, total_face=?, total_savings=? WHERE id=?",
+                         (round(tot[0], 2), round(tot[1], 2), round(tot[1] - tot[0], 2), o['id']))
+        conn.commit()
 
     conn.commit()
     conn.close()
@@ -763,6 +811,41 @@ def get_all_currencies():
     return [r['currency'] for r in rows]
 
 
+# ── FX Rates (v7: wallet & reporting currency is SAR) ────────────
+
+def get_fx_rates():
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM currency_rates ORDER BY currency").fetchall()
+    conn.close()
+    return {r['currency']: r['rate_to_sar'] for r in rows}
+
+
+def get_fx_rates_full():
+    conn = get_db()
+    rows = conn.execute("""SELECT cr.*, u.name as updated_by_name,
+                                  (SELECT COUNT(*) FROM products p WHERE p.currency=cr.currency) as product_count
+                           FROM currency_rates cr LEFT JOIN users u ON cr.updated_by=u.id
+                           ORDER BY cr.currency""").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def set_fx_rate(currency, rate, user_id):
+    conn = get_db()
+    conn.execute("""INSERT INTO currency_rates (currency, rate_to_sar, updated_by, updated_at)
+                    VALUES (?,?,?,CURRENT_TIMESTAMP)
+                    ON CONFLICT(currency) DO UPDATE SET rate_to_sar=excluded.rate_to_sar,
+                        updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP""",
+                 (currency, rate, user_id))
+    conn.commit()
+    conn.close()
+
+
+def to_sar(amount, currency, rates=None):
+    rates = rates or get_fx_rates()
+    return amount * rates.get(currency or 'SAR', 1.0)
+
+
 def get_all_merchants():
     conn = get_db()
     rows = conn.execute("""SELECT merchant, COUNT(*) as product_count,
@@ -981,10 +1064,19 @@ def mark_forecast_reviewed(fid):
 def create_order(reseller_id, items):
     """items: list of {product_rowid, product_name, merchant, category, currency,
                        quantity, unit_price, unit_face}
-    Deducts the order total from the reseller wallet (must have enough balance).
+    Line prices are in each product's own currency; the ORDER TOTAL and the
+    WALLET are always SAR (v7): every line is converted at the stored FX rate.
     Returns (order_id, error_message)."""
-    total_cost = sum(it['unit_price'] * it['quantity'] for it in items)
-    total_face = sum(it['unit_face'] * it['quantity'] for it in items)
+    rates = get_fx_rates()
+    total_cost = total_face = 0.0
+    for it in items:
+        rate = rates.get(it.get('currency') or 'SAR', 1.0)
+        it['_fx'] = rate
+        it['_line_sar'] = round(it['unit_price'] * it['quantity'] * rate, 2)
+        total_cost += it['_line_sar']
+        total_face += it['unit_face'] * it['quantity'] * rate
+    total_cost = round(total_cost, 2)
+    total_face = round(total_face, 2)
     conn = get_db()
     bal = conn.execute("SELECT wallet_balance FROM reseller_profiles WHERE id=?", (reseller_id,)).fetchone()
     if not bal:
@@ -992,18 +1084,21 @@ def create_order(reseller_id, items):
         return None, "Reseller not found."
     if bal['wallet_balance'] < total_cost:
         conn.close()
-        return None, f"Insufficient wallet balance. Order total is {total_cost:,.0f} but wallet has {bal['wallet_balance']:,.0f}."
+        return None, (f"Insufficient wallet balance. Order total is {total_cost:,.0f} SAR "
+                      f"but wallet has {bal['wallet_balance']:,.0f} SAR.")
     conn.execute("""INSERT INTO orders (reseller_id, total_cost, total_face, total_savings)
-                    VALUES (?,?,?,?)""", (reseller_id, total_cost, total_face, total_face - total_cost))
+                    VALUES (?,?,?,?)""", (reseller_id, total_cost, total_face,
+                                          round(total_face - total_cost, 2)))
     oid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     for it in items:
         conn.execute("""INSERT INTO order_items
                         (order_id, product_rowid, product_name, merchant, category, currency,
-                         quantity, unit_price, unit_face, line_total)
-                        VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                         quantity, unit_price, unit_face, line_total, fx_rate, line_total_sar)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                      (oid, it.get('product_rowid'), it['product_name'], it['merchant'],
                       it.get('category'), it.get('currency'), it['quantity'],
-                      it['unit_price'], it['unit_face'], it['unit_price'] * it['quantity']))
+                      it['unit_price'], it['unit_face'], it['unit_price'] * it['quantity'],
+                      it['_fx'], it['_line_sar']))
     conn.execute("UPDATE reseller_profiles SET wallet_balance = wallet_balance - ? WHERE id=?",
                  (total_cost, reseller_id))
     conn.execute("""INSERT INTO wallet_transactions (reseller_id, type, amount, status, note)
@@ -1034,9 +1129,9 @@ def get_order_items(order_id):
 
 def get_month_orders_by_merchant(reseller_id, ym=None):
     """merchant → ordered value for a given month (default: current month)."""
-    ym = ym or datetime.now().strftime('%Y-%m')
+    ym = ym or datetime.now(timezone.utc).strftime('%Y-%m')
     conn = get_db()
-    rows = conn.execute("""SELECT oi.merchant, SUM(oi.line_total) as v
+    rows = conn.execute("""SELECT oi.merchant, SUM(COALESCE(oi.line_total_sar, oi.line_total)) as v
                            FROM order_items oi JOIN orders o ON oi.order_id=o.id
                            WHERE o.reseller_id=? AND strftime('%Y-%m', o.created_at)=?
                            GROUP BY oi.merchant""", (reseller_id, ym)).fetchall()
@@ -1062,12 +1157,14 @@ def get_reseller_analysis(reseller_id):
                COALESCE(SUM(total_savings),0) as savings, COUNT(*) as orders
         FROM orders WHERE reseller_id=?""", (reseller_id,)).fetchone())
     out['by_merchant'] = [dict(r) for r in conn.execute("""
-        SELECT oi.merchant, SUM(oi.line_total) as spend, SUM(oi.quantity) as qty,
-               SUM(oi.unit_face*oi.quantity) - SUM(oi.line_total) as savings
+        SELECT oi.merchant, SUM(COALESCE(oi.line_total_sar, oi.line_total)) as spend,
+               SUM(oi.quantity) as qty,
+               SUM(oi.unit_face*oi.quantity*oi.fx_rate) - SUM(COALESCE(oi.line_total_sar, oi.line_total)) as savings
         FROM order_items oi JOIN orders o ON oi.order_id=o.id
         WHERE o.reseller_id=? GROUP BY oi.merchant ORDER BY spend DESC""", (reseller_id,))]
     out['by_category'] = [dict(r) for r in conn.execute("""
-        SELECT oi.category, SUM(oi.line_total) as spend, SUM(oi.quantity) as qty
+        SELECT oi.category, SUM(COALESCE(oi.line_total_sar, oi.line_total)) as spend,
+               SUM(oi.quantity) as qty
         FROM order_items oi JOIN orders o ON oi.order_id=o.id
         WHERE o.reseller_id=? GROUP BY oi.category ORDER BY spend DESC""", (reseller_id,))]
     out['monthly'] = [dict(r) for r in conn.execute("""
@@ -1075,7 +1172,8 @@ def get_reseller_analysis(reseller_id):
                SUM(total_savings) as savings, COUNT(*) as orders
         FROM orders WHERE reseller_id=? GROUP BY ym ORDER BY ym""", (reseller_id,))]
     out['top_products'] = [dict(r) for r in conn.execute("""
-        SELECT oi.product_name, oi.merchant, SUM(oi.quantity) as qty, SUM(oi.line_total) as spend
+        SELECT oi.product_name, oi.merchant, SUM(oi.quantity) as qty,
+               SUM(COALESCE(oi.line_total_sar, oi.line_total)) as spend
         FROM order_items oi JOIN orders o ON oi.order_id=o.id
         WHERE o.reseller_id=? GROUP BY oi.product_name, oi.merchant
         ORDER BY spend DESC LIMIT 10""", (reseller_id,))]
@@ -1726,11 +1824,12 @@ def get_sales_by_supplier(ym=None):
     q = """SELECT COALESCE(s.name, '— Unsourced (no batch) —') as supplier_name,
                   b.supplier_id,
                   SUM(a.quantity) as units,
-                  SUM(a.quantity * a.unit_cost) as cogs,
-                  SUM(a.quantity * oi.unit_price) as revenue
+                  SUM(a.quantity * a.unit_cost * COALESCE(cr.rate_to_sar, 1)) as cogs,
+                  SUM(a.quantity * oi.unit_price * COALESCE(cr.rate_to_sar, 1)) as revenue
            FROM order_item_allocations a
            JOIN order_items oi ON a.order_item_id=oi.id
            JOIN orders o ON oi.order_id=o.id
+           LEFT JOIN currency_rates cr ON cr.currency = oi.currency
            LEFT JOIN purchase_batches b ON a.batch_id=b.id
            LEFT JOIN suppliers s ON b.supplier_id=s.id"""
     params = []
@@ -1766,11 +1865,12 @@ def get_supplier_scorecards():
                               FROM purchase_batches WHERE supplier_id=?""", (sid,)).fetchone()
         s['batches'], s['spend'], s['variance'] = row['batches'], row['spend'], row['variance']
         sold = conn.execute("""SELECT COALESCE(SUM(a.quantity),0) as units,
-                                      COALESCE(SUM(a.quantity*a.unit_cost),0) as cogs,
-                                      COALESCE(SUM(a.quantity*oi.unit_price),0) as revenue
+                                      COALESCE(SUM(a.quantity*a.unit_cost*COALESCE(cr.rate_to_sar,1)),0) as cogs,
+                                      COALESCE(SUM(a.quantity*oi.unit_price*COALESCE(cr.rate_to_sar,1)),0) as revenue
                                FROM order_item_allocations a
                                JOIN purchase_batches b ON a.batch_id=b.id
                                JOIN order_items oi ON a.order_item_id=oi.id
+                               LEFT JOIN currency_rates cr ON cr.currency = oi.currency
                                WHERE b.supplier_id=?""", (sid,)).fetchone()
         s['units_sold'] = sold['units']
         s['realized_profit'] = round(sold['revenue'] - sold['cogs'], 2)
@@ -1814,16 +1914,21 @@ def get_sourcing_kpis():
         SELECT COUNT(*) FROM (SELECT product_rowid FROM supplier_products WHERE is_available=1
                               GROUP BY product_rowid HAVING COUNT(*)>1)""").fetchone()[0]
     k['potential_saving'] = conn.execute("""
-        SELECT COALESCE(SUM(p.cost - x.best),0) FROM products p
+        SELECT COALESCE(SUM((p.cost - x.best) * COALESCE(cr.rate_to_sar, 1)),0) FROM products p
         JOIN (SELECT product_rowid, MIN(supplier_cost) as best FROM supplier_products
               WHERE is_available=1 GROUP BY product_rowid) x ON x.product_rowid=p.id
+        LEFT JOIN currency_rates cr ON cr.currency = p.currency
         WHERE p.is_active=1 AND x.best < p.cost""").fetchone()[0]
-    k['open_variance'] = conn.execute(
-        "SELECT COALESCE(SUM(sourcing_variance),0) FROM purchase_batches").fetchone()[0]
+    k['open_variance'] = conn.execute("""
+        SELECT COALESCE(SUM(b.sourcing_variance * COALESCE(cr.rate_to_sar, 1)),0)
+        FROM purchase_batches b JOIN products p ON b.product_rowid=p.id
+        LEFT JOIN currency_rates cr ON cr.currency = p.currency""").fetchone()[0]
     k['unreconciled'] = conn.execute(
         "SELECT COUNT(*) FROM purchase_batches WHERE status='awaiting_reconciliation'").fetchone()[0]
-    k['stock_value'] = conn.execute(
-        "SELECT COALESCE(SUM(remaining_qty*unit_cost),0) FROM purchase_batches").fetchone()[0]
+    k['stock_value'] = conn.execute("""
+        SELECT COALESCE(SUM(b.remaining_qty * b.unit_cost * COALESCE(cr.rate_to_sar, 1)),0)
+        FROM purchase_batches b JOIN products p ON b.product_rowid=p.id
+        LEFT JOIN currency_rates cr ON cr.currency = p.currency""").fetchone()[0]
     conn.close()
     return k
 
@@ -1849,7 +1954,7 @@ def get_team_performance(ym=None):
     monthly new resellers + order value vs targets, commitment attainment,
     discount request stats and forecast responsiveness.
     """
-    ym = ym or datetime.now().strftime('%Y-%m')
+    ym = ym or datetime.now(timezone.utc).strftime('%Y-%m')
     conn = get_db()
     sales_users = conn.execute("SELECT id, name, email FROM users WHERE role='sales' ORDER BY name").fetchall()
     targets = {t['sales_user_id']: dict(t) for t in
@@ -1996,7 +2101,7 @@ def expire_new_flags():
 # ── Tier Compliance Automation ───────────────────────────────────
 
 def _month_bounds(d=None):
-    d = d or date.today()
+    d = d or datetime.now(timezone.utc).date()
     return d.replace(day=1), d.replace(day=calendar.monthrange(d.year, d.month)[1])
 
 
@@ -2012,7 +2117,7 @@ def run_tier_compliance(force=False):
     Point get_month_total_orders() at the company sales feed to use real figures.
     """
     conn = get_db()
-    today = date.today()
+    today = datetime.now(timezone.utc).date()
     last_run = conn.execute("SELECT value FROM app_meta WHERE key='compliance_last_run'").fetchone()
     if not force and last_run and last_run['value'] == today.isoformat():
         conn.close()

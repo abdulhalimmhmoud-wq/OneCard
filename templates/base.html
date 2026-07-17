@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}OneCard Platform{% endblock %}</title>
     <meta name="description" content="OneCard Catalogue Management Platform">
+    <meta name="csrf-token" content="{{ csrf_token }}">
     <link rel="stylesheet" href="/static/style.css">
     {% block head %}{% endblock %}
 </head>
