@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Bulk Price Update — OneCard Ops{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">📤 Bulk Price Update</h1>
+        <p class="page-subtitle">Upload a supplier/company price file — preview every difference before applying</p>
+    </div>
+</div>
+
+{% if not preview %}
+<div class="card" style="max-width:640px">
+    <div class="card-header"><div class="card-title">🗂️ Upload Price File</div></div>
+    <form method="POST" enctype="multipart/form-data">
+        <div class="form-group">
+            <label class="form-label">Excel File (.xls / .xlsx) *</label>
+            <input type="file" name="pricefile" required accept=".xls,.xlsx"
+                   style="padding:10px;background:var(--bg-2);border:1px dashed var(--border);border-radius:var(--radius-sm);width:100%;color:var(--text-2)">
+            <div class="form-hint">
+                Same format as the company system export. Required columns:
+                <b>Product ID</b> + <b>Cost Price</b> and/or <b>Default Reseller Price</b>
+                (optional: Recommended Retail Price).
+            </div>
+        </div>
+        <button type="submit" class="btn btn-primary btn-lg" style="width:100%;justify-content:center">🔍 Parse & Preview Changes</button>
+    </form>
+</div>
+
+{% else %}
+<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">
+    <div class="stat-card">
+        <div class="stat-icon">📄</div>
+        <div class="stat-value">{{ preview.total_rows }}</div>
+        <div class="stat-label">Rows in File</div>
+    </div>
+    <div class="stat-card" style="border:2px solid var(--warning)">
+        <div class="stat-icon">🔁</div>
+        <div class="stat-value">{{ preview.diffs|length }}</div>
+        <div class="stat-label">Products with Price Changes</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">❓</div>
+        <div class="stat-value">{{ preview.unmatched }}</div>
+        <div class="stat-label">Unmatched Product IDs</div>
+    </div>
+</div>
+
+<div class="table-card mb-24">
+    <div class="table-header"><div class="table-title">🔍 Preview — changes that will be applied</div></div>
+    <div class="table-scroll" style="max-height:480px;overflow-y:auto">
+        <table>
+            <thead><tr><th>Product</th><th>Cost</th><th>Default Price</th><th>Face Value</th></tr></thead>
+            <tbody>
+            {% for d in preview.diffs %}
+            <tr>
+                <td class="fw6 truncate" style="max-width:260px" title="{{ d.product_name }}">{{ d.product_name }}
+                    <div class="text-muted" style="font-size:10px">{{ d.merchant }} · ID {{ d.product_id }}</div>
+                </td>
+                <td>{% if d.new_cost is defined %}{{ d.old_cost }} → <b class="text-accent">{{ d.new_cost }}</b>{% else %}—{% endif %}</td>
+                <td>{% if d.new_default_price is defined %}{{ d.old_default_price }} → <b class="text-accent">{{ d.new_default_price }}</b>{% else %}—{% endif %}</td>
+                <td>{% if d.new_face_value is defined %}{{ d.old_face_value }} → <b class="text-accent">{{ d.new_face_value }}</b>{% else %}—{% endif %}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div style="display:flex;gap:12px">
+    <form method="POST" action="/ops/bulk/apply" onsubmit="return confirm('Apply {{ preview.diffs|length }} price changes? All changes are logged and low-margin alerts fire automatically.')">
+        <input type="hidden" name="token" value="{{ token }}">
+        <button type="submit" class="btn btn-primary btn-lg">✅ Apply {{ preview.diffs|length }} Changes</button>
+    </form>
+    <a href="/ops/bulk" class="btn btn-ghost btn-lg">✕ Cancel</a>
+</div>
+{% endif %}
+{% endblock %}

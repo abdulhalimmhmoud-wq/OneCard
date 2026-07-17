@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}Team Performance — OneCard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">📊 Sales Team Performance</h1>
+        <p class="page-subtitle">Registration funnel, conversion, commitments and targets — per sales manager</p>
+    </div>
+    <div class="page-actions">
+        <form method="GET" action="/team">
+            <select name="ym" onchange="this.form.submit()" style="padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px">
+                {% for m in months %}<option value="{{ m }}" {{ 'selected' if m == ym }}>{{ m }}</option>{% endfor %}
+            </select>
+        </form>
+    </div>
+</div>
+
+{% for m in team %}
+<div class="card mb-24">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px">
+        <div>
+            <div class="fw6" style="font-size:17px">👤 {{ m.name }}</div>
+            <div class="text-muted" style="font-size:12px">{{ m.email }}</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+            {% if m.forecasts_pending %}<span class="badge badge-warning">⏳ {{ m.forecasts_pending }} forecasts awaiting review</span>{% endif %}
+            {% if m.at_risk %}<span class="badge badge-danger">⚠️ {{ m.at_risk }} at-risk accounts</span>{% endif %}
+        </div>
+    </div>
+
+    <!-- Funnel -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:16px">
+        <div class="calc-item">
+            <div class="ci-label">Registered (total)</div>
+            <div class="ci-value">{{ m.registered_total }}</div>
+            <div class="text-muted" style="font-size:11px">+{{ m.registered_month }} in {{ ym }}</div>
+        </div>
+        <div class="calc-item">
+            <div class="ci-label">→ Contracted</div>
+            <div class="ci-value">{{ m.contracted }}</div>
+            <div class="text-muted" style="font-size:11px">{{ m.contract_rate }}% conversion</div>
+        </div>
+        <div class="calc-item">
+            <div class="ci-label">→ Activated (ordered)</div>
+            <div class="ci-value">{{ m.activated }}</div>
+            <div class="text-muted" style="font-size:11px">{{ m.activation_rate }}% of contracted</div>
+        </div>
+        <div class="calc-item">
+            <div class="ci-label">Orders {{ ym }}</div>
+            <div class="ci-value text-accent">{{ m.orders_value_month|money }}</div>
+            <div class="text-muted" style="font-size:11px">lifetime {{ m.orders_value_total|money }} SAR</div>
+        </div>
+        <div class="calc-item" style="{{ 'border:2px solid var(--danger)' if m.commitment_attainment is not none and m.commitment_attainment < 60 else ('border:2px solid var(--success)' if m.commitment_attainment is not none and m.commitment_attainment >= 100 else '') }}">
+            <div class="ci-label">Commitment Attainment</div>
+            <div class="ci-value {{ 'text-s' if m.commitment_attainment is not none and m.commitment_attainment >= 100 else ('text-d' if m.commitment_attainment is not none and m.commitment_attainment < 60 else '') }}">
+                {{ m.commitment_attainment ~ '%' if m.commitment_attainment is not none else '—' }}
+            </div>
+            <div class="text-muted" style="font-size:11px">vs {{ m.commitment_expected|money }} SAR committed</div>
+        </div>
+        <div class="calc-item">
+            <div class="ci-label">Discount Requests</div>
+            <div class="ci-value">{{ m.discount_approved }}/{{ m.discount_requests }}</div>
+            <div class="text-muted" style="font-size:11px">approved / total</div>
+        </div>
+        <div class="calc-item">
+            <div class="ci-label">Avg Forecast Response</div>
+            <div class="ci-value">{{ '%.0f h'|format(m.avg_review_hours) if m.avg_review_hours is not none else '—' }}</div>
+            <div class="text-muted" style="font-size:11px">submitted → reviewed</div>
+        </div>
+    </div>
+
+    <!-- Targets -->
+    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;border-top:1px solid var(--border);padding-top:12px">
+        <span class="fw6" style="font-size:13px">🎯 Targets {{ ym }}:</span>
+        {% if m.target_new is not none or m.target_value is not none %}
+            <span style="font-size:13px">New resellers: <b>{{ m.registered_month }}/{{ m.target_new or 0 }}</b>
+                {% if m.target_new_pct is not none %}
+                    <span class="badge {{ 'badge-success' if m.target_new_pct >= 100 else ('badge-warning' if m.target_new_pct >= 50 else 'badge-danger') }}">{{ m.target_new_pct }}%</span>
+                {% endif %}
+            </span>
+            <span style="font-size:13px">Sales value: <b>{{ m.orders_value_month|money }}/{{ (m.target_value or 0)|money }}</b>
+                {% if m.target_value_pct is not none %}
+                    <span class="badge {{ 'badge-success' if m.target_value_pct >= 100 else ('badge-warning' if m.target_value_pct >= 50 else 'badge-danger') }}">{{ m.target_value_pct }}%</span>
+                {% endif %}
+            </span>
+        {% else %}
+            <span class="text-muted" style="font-size:13px">No targets set for this month</span>
+        {% endif %}
+    </div>
+</div>
+{% else %}
+<div class="card" style="text-align:center;padding:50px">
+    <div style="font-size:40px;margin-bottom:12px">👥</div>
+    <div class="fw6">No sales managers yet</div>
+</div>
+{% endfor %}
+
+<!-- Targets editor -->
+{% if team %}
+<div class="card mt-24">
+    <div class="card-header"><div class="card-title">🎯 Set Monthly Targets — {{ ym }}</div></div>
+    <form method="POST" action="/team/targets">
+        <input type="hidden" name="ym" value="{{ ym }}">
+        <table style="width:100%">
+            <thead><tr><th>Sales Manager</th><th>Target: New Resellers</th><th>Target: Sales Value (SAR)</th></tr></thead>
+            <tbody>
+            {% for m in team %}
+            <tr>
+                <td class="fw6">{{ m.name }}<input type="hidden" name="sales_user_id" value="{{ m.user_id }}"></td>
+                <td><input type="number" name="target_new" min="0" step="1" value="{{ m.target_new if m.target_new is not none else '' }}" placeholder="e.g. 5" style="max-width:140px"></td>
+                <td><input type="number" name="target_value" min="0" step="1000" value="{{ m.target_value|int if m.target_value is not none else '' }}" placeholder="e.g. 500000" style="max-width:180px"></td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        <button type="submit" class="btn btn-primary mt-16">💾 Save Targets</button>
+    </form>
+</div>
+{% endif %}
+{% endblock %}

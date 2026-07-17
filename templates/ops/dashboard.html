@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}Operations — OneCard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">🛠️ Operations Dashboard</h1>
+        <p class="page-subtitle">Catalogue health, price updates and supplier management</p>
+    </div>
+    <div class="page-actions">
+        <a href="/ops/products/add" class="btn btn-primary">➕ Add Product</a>
+        <a href="/ops/bulk" class="btn btn-ghost">📤 Bulk Price Update</a>
+    </div>
+</div>
+
+<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(190px,1fr))">
+    <div class="stat-card">
+        <div class="stat-icon">📦</div>
+        <div class="stat-value">{{ stats.active_products }}</div>
+        <div class="stat-label">Active Products</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🚫</div>
+        <div class="stat-value">{{ stats.inactive_products }}</div>
+        <div class="stat-label">Deactivated</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🆕</div>
+        <div class="stat-value">{{ stats.new_products }}</div>
+        <div class="stat-label">New Arrivals (live)</div>
+    </div>
+    <div class="stat-card" style="{{ 'border:2px solid var(--danger)' if stats.low_margin }}">
+        <div class="stat-icon">⚠️</div>
+        <div class="stat-value">{{ stats.low_margin }}</div>
+        <div class="stat-label">Low-Margin Products</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🚚</div>
+        <div class="stat-value">{{ stats.suppliers }}</div>
+        <div class="stat-label">Suppliers</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🧾</div>
+        <div class="stat-value">{{ stats.changes_this_week }}</div>
+        <div class="stat-label">Changes (7 days)</div>
+    </div>
+</div>
+
+<div class="grid-2">
+    <!-- Low margin products -->
+    <div class="table-card">
+        <div class="table-header">
+            <div class="table-title">⚠️ Low-Margin Products (below {{ '%.1f'|format(1.0) }}%)</div>
+        </div>
+        <div class="table-scroll" style="max-height:420px;overflow-y:auto">
+            <table>
+                <thead><tr><th>Product</th><th>Cost</th><th>Price</th><th>Margin</th><th></th></tr></thead>
+                <tbody>
+                {% for p in stats.low_margin_products %}
+                <tr>
+                    <td class="fw6 truncate" style="max-width:200px" title="{{ p.product_name }}">{{ p.product_name }}
+                        <div class="text-muted" style="font-size:10px">{{ p.merchant }}</div>
+                    </td>
+                    <td>{{ p.cost|money }}</td>
+                    <td>{{ p.default_price|money }}</td>
+                    <td class="fw6 text-d">{{ '%.2f'|format(p.oc_margin_pct) }}%</td>
+                    <td><a href="/ops/products/{{ p.id }}/edit" class="btn btn-sm btn-ghost">✏️ Fix</a></td>
+                </tr>
+                {% else %}
+                <tr><td colspan="5" style="text-align:center;padding:30px;color:var(--text-3)">✅ No low-margin products</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Recent activity -->
+    <div class="table-card">
+        <div class="table-header">
+            <div class="table-title">🧾 Recent Catalogue Activity</div>
+            <a href="/ops/pricelog" class="btn btn-sm btn-ghost">Full Log →</a>
+        </div>
+        <div class="table-scroll" style="max-height:420px;overflow-y:auto">
+            <table>
+                <thead><tr><th>Product</th><th>Change</th><th>By</th></tr></thead>
+                <tbody>
+                {% for l in recent %}
+                <tr>
+                    <td class="truncate" style="max-width:180px" title="{{ l.product_name }}">{{ l.product_name }}
+                        <div class="text-muted" style="font-size:10px">{{ l.created_at[:16] }}</div>
+                    </td>
+                    <td style="font-size:12px">
+                        {% if l.action == 'created' %}<span class="badge badge-success">Created</span>
+                        {% elif l.action == 'deactivated' %}<span class="badge badge-danger">Deactivated</span>
+                        {% elif l.action == 'activated' %}<span class="badge badge-success">Activated</span>
+                        {% else %}{{ l.field }}: {{ l.old_value }} → <b>{{ l.new_value }}</b>{% endif %}
+                        {% if l.source == 'bulk_import' %}<span class="badge badge-info" style="font-size:9px">bulk</span>{% endif %}
+                    </td>
+                    <td class="text-muted" style="font-size:11px">{{ l.changed_by_name or 'system' }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="3" style="text-align:center;padding:30px;color:var(--text-3)">No changes yet</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

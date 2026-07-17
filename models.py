@@ -46,7 +46,11 @@ CLIENT_TYPE_AFFINITY = {
     'Other':                    [],
 }
 
-ROLES = ('admin', 'sales', 'reseller', 'cco', 'finance')
+ROLES = ('admin', 'sales', 'reseller', 'cco', 'finance', 'ops')
+
+# Margin guard: alert BD/CCO when an ops price change leaves a product below
+# this OneCard margin %, or cuts the margin by more than half.
+MARGIN_ALERT_FLOOR_PCT = 1.0
 
 
 def get_db():
@@ -65,7 +69,7 @@ def init_db():
             email TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             name TEXT NOT NULL,
-            role TEXT NOT NULL CHECK(role IN ('admin','sales','reseller','cco','finance')),
+            role TEXT NOT NULL CHECK(role IN ('admin','sales','reseller','cco','finance','ops')),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -245,6 +249,58 @@ def init_db():
             key TEXT PRIMARY KEY,
             value TEXT
         );
+
+        -- ── v5: Suppliers (Operations) ────────────────────────
+        CREATE TABLE IF NOT EXISTS suppliers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            contact_person TEXT,
+            email TEXT,
+            phone TEXT,
+            payment_terms TEXT,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS supplier_merchants (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+            merchant TEXT NOT NULL,
+            UNIQUE(supplier_id, merchant)
+        );
+
+        -- ── v5: Price change audit log ────────────────────────
+        CREATE TABLE IF NOT EXISTS price_change_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_rowid INTEGER,
+            product_name TEXT NOT NULL,
+            merchant TEXT,
+            action TEXT NOT NULL,          -- created / price_update / activated / deactivated
+            field TEXT,                    -- cost / default_price / face_value ...
+            old_value TEXT,
+            new_value TEXT,
+            source TEXT NOT NULL DEFAULT 'manual',   -- manual / bulk_import
+            changed_by INTEGER REFERENCES users(id),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pricelog_product ON price_change_log(product_rowid);
+
+        -- ── v5: Monthly sales targets (governance) ────────────
+        CREATE TABLE IF NOT EXISTS sales_targets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sales_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            ym TEXT NOT NULL,              -- 'YYYY-MM'
+            target_new_resellers INTEGER NOT NULL DEFAULT 0,
+            target_sales_value REAL NOT NULL DEFAULT 0,
+            UNIQUE(sales_user_id, ym)
+        );
+
+        -- One-shot SLA reminders (so we never nag twice for the same item)
+        CREATE TABLE IF NOT EXISTS sla_nudges (
+            key TEXT PRIMARY KEY,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
     """)
     conn.commit()
     conn.close()
@@ -255,9 +311,9 @@ def migrate_db():
     """Upgrade an existing v3 database in place (idempotent)."""
     conn = get_db()
 
-    # 1. users.role CHECK must allow cco/finance → rebuild table if old constraint
+    # 1. users.role CHECK must allow all v5 roles → rebuild table if old constraint
     ddl = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").fetchone()
-    if ddl and "'cco'" not in ddl['sql']:
+    if ddl and ("'cco'" not in ddl['sql'] or "'ops'" not in ddl['sql']):
         conn.executescript("""
             PRAGMA foreign_keys=OFF;
             CREATE TABLE users_new (
@@ -265,7 +321,7 @@ def migrate_db():
                 email TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 name TEXT NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('admin','sales','reseller','cco','finance')),
+                role TEXT NOT NULL CHECK(role IN ('admin','sales','reseller','cco','finance','ops')),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             INSERT INTO users_new (id,email,password_hash,name,role,created_at)
@@ -284,10 +340,24 @@ def migrate_db():
         'wallet_balance': "ALTER TABLE reseller_profiles ADD COLUMN wallet_balance REAL NOT NULL DEFAULT 0",
         'compliance_status': "ALTER TABLE reseller_profiles ADD COLUMN compliance_status TEXT NOT NULL DEFAULT 'ok'",
         'grace_until': "ALTER TABLE reseller_profiles ADD COLUMN grace_until TEXT",
+        'contracted_at': "ALTER TABLE reseller_profiles ADD COLUMN contracted_at TIMESTAMP",
     }
     for col, sql in add.items():
         if col not in cols:
             conn.execute(sql)
+
+    # 3. products: active flag + added date (ops catalogue management)
+    pcols = {r['name'] for r in conn.execute("PRAGMA table_info(products)")}
+    if 'is_active' not in pcols:
+        conn.execute("ALTER TABLE products ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+    if 'added_at' not in pcols:
+        conn.execute("ALTER TABLE products ADD COLUMN added_at TIMESTAMP")
+
+    # 4. forecasts: review timestamp (sales response-time metric)
+    fcols = {r['name'] for r in conn.execute("PRAGMA table_info(forecasts)")}
+    if 'reviewed_at' not in fcols:
+        conn.execute("ALTER TABLE forecasts ADD COLUMN reviewed_at TIMESTAMP")
+
     conn.commit()
     conn.close()
 
@@ -450,7 +520,10 @@ def get_all_resellers(registered_by=None):
     conn = get_db()
     base = """
         SELECT cp.*, u.email, u.name as contact_name, t.name as tier_name,
-               t.margin_share_pct, t.color as tier_color, su.name as sales_name
+               t.margin_share_pct, t.color as tier_color, su.name as sales_name,
+               (SELECT COUNT(*) FROM orders o WHERE o.reseller_id=cp.id) as orders_count,
+               (SELECT COALESCE(SUM(total_cost),0) FROM orders o WHERE o.reseller_id=cp.id) as orders_value,
+               (SELECT MAX(created_at) FROM orders o WHERE o.reseller_id=cp.id) as last_order_at
         FROM reseller_profiles cp
         JOIN users u ON cp.user_id = u.id
         LEFT JOIN tier_rules t ON cp.assigned_tier_id = t.id
@@ -462,12 +535,41 @@ def get_all_resellers(registered_by=None):
     else:
         rows = conn.execute(base + " ORDER BY cp.created_at DESC").fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        d['lifecycle'] = _lifecycle_stage(d)
+        out.append(d)
+    return out
+
+
+def _lifecycle_stage(r):
+    """Prospect → Contracted → Active → At-Risk (lifecycle chip shown everywhere)."""
+    if r.get('compliance_status') == 'warning':
+        return 'at_risk'
+    if r.get('contract_status') != 'contracted':
+        return 'prospect'
+    if r.get('orders_count', 0) > 0:
+        return 'active'
+    return 'contracted'
+
+
+LIFECYCLE_LABELS = {
+    'prospect':   ('Prospect', '#f59e0b'),
+    'contracted': ('Contracted — not active', '#3b82f6'),
+    'active':     ('Active', '#10b981'),
+    'at_risk':    ('At-Risk', '#ef4444'),
+}
 
 
 def set_contract_status(reseller_id, status):
     conn = get_db()
-    conn.execute("UPDATE reseller_profiles SET contract_status=? WHERE id=?", (status, reseller_id))
+    if status == 'contracted':
+        conn.execute("""UPDATE reseller_profiles SET contract_status=?,
+                        contracted_at=COALESCE(contracted_at, CURRENT_TIMESTAMP) WHERE id=?""",
+                     (status, reseller_id))
+    else:
+        conn.execute("UPDATE reseller_profiles SET contract_status=? WHERE id=?", (status, reseller_id))
     conn.commit()
     conn.close()
 
@@ -488,10 +590,13 @@ def update_reseller_profile(reseller_id, client_type=None, countries=None, expec
 
 # ── Products ─────────────────────────────────────────────────────
 
-def get_products(country=None, region=None, category=None, merchant=None, search=None, limit=None):
+def get_products(country=None, region=None, category=None, merchant=None, search=None,
+                 limit=None, include_inactive=False):
     conn = get_db()
     q = "SELECT * FROM products WHERE 1=1"
     params = []
+    if not include_inactive:
+        q += " AND is_active=1"
     if country:
         placeholders = ','.join(['?'] * len(country))
         q += f" AND country IN ({placeholders})"
@@ -799,7 +904,7 @@ def get_latest_forecast_merchant_values(reseller_id):
 
 def mark_forecast_reviewed(fid):
     conn = get_db()
-    conn.execute("UPDATE forecasts SET status='reviewed' WHERE id=?", (fid,))
+    conn.execute("UPDATE forecasts SET status='reviewed', reviewed_at=CURRENT_TIMESTAMP WHERE id=?", (fid,))
     conn.commit()
     conn.close()
 
@@ -980,6 +1085,437 @@ def decide_discount_request(rid, approve, decided_by, decision_note=''):
     return dict(req)
 
 
+# ── Ops: Product Management (v5) ─────────────────────────────────
+
+def _log_price_change(conn, product_rowid, product_name, merchant, action,
+                      field=None, old=None, new=None, source='manual', user_id=None):
+    conn.execute("""INSERT INTO price_change_log
+                    (product_rowid, product_name, merchant, action, field, old_value, new_value, source, changed_by)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (product_rowid, product_name, merchant, action, field,
+                  str(old) if old is not None else None,
+                  str(new) if new is not None else None, source, user_id))
+
+
+def _margin_fields(cost, default_price):
+    margin = round(default_price - cost, 4) if default_price > cost else 0
+    pct = round((margin / default_price) * 100, 2) if default_price > 0 else 0
+    return margin, pct
+
+
+def add_product(data, user_id):
+    """Ops adds a new product. Flagged as New Arrival for 30 days.
+    Notifies resellers who previously ordered from this merchant."""
+    cost = float(data.get('cost') or 0)
+    price = float(data.get('default_price') or 0)
+    face = float(data.get('face_value') or price)
+    margin, pct = _margin_fields(cost, price)
+    conn = get_db()
+    conn.execute("""INSERT INTO products
+                    (product_id, product_name, merchant, merchant_id, category, country, region,
+                     currency, cost, default_price, face_value, oc_margin, oc_margin_pct,
+                     popularity, is_new, is_active, added_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,1,CURRENT_TIMESTAMP)""",
+                 (data.get('product_id', ''), data['product_name'], data['merchant'],
+                  data.get('merchant_id', ''), data['category'], data['country'],
+                  data.get('region', 'Global'), data.get('currency', 'SAR'),
+                  cost, price, face, margin, pct, int(data.get('popularity') or 30)))
+    pid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    _log_price_change(conn, pid, data['product_name'], data['merchant'], 'created',
+                      field='default_price', new=price, user_id=user_id)
+    # Resellers who bought from this merchant before get a heads-up
+    buyers = conn.execute("""SELECT DISTINCT cp.user_id FROM order_items oi
+                             JOIN orders o ON oi.order_id=o.id
+                             JOIN reseller_profiles cp ON o.reseller_id=cp.id
+                             WHERE oi.merchant=?""", (data['merchant'],)).fetchall()
+    conn.commit()
+    conn.close()
+    notify([b['user_id'] for b in buyers], "New product from a merchant you buy 🆕",
+           f"'{data['product_name']}' was just added under {data['merchant']}.",
+           "/reseller/products")
+    _check_margin_alert(pid, None, pct, data['product_name'], data['merchant'])
+    return pid
+
+
+def update_product(pid, fields, user_id, source='manual'):
+    """Ops updates a product. Price fields are audited; margins recomputed.
+    Returns dict of changes {field: (old, new)}."""
+    conn = get_db()
+    old = conn.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+    if not old:
+        conn.close()
+        return None
+    old = dict(old)
+    editable = ('product_name', 'merchant', 'category', 'country', 'region', 'currency',
+                'cost', 'default_price', 'face_value', 'is_new')
+    changes = {}
+    new_vals = dict(old)
+    for f in editable:
+        if f in fields and fields[f] is not None and str(fields[f]) != '':
+            val = float(fields[f]) if f in ('cost', 'default_price', 'face_value') else fields[f]
+            if f == 'is_new':
+                val = int(val)
+            if val != old[f]:
+                changes[f] = (old[f], val)
+                new_vals[f] = val
+    if not changes:
+        conn.close()
+        return {}
+    margin, pct = _margin_fields(float(new_vals['cost']), float(new_vals['default_price']))
+    conn.execute("""UPDATE products SET product_name=?, merchant=?, category=?, country=?, region=?,
+                    currency=?, cost=?, default_price=?, face_value=?, is_new=?,
+                    oc_margin=?, oc_margin_pct=? WHERE id=?""",
+                 (new_vals['product_name'], new_vals['merchant'], new_vals['category'],
+                  new_vals['country'], new_vals['region'], new_vals['currency'],
+                  new_vals['cost'], new_vals['default_price'], new_vals['face_value'],
+                  new_vals['is_new'], margin, pct, pid))
+    for f, (o, n) in changes.items():
+        _log_price_change(conn, pid, new_vals['product_name'], new_vals['merchant'],
+                          'price_update' if f in ('cost', 'default_price', 'face_value') else 'edit',
+                          field=f, old=o, new=n, source=source, user_id=user_id)
+    conn.commit()
+    conn.close()
+    if any(f in changes for f in ('cost', 'default_price')):
+        _check_margin_alert(pid, old['oc_margin_pct'], pct,
+                            new_vals['product_name'], new_vals['merchant'])
+    return changes
+
+
+def _check_margin_alert(pid, old_pct, new_pct, name, merchant):
+    """Alert BD + CCO when a price change leaves OneCard margin dangerously low."""
+    low_floor = new_pct < MARGIN_ALERT_FLOOR_PCT
+    halved = old_pct is not None and old_pct > 0 and new_pct < old_pct / 2
+    if low_floor or halved:
+        reason = (f"margin now {new_pct:.2f}% (below {MARGIN_ALERT_FLOOR_PCT}% floor)"
+                  if low_floor else f"margin dropped from {old_pct:.2f}% to {new_pct:.2f}%")
+        notify(get_user_ids_by_role('admin', 'cco'),
+               "⚠️ Low margin after price update",
+               f"'{name}' ({merchant}): {reason}. Review pricing.", "/ops/pricelog")
+
+
+def set_product_active(pid, active, user_id):
+    conn = get_db()
+    p = conn.execute("SELECT product_name, merchant FROM products WHERE id=?", (pid,)).fetchone()
+    if not p:
+        conn.close()
+        return False
+    conn.execute("UPDATE products SET is_active=? WHERE id=?", (1 if active else 0, pid))
+    _log_price_change(conn, pid, p['product_name'], p['merchant'],
+                      'activated' if active else 'deactivated', user_id=user_id)
+    conn.commit()
+    conn.close()
+    return True
+
+
+def get_price_log(limit=200, product_rowid=None):
+    conn = get_db()
+    q = """SELECT pl.*, u.name as changed_by_name FROM price_change_log pl
+           LEFT JOIN users u ON pl.changed_by = u.id WHERE 1=1"""
+    params = []
+    if product_rowid:
+        q += " AND pl.product_rowid=?"
+        params.append(product_rowid)
+    q += " ORDER BY pl.created_at DESC, pl.id DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_ops_stats():
+    conn = get_db()
+    stats = {
+        'total_products': conn.execute("SELECT COUNT(*) FROM products").fetchone()[0],
+        'active_products': conn.execute("SELECT COUNT(*) FROM products WHERE is_active=1").fetchone()[0],
+        'inactive_products': conn.execute("SELECT COUNT(*) FROM products WHERE is_active=0").fetchone()[0],
+        'new_products': conn.execute("SELECT COUNT(*) FROM products WHERE is_new=1").fetchone()[0],
+        'low_margin': conn.execute("SELECT COUNT(*) FROM products WHERE is_active=1 AND oc_margin_pct < ?",
+                                   (MARGIN_ALERT_FLOOR_PCT,)).fetchone()[0],
+        'suppliers': conn.execute("SELECT COUNT(*) FROM suppliers").fetchone()[0],
+        'changes_this_week': conn.execute(
+            "SELECT COUNT(*) FROM price_change_log WHERE created_at >= datetime('now','-7 days')").fetchone()[0],
+    }
+    stats['low_margin_products'] = [dict(r) for r in conn.execute(
+        """SELECT id, product_name, merchant, cost, default_price, oc_margin_pct
+           FROM products WHERE is_active=1 AND oc_margin_pct < ?
+           ORDER BY oc_margin_pct LIMIT 15""", (MARGIN_ALERT_FLOOR_PCT,))]
+    conn.close()
+    return stats
+
+
+# ── Ops: Bulk Price Import (v5) ──────────────────────────────────
+
+def parse_price_file(path):
+    """Parse a supplier/company price file (same column contract as seed_products.py).
+    Returns (diffs, unmatched): rows whose cost/price/face differ from the DB."""
+    import pandas as pd
+    df = pd.read_excel(path)
+    df.columns = [str(c).strip() for c in df.columns]
+    cols = {c.lower(): c for c in df.columns}
+
+    def col(*names):
+        for n in names:
+            if n in cols:
+                return cols[n]
+        return None
+
+    c_id = col('product id')
+    c_cost = col('cost price')
+    c_price = col('default reseller price')
+    c_face = col('recommended retail price (resellers currency)')
+    if not c_id or (not c_cost and not c_price):
+        return None, "File must contain 'Product ID' and at least 'Cost Price' or 'Default Reseller Price' columns."
+
+    conn = get_db()
+    db_products = {str(r['product_id']): dict(r) for r in
+                   conn.execute("SELECT id, product_id, product_name, merchant, cost, default_price, face_value FROM products")}
+    conn.close()
+
+    diffs, unmatched = [], 0
+    for _, row in df.iterrows():
+        ext_id = str(row.get(c_id, '')).strip().replace('.0', '')
+        p = db_products.get(ext_id)
+        if not p:
+            unmatched += 1
+            continue
+        d = {'rowid': p['id'], 'product_id': ext_id, 'product_name': p['product_name'],
+             'merchant': p['merchant']}
+        changed = False
+        for key, c in (('cost', c_cost), ('default_price', c_price), ('face_value', c_face)):
+            if c is None:
+                continue
+            try:
+                new = float(row.get(c))
+            except (TypeError, ValueError):
+                continue
+            if new > 0 and abs(new - float(p[key])) > 0.005:
+                d[f'old_{key}'] = p[key]
+                d[f'new_{key}'] = new
+                changed = True
+        if changed:
+            diffs.append(d)
+    return {'diffs': diffs, 'unmatched': unmatched, 'total_rows': len(df)}, None
+
+
+def apply_price_file(path, user_id):
+    """Apply a parsed price file. Returns number of updated products."""
+    parsed, err = parse_price_file(path)
+    if err:
+        return 0, err
+    count = 0
+    for d in parsed['diffs']:
+        fields = {}
+        for key in ('cost', 'default_price', 'face_value'):
+            if f'new_{key}' in d:
+                fields[key] = d[f'new_{key}']
+        if fields:
+            update_product(d['rowid'], fields, user_id, source='bulk_import')
+            count += 1
+    return count, None
+
+
+# ── Ops: Suppliers (v5) ──────────────────────────────────────────
+
+def get_suppliers():
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM suppliers ORDER BY name").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d['merchants'] = [m['merchant'] for m in conn.execute(
+            "SELECT merchant FROM supplier_merchants WHERE supplier_id=? ORDER BY merchant", (r['id'],))]
+        if d['merchants']:
+            ph = ','.join('?' * len(d['merchants']))
+            d['product_count'] = conn.execute(
+                f"SELECT COUNT(*) FROM products WHERE merchant IN ({ph})", d['merchants']).fetchone()[0]
+        else:
+            d['product_count'] = 0
+        out.append(d)
+    conn.close()
+    return out
+
+
+def upsert_supplier(sid, name, contact_person, email, phone, payment_terms, notes, merchants):
+    conn = get_db()
+    if sid:
+        conn.execute("""UPDATE suppliers SET name=?, contact_person=?, email=?, phone=?,
+                        payment_terms=?, notes=? WHERE id=?""",
+                     (name, contact_person, email, phone, payment_terms, notes, sid))
+    else:
+        conn.execute("""INSERT INTO suppliers (name, contact_person, email, phone, payment_terms, notes)
+                        VALUES (?,?,?,?,?,?)""",
+                     (name, contact_person, email, phone, payment_terms, notes))
+        sid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute("DELETE FROM supplier_merchants WHERE supplier_id=?", (sid,))
+    for m in merchants:
+        conn.execute("INSERT OR IGNORE INTO supplier_merchants (supplier_id, merchant) VALUES (?,?)", (sid, m))
+    conn.commit()
+    conn.close()
+    return sid
+
+
+def delete_supplier(sid):
+    conn = get_db()
+    conn.execute("DELETE FROM suppliers WHERE id=?", (sid,))
+    conn.commit()
+    conn.close()
+
+
+# ── Governance: Targets + Team Performance (v5) ──────────────────
+
+def upsert_sales_target(sales_user_id, ym, target_new_resellers, target_sales_value):
+    conn = get_db()
+    conn.execute("""INSERT INTO sales_targets (sales_user_id, ym, target_new_resellers, target_sales_value)
+                    VALUES (?,?,?,?)
+                    ON CONFLICT(sales_user_id, ym)
+                    DO UPDATE SET target_new_resellers=excluded.target_new_resellers,
+                                  target_sales_value=excluded.target_sales_value""",
+                 (sales_user_id, ym, target_new_resellers, target_sales_value))
+    conn.commit()
+    conn.close()
+
+
+def get_team_performance(ym=None):
+    """Full sales-team governance snapshot for a month ('YYYY-MM').
+
+    Per sales manager: registration funnel (registered → contracted → activated),
+    monthly new resellers + order value vs targets, commitment attainment,
+    discount request stats and forecast responsiveness.
+    """
+    ym = ym or datetime.now().strftime('%Y-%m')
+    conn = get_db()
+    sales_users = conn.execute("SELECT id, name, email FROM users WHERE role='sales' ORDER BY name").fetchall()
+    targets = {t['sales_user_id']: dict(t) for t in
+               conn.execute("SELECT * FROM sales_targets WHERE ym=?", (ym,))}
+
+    team = []
+    for su in sales_users:
+        uid = su['id']
+        m = {'user_id': uid, 'name': su['name'], 'email': su['email']}
+
+        m['registered_total'] = conn.execute(
+            "SELECT COUNT(*) FROM reseller_profiles WHERE registered_by=?", (uid,)).fetchone()[0]
+        m['registered_month'] = conn.execute(
+            "SELECT COUNT(*) FROM reseller_profiles WHERE registered_by=? AND strftime('%Y-%m',created_at)=?",
+            (uid, ym)).fetchone()[0]
+        m['contracted'] = conn.execute(
+            "SELECT COUNT(*) FROM reseller_profiles WHERE registered_by=? AND contract_status='contracted'",
+            (uid,)).fetchone()[0]
+        m['activated'] = conn.execute(
+            """SELECT COUNT(DISTINCT cp.id) FROM reseller_profiles cp
+               JOIN orders o ON o.reseller_id=cp.id WHERE cp.registered_by=?""", (uid,)).fetchone()[0]
+        m['at_risk'] = conn.execute(
+            "SELECT COUNT(*) FROM reseller_profiles WHERE registered_by=? AND compliance_status='warning'",
+            (uid,)).fetchone()[0]
+
+        m['orders_value_month'] = conn.execute(
+            """SELECT COALESCE(SUM(o.total_cost),0) FROM orders o
+               JOIN reseller_profiles cp ON o.reseller_id=cp.id
+               WHERE cp.registered_by=? AND strftime('%Y-%m',o.created_at)=?""", (uid, ym)).fetchone()[0]
+        m['orders_value_total'] = conn.execute(
+            """SELECT COALESCE(SUM(o.total_cost),0) FROM orders o
+               JOIN reseller_profiles cp ON o.reseller_id=cp.id
+               WHERE cp.registered_by=?""", (uid,)).fetchone()[0]
+
+        m['commitment_expected'] = conn.execute(
+            """SELECT COALESCE(SUM(expected_monthly_sales),0) FROM reseller_profiles
+               WHERE registered_by=? AND contract_status='contracted'""", (uid,)).fetchone()[0]
+
+        dr = conn.execute(
+            """SELECT COUNT(*) as total,
+                      SUM(CASE WHEN status='approved' THEN 1 ELSE 0 END) as approved
+               FROM discount_requests WHERE requested_by=?""", (uid,)).fetchone()
+        m['discount_requests'] = dr['total'] or 0
+        m['discount_approved'] = dr['approved'] or 0
+
+        m['forecasts_pending'] = conn.execute(
+            """SELECT COUNT(*) FROM forecasts f JOIN reseller_profiles cp ON f.reseller_id=cp.id
+               WHERE cp.registered_by=? AND f.status='submitted'""", (uid,)).fetchone()[0]
+        m['avg_review_hours'] = conn.execute(
+            """SELECT AVG((julianday(f.reviewed_at)-julianday(f.created_at))*24)
+               FROM forecasts f JOIN reseller_profiles cp ON f.reseller_id=cp.id
+               WHERE cp.registered_by=? AND f.reviewed_at IS NOT NULL""", (uid,)).fetchone()[0]
+
+        # Derived rates
+        m['contract_rate'] = round(m['contracted'] / m['registered_total'] * 100) if m['registered_total'] else 0
+        m['activation_rate'] = round(m['activated'] / m['contracted'] * 100) if m['contracted'] else 0
+        m['commitment_attainment'] = (round(m['orders_value_month'] / m['commitment_expected'] * 100)
+                                      if m['commitment_expected'] else None)
+
+        t = targets.get(uid)
+        m['target_new'] = t['target_new_resellers'] if t else None
+        m['target_value'] = t['target_sales_value'] if t else None
+        m['target_new_pct'] = (round(m['registered_month'] / t['target_new_resellers'] * 100)
+                               if t and t['target_new_resellers'] else None)
+        m['target_value_pct'] = (round(m['orders_value_month'] / t['target_sales_value'] * 100)
+                                 if t and t['target_sales_value'] else None)
+        team.append(m)
+    conn.close()
+    return team
+
+
+def get_sales_scorecard(uid, ym=None):
+    """A single sales manager's own performance view (feedback loop)."""
+    team = get_team_performance(ym)
+    for m in team:
+        if m['user_id'] == uid:
+            return m
+    return None
+
+
+# ── SLA Nudges (v5, runs on the daily tick) ──────────────────────
+
+def _nudge_once(key, user_ids, title, body, link):
+    conn = get_db()
+    exists = conn.execute("SELECT 1 FROM sla_nudges WHERE key=?", (key,)).fetchone()
+    if exists:
+        conn.close()
+        return False
+    conn.execute("INSERT INTO sla_nudges (key) VALUES (?)", (key,))
+    conn.commit()
+    conn.close()
+    notify(user_ids, title, body, link)
+    return True
+
+
+def run_sla_nudges():
+    """Forecast with no review for 3+ days → remind its sales manager.
+    Wallet top-up pending 24h+ → remind the finance team."""
+    conn = get_db()
+    stale_forecasts = conn.execute(
+        """SELECT f.id, cp.company_name, cp.registered_by FROM forecasts f
+           JOIN reseller_profiles cp ON f.reseller_id=cp.id
+           WHERE f.status='submitted' AND f.created_at <= datetime('now','-3 days')""").fetchall()
+    stale_topups = conn.execute(
+        """SELECT wt.id, wt.amount, cp.company_name FROM wallet_transactions wt
+           JOIN reseller_profiles cp ON wt.reseller_id=cp.id
+           WHERE wt.type='topup' AND wt.status='pending'
+             AND wt.created_at <= datetime('now','-1 day')""").fetchall()
+    conn.close()
+
+    finance_ids = get_user_ids_by_role('finance')
+    for f in stale_forecasts:
+        _nudge_once(f"forecast:{f['id']}", [f['registered_by']],
+                    "⏰ Forecast awaiting your review",
+                    f"The purchase plan from {f['company_name']} has been waiting 3+ days.",
+                    f"/sales/forecasts/{f['id']}")
+    for t in stale_topups:
+        _nudge_once(f"topup:{t['id']}", finance_ids,
+                    "⏰ Top-up pending verification 24h+",
+                    f"{t['company_name']}'s transfer of {t['amount']:,.0f} SAR is still unverified.",
+                    "/finance")
+
+
+def expire_new_flags():
+    """New Arrival flag automatically expires 30 days after a product is added."""
+    conn = get_db()
+    conn.execute("""UPDATE products SET is_new=0
+                    WHERE is_new=1 AND added_at IS NOT NULL
+                      AND added_at <= datetime('now','-30 days')""")
+    conn.commit()
+    conn.close()
+
+
 # ── Tier Compliance Automation ───────────────────────────────────
 
 def _month_bounds(d=None):
@@ -1007,6 +1543,10 @@ def run_tier_compliance(force=False):
     conn.execute("INSERT INTO app_meta (key,value) VALUES ('compliance_last_run',?) "
                  "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (today.isoformat(),))
     conn.commit()
+
+    # Daily housekeeping piggybacks on the same once-a-day gate
+    run_sla_nudges()
+    expire_new_flags()
 
     prev_month_end = today.replace(day=1) - timedelta(days=1)
     prev_ym = prev_month_end.strftime('%Y-%m')
@@ -1089,6 +1629,7 @@ def seed_default_data():
         ('sales@onecard.com',   'Sales2025!',   'Sales Manager',  'sales'),
         ('cco@onecard.com',     'Cco2025!',     'Chief Commercial Officer', 'cco'),
         ('finance@onecard.com', 'Finance2025!', 'Finance Team',   'finance'),
+        ('ops@onecard.com',     'Ops2025!',     'Operations Team', 'ops'),
     ]
     for email, pw, name, role in defaults_users:
         if not get_user_by_email(email):

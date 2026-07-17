@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}Manage Products — OneCard Ops{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">📦 Manage Products</h1>
+        <p class="page-subtitle">{{ products|length }} products (including deactivated) — every change is audited</p>
+    </div>
+    <div class="page-actions">
+        <a href="/ops/products/add" class="btn btn-primary">➕ Add Product</a>
+    </div>
+</div>
+
+<div class="card mb-24">
+    <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
+        <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input type="search" id="searchInput" placeholder="Search product or merchant..." oninput="filterTable()">
+        </div>
+        <select id="statusFilter" style="width:150px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterTable()">
+            <option value="">All Status</option>
+            <option value="active">Active</option>
+            <option value="inactive">Deactivated</option>
+            <option value="new">New Arrivals</option>
+            <option value="lowmargin">Low Margin</option>
+        </select>
+        <span id="resultCount" class="text-muted" style="font-size:13px"></span>
+    </div>
+</div>
+
+<div class="table-card">
+    <div class="table-scroll">
+        <table>
+            <thead>
+                <tr>
+                    <th>Product</th><th>Merchant</th><th>Cost</th><th>Price</th>
+                    <th>Face</th><th>Margin</th><th>Status</th><th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="tableBody"></tbody>
+        </table>
+    </div>
+    <div class="table-footer">
+        <span id="pageInfo"></span>
+        <div class="pagination" id="pagination"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const allProducts = {{ products_json|safe }};
+let filtered = [...allProducts];
+let currentPage = 1;
+const pageSize = 50;
+
+function filterTable() {
+    const search = document.getElementById('searchInput').value.toLowerCase();
+    const st = document.getElementById('statusFilter').value;
+    filtered = allProducts.filter(p => {
+        if (search && !p.product_name.toLowerCase().includes(search) && !p.merchant.toLowerCase().includes(search)) return false;
+        if (st === 'active' && !p.is_active) return false;
+        if (st === 'inactive' && p.is_active) return false;
+        if (st === 'new' && !p.is_new) return false;
+        if (st === 'lowmargin' && p.oc_margin_pct >= 1) return false;
+        return true;
+    });
+    currentPage = 1;
+    renderTable();
+}
+
+function renderTable() {
+    const start = (currentPage - 1) * pageSize;
+    const end = Math.min(start + pageSize, filtered.length);
+    document.getElementById('resultCount').textContent = `${filtered.length} products`;
+    document.getElementById('tableBody').innerHTML = filtered.slice(start, end).map(p => `
+        <tr style="${p.is_active ? '' : 'opacity:0.5'}">
+            <td class="fw6 truncate" style="max-width:220px" title="${esc(p.product_name)}">${esc(p.product_name)}
+                ${p.is_new ? '<span class="badge badge-success" style="font-size:9px">NEW</span>' : ''}
+            </td>
+            <td class="text-muted truncate" style="max-width:130px">${esc(p.merchant)}</td>
+            <td>${fmt(p.cost)}</td>
+            <td>${fmt(p.default_price)}</td>
+            <td>${fmt(p.face_value)} ${esc(p.currency)}</td>
+            <td class="fw6 ${p.oc_margin_pct >= 1 ? 'text-s' : 'text-d'}">${p.oc_margin_pct.toFixed(2)}%</td>
+            <td>${p.is_active ? '<span class="badge badge-success">Active</span>' : '<span class="badge badge-danger">Off</span>'}</td>
+            <td>
+                <div style="display:flex;gap:6px">
+                    <a href="/ops/products/${p.id}/edit" class="btn btn-sm btn-ghost">✏️ Edit</a>
+                    <form method="POST" action="/ops/products/${p.id}/toggle" onsubmit="return confirm('${p.is_active ? 'Deactivate' : 'Activate'} this product?')">
+                        <input type="hidden" name="active" value="${p.is_active ? 0 : 1}">
+                        <button class="btn btn-sm ${p.is_active ? 'btn-danger' : 'btn-primary'}" type="submit">${p.is_active ? '🚫' : '✅'}</button>
+                    </form>
+                </div>
+            </td>
+        </tr>`).join('');
+    document.getElementById('pageInfo').textContent = filtered.length ? `${start + 1}-${end} of ${filtered.length}` : '0 results';
+    renderPagination();
+}
+
+function renderPagination() {
+    const total = Math.ceil(filtered.length / pageSize);
+    if (total <= 1) { document.getElementById('pagination').innerHTML = ''; return; }
+    let html = `<button class="pg-btn" ${currentPage === 1 ? 'disabled' : ''} onclick="goPage(${currentPage - 1})">‹</button>`;
+    for (let i = 1; i <= Math.min(total, 7); i++) {
+        html += `<button class="pg-btn ${i === currentPage ? 'active' : ''}" onclick="goPage(${i})">${i}</button>`;
+    }
+    if (total > 7) html += `<span class="text-muted">…${total}</span>`;
+    html += `<button class="pg-btn" ${currentPage === total ? 'disabled' : ''} onclick="goPage(${currentPage + 1})">›</button>`;
+    document.getElementById('pagination').innerHTML = html;
+}
+
+function goPage(p) { currentPage = p; renderTable(); }
+
+filterTable();
+</script>
+{% endblock %}

@@ -23,7 +23,7 @@
                     <th>Plan</th>
                     <th>Contract</th>
                     <th>Wallet</th>
-                    <th>Compliance</th>
+                    <th>Stage</th>
                     <th>Actions</th>
                 </tr>
             </thead>
@@ -45,11 +45,10 @@
                 </td>
                 <td class="fw6">SAR {{ r.wallet_balance|money }}</td>
                 <td>
-                    {% if r.compliance_status == 'warning' %}
-                        <span class="badge badge-danger" title="Grace until {{ r.grace_until }}">⚠️ Grace period</span>
-                    {% else %}
-                        <span class="badge badge-success">On track</span>
-                    {% endif %}
+                    {% if r.lifecycle == 'active' %}<span class="badge badge-success">🟢 Active</span>
+                    {% elif r.lifecycle == 'at_risk' %}<span class="badge badge-danger" title="Grace until {{ r.grace_until }}">⚠️ At-Risk</span>
+                    {% elif r.lifecycle == 'contracted' %}<span class="badge badge-info">✍️ Not active yet</span>
+                    {% else %}<span class="badge badge-warning">Prospect</span>{% endif %}
                 </td>
                 <td>
                     <div style="display:flex;gap:6px;flex-wrap:wrap">

@@ -16,7 +16,7 @@
                 <tr>
                     <th>Company</th><th>Type</th><th>Contact</th>
                     <th>Expected Sales</th><th>Tier</th><th>Contract</th>
-                    <th>Wallet</th><th>Compliance</th><th>Sales Manager</th>
+                    <th>Wallet</th><th>Stage</th><th>Sales Manager</th>
                 </tr>
             </thead>
             <tbody>
@@ -33,8 +33,10 @@
                 </td>
                 <td class="fw6">SAR {{ r.wallet_balance|money }}</td>
                 <td>
-                    {% if r.compliance_status == 'warning' %}<span class="badge badge-danger" title="Grace until {{ r.grace_until }}">⚠️ Grace</span>
-                    {% else %}<span class="badge badge-success">OK</span>{% endif %}
+                    {% if r.lifecycle == 'active' %}<span class="badge badge-success">🟢 Active</span>
+                    {% elif r.lifecycle == 'at_risk' %}<span class="badge badge-danger" title="Grace until {{ r.grace_until }}">⚠️ At-Risk</span>
+                    {% elif r.lifecycle == 'contracted' %}<span class="badge badge-info">✍️ Not active</span>
+                    {% else %}<span class="badge badge-warning">Prospect</span>{% endif %}
                 </td>
                 <td>{{ r.sales_name or '—' }}</td>
             </tr>

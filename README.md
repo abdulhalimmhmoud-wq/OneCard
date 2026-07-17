@@ -1,19 +1,30 @@
-# OneCard — Reseller Operations Platform (v4)
+# OneCard — Reseller Operations Platform (v5)
 
-A **5-role web platform** that digitizes OneCard's full reseller lifecycle — from first contact
-to contract, wallet funding, ordering, and monthly commitment tracking. Built with Flask + SQLite
-as a **product model / prototype**: the technical team connects it to the live company systems
-via the integration points documented in `models.py`.
+A **6-role web platform** that digitizes OneCard's full reseller lifecycle — from first contact
+to contract, wallet funding, ordering, monthly commitment tracking, catalogue operations and
+sales-team governance. Built with Flask + SQLite as a **product model / prototype**: the
+technical team connects it to the live company systems via the integration points documented
+in `models.py`.
 
 ## Roles & Responsibilities
 
 | Role | What they do |
 |------|--------------|
-| **Admin / BD Manager** | Tier rules, master catalogue, all resellers, user accounts (all roles), compliance check, full visibility over every approval queue. |
-| **Sales Manager** | Registers resellers (with business profile: client type + operating countries), previews their portals, receives purchase forecasts, signs contracts, requests special merchant discounts from the CCO. |
-| **CCO** | Approves/rejects special discount requests with full profit before/after economics. Approved rates apply **automatically**. |
+| **Admin / BD Manager** | Tier rules, master catalogue, all resellers, user accounts (all roles), compliance check, team performance, full visibility over every approval queue. |
+| **Sales Manager** | Registers resellers (with business profile: client type + operating countries), previews their portals, receives purchase forecasts, signs contracts, requests special merchant discounts from the CCO, tracks their own scorecard. |
+| **CCO** | Approves/rejects special discount requests with full profit before/after economics (auto-applied), monitors **Team Performance** and sets monthly sales targets. |
 | **Finance** | Verifies bank-transfer receipts and credits reseller wallets. |
+| **Operations** | Owns the catalogue: adds products, updates supplier prices (manual or bulk file), activates/deactivates products, manages the supplier directory. Every change is audited in the Price Change Log with automatic low-margin alerts to BD/CCO. |
 | **Reseller** | Browses the catalogue with tier pricing, submits purchase plans (forecasts), tops up a wallet, places orders, and tracks their own purchase analysis. |
+
+## Governance Layer (v5)
+
+- **Team Performance** (`/team`, CCO + Admin): per-sales-manager funnel — registered → contracted → activated — with conversion rates, monthly order value, commitment attainment, discount-request stats and forecast response time.
+- **Monthly targets**: CCO/Admin set targets (new resellers + sales value) per sales manager; attainment shown with progress bars.
+- **My Scorecard** (`/sales/scorecard`): each sales manager sees their own numbers exactly as management does (feedback loop).
+- **Reseller lifecycle stages** everywhere: `Prospect → Contracted → Active → At-Risk`.
+- **SLA nudges** (daily): forecast unreviewed 3+ days → remind sales manager; top-up pending 24h+ → remind finance.
+- **New Arrival flag auto-expires** 30 days after a product is added.
 
 ## The Customer Journey (end to end)
 
@@ -43,6 +54,7 @@ via the integration points documented in `models.py`.
 | Sales | `sales@onecard.com` | `Sales2025!` |
 | CCO | `cco@onecard.com` | `Cco2025!` |
 | Finance | `finance@onecard.com` | `Finance2025!` |
+| Operations | `ops@onecard.com` | `Ops2025!` |
 
 > Change these before any non-local deployment.
 
@@ -72,10 +84,11 @@ An existing v3 database upgrades **in place automatically** (migrations run at s
 
 All reads/writes go through `models.py`. To connect production systems, swap the bodies of:
 
-- **Catalogue feed** → `seed_products.py` (`PREFERRED` column map) + `products` table
+- **Catalogue feed** → `seed_products.py` (`PREFERRED` column map) + `products` table; ongoing price updates use the same column contract via **Ops → Bulk Price Update**
 - **Actual reseller sales** → `get_month_total_orders()` (compliance currently uses platform orders)
-- **Payments** → `wallet_transactions` (manual finance verification in v4; replace with bank API/webhooks)
+- **Payments** → `wallet_transactions` (manual finance verification; replace with bank API/webhooks)
+- **Supplier procurement** → `suppliers` table is a directory in v5; extend with PO/inventory when required
 
 ---
 
-*Built for OneCard Digital Distribution — v4, July 2026*
+*Built for OneCard Digital Distribution — v5, July 2026*

@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Price Change Log — OneCard Ops{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">🧾 Price Change Log</h1>
+        <p class="page-subtitle">Full audit trail of every catalogue change — who, what, when</p>
+    </div>
+</div>
+
+<div class="table-card">
+    <div class="table-scroll">
+        <table>
+            <thead>
+                <tr><th>When</th><th>Product</th><th>Action</th><th>Change</th><th>Source</th><th>By</th></tr>
+            </thead>
+            <tbody>
+            {% for l in log %}
+            <tr>
+                <td class="text-muted" style="font-size:12px;white-space:nowrap">{{ l.created_at[:16] }}</td>
+                <td class="fw6 truncate" style="max-width:240px" title="{{ l.product_name }}">{{ l.product_name }}
+                    <div class="text-muted" style="font-size:10px">{{ l.merchant or '' }}</div>
+                </td>
+                <td>
+                    {% if l.action == 'created' %}<span class="badge badge-success">Created</span>
+                    {% elif l.action == 'price_update' %}<span class="badge badge-warning">Price Update</span>
+                    {% elif l.action == 'deactivated' %}<span class="badge badge-danger">Deactivated</span>
+                    {% elif l.action == 'activated' %}<span class="badge badge-success">Activated</span>
+                    {% else %}<span class="badge badge-info">Edit</span>{% endif %}
+                </td>
+                <td style="font-size:12px">
+                    {% if l.field %}{{ l.field }}: {{ l.old_value or '—' }} → <b class="text-accent">{{ l.new_value }}</b>{% else %}—{% endif %}
+                </td>
+                <td>{% if l.source == 'bulk_import' %}<span class="badge badge-info">📤 Bulk</span>{% else %}<span class="badge badge-ghost">Manual</span>{% endif %}</td>
+                <td class="text-muted" style="font-size:12px">{{ l.changed_by_name or 'system' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text-3)">No changes logged yet</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

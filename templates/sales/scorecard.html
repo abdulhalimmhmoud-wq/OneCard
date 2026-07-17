@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}My Scorecard — OneCard Sales{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">🏅 My Scorecard — {{ ym }}</h1>
+        <p class="page-subtitle">Your performance exactly as management sees it</p>
+    </div>
+</div>
+
+{% if not card %}
+<div class="card" style="text-align:center;padding:50px">No data yet.</div>
+{% else %}
+
+<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">
+    <div class="stat-card">
+        <div class="stat-icon">👥</div>
+        <div class="stat-value">{{ card.registered_total }}</div>
+        <div class="stat-label">Resellers Registered (+{{ card.registered_month }} this month)</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">✍️</div>
+        <div class="stat-value">{{ card.contracted }} <span style="font-size:14px;color:var(--text-3)">({{ card.contract_rate }}%)</span></div>
+        <div class="stat-label">Contracts Signed (conversion)</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🛒</div>
+        <div class="stat-value">{{ card.activated }} <span style="font-size:14px;color:var(--text-3)">({{ card.activation_rate }}%)</span></div>
+        <div class="stat-label">Activated — placed orders</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">💰</div>
+        <div class="stat-value">{{ card.orders_value_month|money }}</div>
+        <div class="stat-label">Order Value {{ ym }} (SAR)</div>
+    </div>
+    <div class="stat-card" style="{{ 'border:2px solid var(--success)' if card.commitment_attainment is not none and card.commitment_attainment >= 100 }}">
+        <div class="stat-icon">📈</div>
+        <div class="stat-value">{{ card.commitment_attainment ~ '%' if card.commitment_attainment is not none else '—' }}</div>
+        <div class="stat-label">Commitment Attainment</div>
+    </div>
+    <div class="stat-card" style="{{ 'border:2px solid var(--danger)' if card.at_risk }}">
+        <div class="stat-icon">⚠️</div>
+        <div class="stat-value">{{ card.at_risk }}</div>
+        <div class="stat-label">At-Risk Accounts</div>
+    </div>
+</div>
+
+<!-- Targets -->
+<div class="card mb-24">
+    <div class="card-header"><div class="card-title">🎯 My Targets — {{ ym }}</div></div>
+    {% if card.target_new is not none or card.target_value is not none %}
+    <div class="grid-2">
+        <div>
+            <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px">
+                <span>New Resellers</span><span class="fw6">{{ card.registered_month }} / {{ card.target_new or 0 }}</span>
+            </div>
+            <div style="background:var(--bg-2);border-radius:100px;height:10px;overflow:hidden">
+                <div style="height:100%;width:{{ [card.target_new_pct or 0, 100]|min }}%;background:{{ 'var(--success)' if (card.target_new_pct or 0) >= 100 else 'var(--accent)' }}"></div>
+            </div>
+        </div>
+        <div>
+            <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px">
+                <span>Sales Value</span><span class="fw6">{{ card.orders_value_month|money }} / {{ (card.target_value or 0)|money }} SAR</span>
+            </div>
+            <div style="background:var(--bg-2);border-radius:100px;height:10px;overflow:hidden">
+                <div style="height:100%;width:{{ [card.target_value_pct or 0, 100]|min }}%;background:{{ 'var(--success)' if (card.target_value_pct or 0) >= 100 else 'var(--accent)' }}"></div>
+            </div>
+        </div>
+    </div>
+    {% else %}
+    <div class="text-muted" style="font-size:13px">No targets set for this month — ask your manager (CCO/BD).</div>
+    {% endif %}
+</div>
+
+<!-- Portfolio -->
+<div class="table-card">
+    <div class="table-header"><div class="table-title">👥 My Portfolio — lifecycle view</div></div>
+    <div class="table-scroll">
+        <table>
+            <thead><tr><th>Company</th><th>Stage</th><th>Plan</th><th>Total Orders</th><th>Last Order</th></tr></thead>
+            <tbody>
+            {% for r in resellers %}
+            <tr>
+                <td class="fw6">{{ r.company_name }}</td>
+                <td>
+                    {% if r.lifecycle == 'active' %}<span class="badge badge-success">🟢 Active</span>
+                    {% elif r.lifecycle == 'at_risk' %}<span class="badge badge-danger">⚠️ At-Risk</span>
+                    {% elif r.lifecycle == 'contracted' %}<span class="badge badge-info">✍️ Contracted — not active</span>
+                    {% else %}<span class="badge badge-warning">Prospect</span>{% endif %}
+                </td>
+                <td><span class="badge badge-tier" style="background:{{ r.tier_color or '#64748b' }}20;color:{{ r.tier_color or '#64748b' }}">{{ r.tier_name or '—' }}</span></td>
+                <td class="fw6">{{ r.orders_value|money }} SAR <span class="text-muted" style="font-size:10px">({{ r.orders_count }})</span></td>
+                <td class="text-muted" style="font-size:12px">{{ r.last_order_at[:10] if r.last_order_at else 'never' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" style="text-align:center;padding:30px;color:var(--text-3)">No resellers yet</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

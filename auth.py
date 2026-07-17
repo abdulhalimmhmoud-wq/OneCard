@@ -87,6 +87,19 @@ def cco_required(f):
     return decorated
 
 
+def ops_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if 'user_id' not in session:
+            return redirect(url_for('login'))
+        user = get_current_user()
+        if not user or user['role'] not in ('ops', 'admin'):
+            flash('Operations access required.', 'error')
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated
+
+
 def finance_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):

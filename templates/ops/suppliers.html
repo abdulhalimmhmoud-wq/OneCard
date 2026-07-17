@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}Suppliers — OneCard Ops{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">🚚 Suppliers</h1>
+        <p class="page-subtitle">Who we buy from, their terms, and which merchants they cover</p>
+    </div>
+</div>
+
+<div class="grid-2" style="align-items:start">
+    <!-- Add / edit form -->
+    <div class="card">
+        <div class="card-header"><div class="card-title" id="supFormTitle">➕ Add Supplier</div></div>
+        <form method="POST" id="supForm">
+            <input type="hidden" name="supplier_id" id="supId">
+            <div class="form-group">
+                <label class="form-label">Supplier Name *</label>
+                <input type="text" name="name" id="supName" required placeholder="e.g. Razer Gold MENA Distribution">
+            </div>
+            <div class="form-row">
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Contact Person</label>
+                    <input type="text" name="contact_person" id="supContact" placeholder="e.g. Mohamed Ali">
+                </div>
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Phone</label>
+                    <input type="text" name="phone" id="supPhone" placeholder="+966 ...">
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Email</label>
+                <input type="email" name="email" id="supEmail" placeholder="orders@supplier.com">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Payment Terms</label>
+                <input type="text" name="payment_terms" id="supTerms" placeholder="e.g. Prepaid / Net 30 / Credit line 500K">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Merchants supplied</label>
+                <div style="max-height:170px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px;background:var(--bg-2);display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:4px" id="supMerchants">
+                    {% for m in all_merchants %}
+                    <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding:2px 4px">
+                        <input type="checkbox" name="merchants" value="{{ m }}" style="width:auto"> <span class="truncate">{{ m }}</span>
+                    </label>
+                    {% endfor %}
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Notes</label>
+                <textarea name="notes" id="supNotes" style="height:60px" placeholder="Anything worth remembering about this supplier..."></textarea>
+            </div>
+            <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center">💾 Save Supplier</button>
+        </form>
+    </div>
+
+    <!-- List -->
+    <div>
+        {% for s in suppliers %}
+        <div class="card mb-24">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+                <div style="flex:1;min-width:220px">
+                    <div class="fw6" style="font-size:16px">{{ s.name }}</div>
+                    <div class="text-muted" style="font-size:12px;margin-top:4px">
+                        {{ s.contact_person or '—' }}{% if s.email %} · {{ s.email }}{% endif %}{% if s.phone %} · {{ s.phone }}{% endif %}
+                    </div>
+                    {% if s.payment_terms %}<div style="font-size:12px;margin-top:6px">💳 Terms: <b>{{ s.payment_terms }}</b></div>{% endif %}
+                    {% if s.notes %}<div class="text-muted" style="font-size:12px;margin-top:4px">🗒️ {{ s.notes }}</div>{% endif %}
+                    <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:8px">
+                        {% for m in s.merchants %}<span class="badge badge-info" style="font-size:10px">{{ m }}</span>{% endfor %}
+                        {% if s.merchants %}<span class="badge badge-ghost" style="font-size:10px">{{ s.product_count }} products</span>{% endif %}
+                    </div>
+                </div>
+                <div style="display:flex;gap:6px">
+                    <button class="btn btn-sm btn-ghost" onclick='editSupplier({{ s|tojson }})'>✏️ Edit</button>
+                    <form method="POST" action="/ops/suppliers/{{ s.id }}/delete" onsubmit="return confirm('Delete supplier {{ s.name }}?')">
+                        <button class="btn btn-sm btn-danger" type="submit">🗑️</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+        {% else %}
+        <div class="card" style="text-align:center;padding:50px">
+            <div style="font-size:40px;margin-bottom:12px">🚚</div>
+            <div class="fw6">No suppliers yet</div>
+            <div class="text-muted" style="font-size:13px;margin-top:4px">Add your first supplier using the form</div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function editSupplier(s) {
+    document.getElementById('supFormTitle').textContent = '✏️ Edit Supplier — ' + s.name;
+    document.getElementById('supId').value = s.id;
+    document.getElementById('supName').value = s.name || '';
+    document.getElementById('supContact').value = s.contact_person || '';
+    document.getElementById('supPhone').value = s.phone || '';
+    document.getElementById('supEmail').value = s.email || '';
+    document.getElementById('supTerms').value = s.payment_terms || '';
+    document.getElementById('supNotes').value = s.notes || '';
+    document.querySelectorAll('#supMerchants input[type=checkbox]').forEach(cb => {
+        cb.checked = (s.merchants || []).includes(cb.value);
+    });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+</script>
+{% endblock %}

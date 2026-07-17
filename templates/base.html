@@ -21,6 +21,7 @@
                     {% elif current_user.role == 'sales' %}Sales Portal
                     {% elif current_user.role == 'cco' %}CCO Panel
                     {% elif current_user.role == 'finance' %}Finance Panel
+                    {% elif current_user.role == 'ops' %}Operations Panel
                     {% else %}Reseller Portal{% endif %}
                 </div>
             </div>
@@ -37,6 +38,8 @@
                     {% include 'partials/_nav_cco.html' %}
                 {% elif current_user.role == 'finance' %}
                     {% include 'partials/_nav_finance.html' %}
+                {% elif current_user.role == 'ops' %}
+                    {% include 'partials/_nav_ops.html' %}
                 {% endif %}
             {% endblock %}
         </nav>

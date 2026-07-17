@@ -24,8 +24,11 @@ app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads', 'receipts')
+PRICEFILE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads', 'pricefiles')
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(PRICEFILE_DIR, exist_ok=True)
 ALLOWED_RECEIPT_EXT = {'.png', '.jpg', '.jpeg', '.pdf', '.webp'}
+ALLOWED_PRICEFILE_EXT = {'.xls', '.xlsx'}
 
 
 # ── Context Processor ─────────────────────────────────────────────
@@ -86,7 +89,7 @@ def block_in_preview():
 
 ROLE_HOME = {'admin': 'admin_dashboard', 'sales': 'sales_dashboard',
              'cco': 'cco_dashboard', 'finance': 'finance_dashboard',
-             'reseller': 'reseller_dashboard'}
+             'ops': 'ops_dashboard', 'reseller': 'reseller_dashboard'}
 
 
 @app.route('/')
@@ -546,6 +549,206 @@ def finance_review(txn_id):
                       "/reseller/wallet")
         flash("Top-up rejected.", "info")
     return redirect(url_for('finance_dashboard'))
+
+
+# ── Operations Routes (v5) ───────────────────────────────────────
+
+@app.route('/ops')
+@auth.ops_required
+def ops_dashboard():
+    stats = models.get_ops_stats()
+    recent = models.get_price_log(limit=12)
+    return render_template('ops/dashboard.html', active_tab='ops_dashboard',
+                           stats=stats, recent=recent)
+
+
+@app.route('/ops/products')
+@auth.ops_required
+def ops_products():
+    products = models.get_products(include_inactive=True)
+    return render_template('ops/products.html', active_tab='ops_products',
+                           products=products, products_json=json.dumps(products))
+
+
+@app.route('/ops/products/add', methods=['GET', 'POST'])
+@auth.ops_required
+def ops_add_product():
+    curr = auth.get_current_user()
+    if request.method == 'POST':
+        data = {k: request.form.get(k, '') for k in
+                ('product_id', 'product_name', 'merchant', 'merchant_id', 'category',
+                 'country', 'region', 'currency', 'cost', 'default_price', 'face_value')}
+        if not data['product_name'] or not data['merchant']:
+            flash("Product name and merchant are required.", "error")
+        else:
+            pid = models.add_product(data, curr['id'])
+            flash(f"Product added (#{pid}). It appears as a New Arrival for 30 days.", "success")
+            return redirect(url_for('ops_products'))
+    return render_template('ops/product_form.html', active_tab='ops_products',
+                           product=None, categories=models.get_all_categories(),
+                           countries=models.get_all_countries(), regions=models.get_all_regions(),
+                           currencies=models.get_all_currencies())
+
+
+@app.route('/ops/products/<int:pid>/edit', methods=['GET', 'POST'])
+@auth.ops_required
+def ops_edit_product(pid):
+    curr = auth.get_current_user()
+    prods = models.get_products(include_inactive=True)
+    product = next((p for p in prods if p['id'] == pid), None)
+    if not product:
+        flash("Product not found.", "error")
+        return redirect(url_for('ops_products'))
+    if request.method == 'POST':
+        fields = {k: request.form.get(k) for k in
+                  ('product_name', 'merchant', 'category', 'country', 'region', 'currency',
+                   'cost', 'default_price', 'face_value')}
+        fields['is_new'] = 1 if request.form.get('is_new') else 0
+        changes = models.update_product(pid, fields, curr['id'])
+        if changes:
+            flash(f"Product updated — {len(changes)} field(s) changed and logged.", "success")
+        else:
+            flash("No changes detected.", "info")
+        return redirect(url_for('ops_products'))
+    return render_template('ops/product_form.html', active_tab='ops_products',
+                           product=product, categories=models.get_all_categories(),
+                           countries=models.get_all_countries(), regions=models.get_all_regions(),
+                           currencies=models.get_all_currencies())
+
+
+@app.route('/ops/products/<int:pid>/toggle', methods=['POST'])
+@auth.ops_required
+def ops_toggle_product(pid):
+    curr = auth.get_current_user()
+    active = request.form.get('active') == '1'
+    models.set_product_active(pid, active, curr['id'])
+    flash(f"Product {'activated' if active else 'deactivated'} — "
+          f"{'now visible' if active else 'hidden'} in all catalogues.", "success")
+    return redirect(request.referrer or url_for('ops_products'))
+
+
+@app.route('/ops/bulk', methods=['GET', 'POST'])
+@auth.ops_required
+def ops_bulk():
+    preview, token = None, None
+    if request.method == 'POST':
+        file = request.files.get('pricefile')
+        if not file or not file.filename:
+            flash("Choose a price file first.", "error")
+        else:
+            ext = os.path.splitext(file.filename)[1].lower()
+            if ext not in ALLOWED_PRICEFILE_EXT:
+                flash("Price file must be .xls or .xlsx", "error")
+            else:
+                token = f"pf_{uuid.uuid4().hex[:12]}{ext}"
+                path = os.path.join(PRICEFILE_DIR, token)
+                file.save(path)
+                preview, err = models.parse_price_file(path)
+                if err:
+                    flash(err, "error")
+                    preview, token = None, None
+                elif not preview['diffs']:
+                    flash(f"File parsed ({preview['total_rows']} rows) — no price differences found.", "info")
+                    preview, token = None, None
+    return render_template('ops/bulk.html', active_tab='ops_bulk',
+                           preview=preview, token=token)
+
+
+@app.route('/ops/bulk/apply', methods=['POST'])
+@auth.ops_required
+def ops_bulk_apply():
+    curr = auth.get_current_user()
+    token = request.form.get('token', '')
+    path = os.path.join(PRICEFILE_DIR, os.path.basename(token))
+    if not token or not os.path.exists(path):
+        flash("Upload session expired — please upload the file again.", "error")
+        return redirect(url_for('ops_bulk'))
+    count, err = models.apply_price_file(path, curr['id'])
+    os.remove(path)
+    if err:
+        flash(err, "error")
+    else:
+        flash(f"Bulk update applied — {count} products repriced. All changes are in the Price Log.", "success")
+    return redirect(url_for('ops_pricelog'))
+
+
+@app.route('/ops/suppliers', methods=['GET', 'POST'])
+@auth.ops_required
+def ops_suppliers():
+    if request.method == 'POST':
+        sid = request.form.get('supplier_id') or None
+        merchants = [m.strip() for m in request.form.getlist('merchants') if m.strip()]
+        models.upsert_supplier(int(sid) if sid else None,
+                               request.form.get('name', '').strip(),
+                               request.form.get('contact_person', ''),
+                               request.form.get('email', ''),
+                               request.form.get('phone', ''),
+                               request.form.get('payment_terms', ''),
+                               request.form.get('notes', ''), merchants)
+        flash("Supplier saved.", "success")
+        return redirect(url_for('ops_suppliers'))
+    suppliers = models.get_suppliers()
+    all_merchants = [m['merchant'] for m in models.get_all_merchants()]
+    return render_template('ops/suppliers.html', active_tab='ops_suppliers',
+                           suppliers=suppliers, all_merchants=all_merchants)
+
+
+@app.route('/ops/suppliers/<int:sid>/delete', methods=['POST'])
+@auth.ops_required
+def ops_delete_supplier(sid):
+    models.delete_supplier(sid)
+    flash("Supplier deleted.", "info")
+    return redirect(url_for('ops_suppliers'))
+
+
+@app.route('/ops/pricelog')
+@auth.ops_required
+def ops_pricelog():
+    log = models.get_price_log(limit=300)
+    return render_template('ops/pricelog.html', active_tab='ops_pricelog', log=log)
+
+
+# ── Governance: Team Performance (v5) ────────────────────────────
+
+@app.route('/team')
+@auth.cco_required
+def team_performance():
+    ym = request.args.get('ym') or datetime.now().strftime('%Y-%m')
+    team = models.get_team_performance(ym)
+    # month options: last 12 months
+    months = []
+    y, m = datetime.now().year, datetime.now().month
+    for _ in range(12):
+        months.append(f"{y}-{m:02d}")
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+    return render_template('team.html', active_tab='team', team=team, ym=ym, months=months)
+
+
+@app.route('/team/targets', methods=['POST'])
+@auth.cco_required
+def team_set_targets():
+    ym = request.form.get('ym')
+    uids = request.form.getlist('sales_user_id')
+    news = request.form.getlist('target_new')
+    values = request.form.getlist('target_value')
+    for i, uid in enumerate(uids):
+        models.upsert_sales_target(int(uid), ym,
+                                   int(news[i] or 0), float(values[i] or 0))
+    flash(f"Targets saved for {ym}.", "success")
+    return redirect(url_for('team_performance', ym=ym))
+
+
+@app.route('/sales/scorecard')
+@auth.sales_required
+def sales_scorecard():
+    curr = auth.get_current_user()
+    ym = request.args.get('ym') or datetime.now().strftime('%Y-%m')
+    card = models.get_sales_scorecard(curr['id'], ym)
+    resellers = models.get_all_resellers(registered_by=curr['id'])
+    return render_template('sales/scorecard.html', active_tab='scorecard',
+                           card=card, ym=ym, resellers=resellers)
 
 
 # ── Reseller Portal Routes ────────────────────────────────────────

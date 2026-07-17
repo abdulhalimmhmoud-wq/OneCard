@@ -6,6 +6,7 @@
 <div class="nav-section">Workflows</div>
 <a href="/sales/forecasts" class="nav-item {{ 'active' if active_tab == 'forecasts' }}"><span class="icon">📋</span>Purchase Forecasts</a>
 <a href="/sales/discounts" class="nav-item {{ 'active' if active_tab == 'discounts' }}"><span class="icon">🎯</span>Discount Requests</a>
+<a href="/sales/scorecard" class="nav-item {{ 'active' if active_tab == 'scorecard' }}"><span class="icon">🏅</span>My Scorecard</a>
 <div class="nav-section">Account</div>
 <a href="/notifications" class="nav-item {{ 'active' if active_tab == 'notifications' }}"><span class="icon">🔔</span>Notifications
     {% if unread_notifications %}<span class="badge badge-danger" style="margin-left:auto">{{ unread_notifications }}</span>{% endif %}

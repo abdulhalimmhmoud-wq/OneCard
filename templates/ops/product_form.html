@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if product else 'Add' }} Product — OneCard Ops{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">{{ '✏️ Edit Product' if product else '➕ Add New Product' }}</h1>
+        <p class="page-subtitle">
+            {% if product %}Every field change is recorded in the Price Change Log
+            {% else %}New products appear automatically in resellers' New Arrivals for 30 days{% endif %}
+        </p>
+    </div>
+    <div class="page-actions">
+        <a href="/ops/products" class="btn btn-ghost">← Back to Products</a>
+    </div>
+</div>
+
+<form method="POST">
+<div class="grid-2">
+    <div class="card">
+        <div class="card-header"><div class="card-title">📦 Product Details</div></div>
+        <div class="form-group">
+            <label class="form-label">Product Name *</label>
+            <input type="text" name="product_name" required value="{{ product.product_name if product else '' }}" placeholder="e.g. PlayStation Card $50 - USA">
+        </div>
+        <div class="form-row">
+            <div class="form-group" style="flex:1">
+                <label class="form-label">Product ID (company system)</label>
+                <input type="text" name="product_id" value="{{ product.product_id if product else '' }}" placeholder="e.g. 6017" {{ 'readonly style=opacity:.6' if product }}>
+            </div>
+            <div class="form-group" style="flex:1">
+                <label class="form-label">Merchant *</label>
+                <input type="text" name="merchant" required value="{{ product.merchant if product else '' }}" list="merchantsList" placeholder="e.g. PlayStation USA">
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group" style="flex:1">
+                <label class="form-label">Category *</label>
+                <select name="category" required>
+                    {% for c in categories %}<option value="{{ c }}" {{ 'selected' if product and product.category == c }}>{{ c }}</option>{% endfor %}
+                </select>
+            </div>
+            <div class="form-group" style="flex:1">
+                <label class="form-label">Country *</label>
+                <input type="text" name="country" required value="{{ product.country if product else 'Global' }}" list="countriesList">
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group" style="flex:1">
+                <label class="form-label">Region</label>
+                <select name="region">
+                    {% for r in regions %}<option value="{{ r }}" {{ 'selected' if product and product.region == r }}>{{ r }}</option>{% endfor %}
+                    <option value="eSIM" {{ 'selected' if product and product.region == 'eSIM' }}>eSIM</option>
+                </select>
+            </div>
+            <div class="form-group" style="flex:1">
+                <label class="form-label">Currency</label>
+                <input type="text" name="currency" value="{{ product.currency if product else 'SAR' }}" list="currenciesList">
+            </div>
+        </div>
+        {% if product %}
+        <div class="form-group">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                <input type="checkbox" name="is_new" value="1" {{ 'checked' if product.is_new }} style="width:auto">
+                Show as "New Arrival" in reseller portals
+            </label>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="card">
+        <div class="card-header"><div class="card-title">💰 Pricing (from supplier)</div></div>
+        <div class="form-group">
+            <label class="form-label">Cost Price *</label>
+            <input type="number" name="cost" required step="0.001" min="0" id="fCost" value="{{ product.cost if product else '' }}" oninput="marginPreview()">
+            <div class="form-hint">What OneCard pays the supplier</div>
+        </div>
+        <div class="form-group">
+            <label class="form-label">Default Reseller Price *</label>
+            <input type="number" name="default_price" required step="0.001" min="0" id="fPrice" value="{{ product.default_price if product else '' }}" oninput="marginPreview()">
+        </div>
+        <div class="form-group">
+            <label class="form-label">Face Value (RRP)</label>
+            <input type="number" name="face_value" step="0.001" min="0" id="fFace" value="{{ product.face_value if product else '' }}" oninput="marginPreview()">
+            <div class="form-hint">Recommended retail price — what the end customer pays</div>
+        </div>
+
+        <div class="card" style="background:var(--bg-2);border:1px dashed var(--border)">
+            <div style="font-size:13px;font-weight:600;margin-bottom:8px">📊 Margin Preview</div>
+            <div id="marginPreview" class="text-muted" style="font-size:13px">Enter cost and price…</div>
+        </div>
+
+        <button type="submit" class="btn btn-primary btn-lg mt-16" style="width:100%;justify-content:center">
+            {{ '💾 Save Changes' if product else '✅ Add Product' }}
+        </button>
+    </div>
+</div>
+</form>
+
+<datalist id="countriesList">{% for c in countries %}<option value="{{ c }}">{% endfor %}</datalist>
+<datalist id="currenciesList">{% for c in currencies %}<option value="{{ c }}">{% endfor %}</datalist>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function marginPreview() {
+    const cost = parseFloat(document.getElementById('fCost').value) || 0;
+    const price = parseFloat(document.getElementById('fPrice').value) || 0;
+    const box = document.getElementById('marginPreview');
+    if (!cost || !price) { box.textContent = 'Enter cost and price…'; return; }
+    const margin = price - cost;
+    const pct = price > 0 ? margin / price * 100 : 0;
+    const warn = pct < 1 ? ' <b class="text-d">⚠️ below 1% floor — BD/CCO will be alerted</b>' : '';
+    box.innerHTML = `OneCard margin: <b class="${margin >= 0 ? 'text-s' : 'text-d'}">${margin.toFixed(3)}</b> (${pct.toFixed(2)}%)${warn}`;
+}
+marginPreview();
+</script>
+{% endblock %}
