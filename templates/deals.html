@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}Deal Pipeline — OneCard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">📨 BD → Operations Deal Pipeline</h1>
+        <p class="page-subtitle">Business Development negotiates — Operations enter the data — everyone sees the status</p>
+    </div>
+</div>
+
+<div class="grid-2" style="align-items:start">
+    {% if can_create %}
+    <!-- New deal -->
+    <div class="card">
+        <div class="card-header"><div class="card-title">➕ Submit a Deal to Operations</div></div>
+        <form method="POST" action="/deals">
+            <div class="form-group">
+                <label class="form-label">Deal Type *</label>
+                <select name="type" required>
+                    {% for k, v in deal_types.items() %}<option value="{{ k }}">{{ v }}</option>{% endfor %}
+                </select>
+                <div class="form-hint">
+                    New merchant agreement · a better rate you negotiated · a new supplier for existing
+                    products · a gift-card issuing lead (a merchant with no digital cards yet)
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Deal Title *</label>
+                <input type="text" name="title" required placeholder="e.g. Razer Gold rate improved to 4.2% from March">
+            </div>
+            <div class="form-row">
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Merchant (if relevant)</label>
+                    <input type="text" name="merchant" placeholder="e.g. PlayStation KSA">
+                </div>
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Supplier (if relevant)</label>
+                    <input type="text" name="supplier_name" placeholder="e.g. Digital Keys FZ">
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Agreed Terms / Prices</label>
+                <textarea name="expected_terms" placeholder="The exact numbers Ops should enter: costs, rates, validity..." style="height:70px"></textarea>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Details / Contact Info</label>
+                <textarea name="details" placeholder="Contract context, contacts, anything Ops need..." style="height:70px"></textarea>
+            </div>
+            <button type="submit" class="btn btn-primary btn-lg" style="width:100%;justify-content:center">
+                📨 Send to Operations
+            </button>
+        </form>
+    </div>
+    {% endif %}
+
+    <!-- Pipeline -->
+    <div style="{{ '' if can_create else 'grid-column:1 / -1' }}">
+        {% for d in deals %}
+        <div class="card mb-24" style="border-left:3px solid {{ 'var(--warning)' if d.status == 'submitted' else ('var(--info)' if d.status == 'in_progress' else ('var(--success)' if d.status == 'done' else 'var(--danger)')) }}">
+            <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
+                <div style="flex:1;min-width:240px">
+                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                        <span class="fw6" style="font-size:15px">{{ d.title }}</span>
+                        <span class="badge badge-info" style="font-size:10px">{{ deal_types.get(d.type, d.type) }}</span>
+                    </div>
+                    <div class="text-muted" style="font-size:11px;margin-top:4px">
+                        by {{ d.created_by_name }} · {{ d.created_at[:16] }}
+                        {% if d.merchant %} · Merchant: <b>{{ d.merchant }}</b>{% endif %}
+                        {% if d.supplier_name %} · Supplier: <b>{{ d.supplier_name }}</b>{% endif %}
+                    </div>
+                    {% if d.expected_terms %}
+                    <div style="font-size:12.5px;margin-top:8px;padding:8px 12px;background:var(--bg-2);border-radius:8px">
+                        📋 <b>Terms:</b> {{ d.expected_terms }}
+                    </div>
+                    {% endif %}
+                    {% if d.details %}
+                    <div class="text-muted" style="font-size:12px;margin-top:6px">💬 {{ d.details }}</div>
+                    {% endif %}
+                    {% if d.handler_note %}
+                    <div style="font-size:12px;margin-top:6px;color:var(--success)">🔧 Ops: {{ d.handler_note }}
+                        <span class="text-muted">({{ d.handled_by_name }})</span></div>
+                    {% endif %}
+                </div>
+                <div style="min-width:180px;text-align:right">
+                    {% if d.status == 'submitted' %}<span class="badge badge-warning">📥 Waiting for Ops</span>
+                    {% elif d.status == 'in_progress' %}<span class="badge badge-info">🔧 In progress</span>
+                    {% elif d.status == 'done' %}<span class="badge badge-success">✅ Done — live</span>
+                    {% else %}<span class="badge badge-danger">❌ Rejected</span>{% endif %}
+
+                    {% if can_handle and d.status in ('submitted', 'in_progress') %}
+                    <form method="POST" action="/deals/{{ d.id }}/status" style="margin-top:10px;display:flex;flex-direction:column;gap:6px">
+                        <input type="text" name="note" placeholder="Note back to BD (optional)" style="font-size:11px;padding:6px 8px">
+                        <div style="display:flex;gap:6px;justify-content:flex-end">
+                            {% if d.status == 'submitted' %}
+                            <button name="status" value="in_progress" class="btn btn-sm btn-ghost">🔧 Start</button>
+                            {% endif %}
+                            <button name="status" value="done" class="btn btn-sm btn-primary"
+                                    onclick="return confirm('Mark as DONE? Confirm the data is entered in the system.')">✅ Done</button>
+                            <button name="status" value="rejected" class="btn btn-sm btn-danger"
+                                    onclick="return confirm('Reject this deal?')">✕</button>
+                        </div>
+                    </form>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        {% else %}
+        <div class="card" style="text-align:center;padding:50px">
+            <div style="font-size:40px;margin-bottom:12px">📨</div>
+            <div class="fw6">No deals in the pipeline</div>
+            <div class="text-muted" style="font-size:13px;margin-top:4px">BD submits negotiated deals here; Operations enter them into the system</div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}

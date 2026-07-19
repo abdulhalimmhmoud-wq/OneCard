@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}Issuing Hub — OneCard Ops{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">🎫 Issuing Hub — Partners & Overview</h1>
+        <p class="page-subtitle">We issue and manage digital gift cards for partner merchants, and sell them through all our channels</p>
+    </div>
+    <div class="page-actions">
+        <a href="/ops/issuing/products" class="btn btn-primary">🗂️ Card Programs</a>
+        <a href="/ops/issuing/checker" class="btn btn-ghost">🔎 Code Checker</a>
+    </div>
+</div>
+
+<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(190px,1fr))">
+    <div class="stat-card">
+        <div class="stat-icon">🤝</div>
+        <div class="stat-value">{{ totals.partners }}</div>
+        <div class="stat-label">Issuing Partners</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🗂️</div>
+        <div class="stat-value">{{ totals.products }}</div>
+        <div class="stat-label">Card Programs</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">📦</div>
+        <div class="stat-value">{{ totals.stock|money }}</div>
+        <div class="stat-label">Codes in Stock</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🛒</div>
+        <div class="stat-value">{{ totals.sold|money }}</div>
+        <div class="stat-label">Codes Sold</div>
+    </div>
+    <div class="stat-card" style="{{ 'border:2px solid var(--success)' if totals.profit > 0 }}">
+        <div class="stat-icon">💰</div>
+        <div class="stat-value" style="color:var(--success)">{{ totals.profit|money }}</div>
+        <div class="stat-label">OneCard Profit (SAR)</div>
+    </div>
+</div>
+
+<div class="card mb-24" style="border:1px dashed var(--border)">
+    <div style="display:flex;gap:12px;align-items:center;font-size:13px;color:var(--text-2)">
+        <span style="font-size:22px">🔄</span>
+        <div>
+            <b style="color:var(--text-1)">The cycle:</b>
+            BD signs a merchant with no digital cards (<a href="/deals" style="color:var(--accent)">Deal Pipeline</a>, type "Gift Card Issuing Lead")
+            → Ops create the partner here + a card program → generate code batches
+            → the cards appear automatically in every reseller catalogue under the partner's name
+            → each sale delivers real codes to the buyer → the partner report splits the money.
+        </div>
+    </div>
+</div>
+
+<div class="grid-2" style="align-items:start">
+    <!-- Partner form -->
+    <div class="card">
+        <div class="card-header"><div class="card-title" id="ipFormTitle">➕ Add Issuing Partner</div></div>
+        <form method="POST" action="/ops/issuing">
+            <input type="hidden" name="partner_id" id="ipId">
+            <div class="form-group">
+                <label class="form-label">Partner (Merchant) Name *</label>
+                <input type="text" name="name" id="ipName" required placeholder="e.g. Chef Burger KSA">
+            </div>
+            <div class="form-row">
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Contact Person</label>
+                    <input type="text" name="contact_person" id="ipContact">
+                </div>
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Phone</label>
+                    <input type="text" name="phone" id="ipPhone">
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Email</label>
+                <input type="email" name="email" id="ipEmail">
+            </div>
+            <div class="form-row">
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Partner Share % *</label>
+                    <input type="number" name="share_pct" id="ipShare" value="80" min="1" max="99" step="0.5" required>
+                    <div class="form-hint">Of every sale, this % goes to the partner — the rest is OneCard's.</div>
+                </div>
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Status</label>
+                    <select name="status" id="ipStatus">
+                        <option value="active">Active</option>
+                        <option value="paused">Paused</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Notes / Contract Ref</label>
+                <textarea name="notes" id="ipNotes" style="height:56px"></textarea>
+            </div>
+            <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center">💾 Save Partner</button>
+        </form>
+    </div>
+
+    <!-- Partner list -->
+    <div>
+        {% for p in partners %}
+        <div class="card mb-24">
+            <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start">
+                <div style="flex:1;min-width:220px">
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <span class="fw6" style="font-size:16px">{{ p.name }}</span>
+                        {% if p.status == 'active' %}<span class="badge badge-success">Active</span>
+                        {% else %}<span class="badge badge-warning">Paused</span>{% endif %}
+                    </div>
+                    <div class="text-muted" style="font-size:12px;margin-top:4px">
+                        {{ p.contact_person or '—' }}{% if p.email %} · {{ p.email }}{% endif %}{% if p.phone %} · {{ p.phone }}{% endif %}
+                    </div>
+                    <div style="display:flex;gap:14px;margin-top:10px;font-size:12.5px;flex-wrap:wrap">
+                        <span>💼 Share: <b>{{ p.partner_share_pct }}%</b> partner / <b>{{ 100 - p.partner_share_pct }}%</b> OneCard</span>
+                        <span>🗂️ {{ p.product_count }} programs</span>
+                        <span>📦 <b class="{{ 'text-d' if p.stock_available < 20 and p.product_count else '' }}">{{ p.stock_available|money }}</b> in stock</span>
+                        <span>🛒 {{ p.sold_total|money }} sold</span>
+                    </div>
+                    {% if p.notes %}<div class="text-muted" style="font-size:11.5px;margin-top:6px">🗒️ {{ p.notes }}</div>{% endif %}
+                </div>
+                <button class="btn btn-sm btn-ghost" onclick='editPartner({{ p|tojson }})'>✏️ Edit</button>
+            </div>
+        </div>
+        {% else %}
+        <div class="card" style="text-align:center;padding:50px">
+            <div style="font-size:40px;margin-bottom:12px">🎫</div>
+            <div class="fw6">No issuing partners yet</div>
+            <div class="text-muted" style="font-size:13px;margin-top:4px">Add the first merchant we issue gift cards for</div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function editPartner(p) {
+    document.getElementById('ipFormTitle').textContent = '✏️ Edit — ' + p.name;
+    document.getElementById('ipId').value = p.id;
+    document.getElementById('ipName').value = p.name || '';
+    document.getElementById('ipContact').value = p.contact_person || '';
+    document.getElementById('ipPhone').value = p.phone || '';
+    document.getElementById('ipEmail').value = p.email || '';
+    document.getElementById('ipShare').value = p.partner_share_pct;
+    document.getElementById('ipStatus').value = p.status;
+    document.getElementById('ipNotes').value = p.notes || '';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+</script>
+{% endblock %}

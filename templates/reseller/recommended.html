@@ -7,14 +7,14 @@
         <h1 class="page-title">⭐ Recommended for {{ profile.company_name }}</h1>
         <p class="page-subtitle">
             Personalized picks
-            {% if profile.client_type %} for a <b>{{ profile.client_type }}</b>{% endif %}
+            {% if types_label %} for a <b>{{ types_label }}</b>{% endif %}
             {% if profile.countries %} operating in <b>{{ profile.countries|join(', ') }}</b>{% endif %}
             — based on sales volume, your margins, your markets and your business type
         </p>
     </div>
 </div>
 
-{% if not profile.client_type and not profile.countries %}
+{% if not types_label and not profile.countries %}
 <div class="card mb-24" style="border:1px dashed var(--warning)">
     <div style="display:flex;gap:12px;align-items:center">
         <div style="font-size:24px">💡</div>
@@ -29,7 +29,7 @@
 {% if top_for_type %}
 <div class="card mb-24">
     <div class="card-header">
-        <div class="card-title">🎯 Top Picks for {{ profile.client_type }}s</div>
+        <div class="card-title">🎯 Top Picks for {{ types_label }}</div>
         <span class="badge badge-accent">Best sellers in your business segment</span>
     </div>
     <div class="table-scroll">

@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Code Checker — Issuing Hub{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">🔎 Code Checker & Redeem</h1>
+        <p class="page-subtitle">Customer support tool — check any gift-card code's status, or mark it redeemed</p>
+    </div>
+</div>
+
+<div class="card" style="max-width:640px">
+    <form method="POST" action="/ops/issuing/checker">
+        <div class="form-group">
+            <label class="form-label">Voucher Code</label>
+            <input type="text" name="code" value="{{ code }}" required placeholder="e.g. A1B2-C3D4-E5F6-A7B8"
+                   style="font-family:monospace;font-size:15px;letter-spacing:1px">
+        </div>
+        <div style="display:flex;gap:10px">
+            <button type="submit" name="action" value="check" class="btn btn-primary">🔎 Check Status</button>
+            <button type="submit" name="action" value="redeem" class="btn btn-ghost"
+                    onclick="return confirm('Mark this code as REDEEMED? This cannot be undone.')">✔️ Mark Redeemed</button>
+        </div>
+    </form>
+</div>
+
+{% if result %}
+<div class="card mt-24" style="max-width:640px;border-left:4px solid
+    {{ 'var(--success)' if result.status == 'available' else ('var(--info)' if result.status == 'sold' else ('var(--warning)' if result.status == 'redeemed' else 'var(--danger)')) }}">
+    <div class="card-header">
+        <div class="card-title" style="font-family:monospace">{{ result.code }}</div>
+        {% if result.status == 'available' %}<span class="badge badge-success">🟢 Available (unsold)</span>
+        {% elif result.status == 'sold' %}<span class="badge badge-info">🔵 Sold — not redeemed yet</span>
+        {% elif result.status == 'redeemed' %}<span class="badge badge-warning">🟡 Redeemed (used)</span>
+        {% else %}<span class="badge badge-danger">⚫ Void</span>{% endif %}
+    </div>
+    <table style="width:100%;font-size:13px">
+        <tr><td class="text-muted" style="width:180px">Product</td><td class="fw6">{{ result.product_name }}</td></tr>
+        <tr><td class="text-muted">Face Value</td><td class="fw6">{{ result.face_value|money }} {{ result.currency }}</td></tr>
+        <tr><td class="text-muted">Issuing Partner</td><td>{{ result.partner_name or '—' }}</td></tr>
+        <tr><td class="text-muted">Batch</td><td>{{ result.batch_ref }}</td></tr>
+        <tr><td class="text-muted">PIN</td><td style="font-family:monospace">{{ result.pin }}</td></tr>
+        <tr><td class="text-muted">Sold At</td><td>{{ result.sold_at or '—' }}</td></tr>
+        <tr><td class="text-muted">Redeemed At</td><td>{{ result.redeemed_at or '—' }}</td></tr>
+    </table>
+</div>
+{% endif %}
+{% endblock %}

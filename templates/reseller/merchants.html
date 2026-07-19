@@ -15,22 +15,10 @@
             <span class="search-icon">🔍</span>
             <input type="search" id="merchSearch" placeholder="Search merchants..." oninput="filterMerchants()">
         </div>
-        <select id="merchCat" style="width:180px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterMerchants()">
-            <option value="">All Categories</option>
-            {% for c in categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
-        </select>
-        <select id="merchCountry" style="width:160px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterMerchants()">
-            <option value="">All Countries</option>
-            {% for c in countries %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
-        </select>
-        <select id="merchRegion" style="width:150px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterMerchants()">
-            <option value="">All Regions</option>
-            {% for r in regions %}<option value="{{ r }}">{{ r }}</option>{% endfor %}
-        </select>
-        <select id="merchCurrency" style="width:130px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterMerchants()">
-            <option value="">All Currencies</option>
-            {% for c in currencies %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
-        </select>
+        <div id="merchCat"></div>
+        <div id="merchCountry"></div>
+        <div id="merchRegion"></div>
+        <div id="merchCurrency"></div>
         <select id="merchSort" style="width:200px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterMerchants()">
             <option value="count_desc">Products Count (High to Low)</option>
             <option value="count_asc">Products Count (Low to High)</option>
@@ -92,18 +80,18 @@ function getMerchants(list) {
     });
 }
 
+const uniq = k => [...new Set(products.map(p => p[k]).filter(Boolean))].sort();
+const fCat = msCreate('merchCat', uniq('category'), 'All Categories', filterMerchants);
+const fCountry = msCreate('merchCountry', uniq('country'), 'All Countries', filterMerchants);
+const fRegion = msCreate('merchRegion', uniq('region'), 'All Regions', filterMerchants);
+const fCurr = msCreate('merchCurrency', uniq('currency'), 'All Currencies', filterMerchants);
+
 function currentProductFilter() {
-    const cat = document.getElementById('merchCat').value;
-    const country = document.getElementById('merchCountry').value;
-    const reg = document.getElementById('merchRegion').value;
-    const curr = document.getElementById('merchCurrency').value;
-    return products.filter(p => {
-        if (cat && p.category !== cat) return false;
-        if (country && p.country !== country) return false;
-        if (reg && p.region !== reg) return false;
-        if (curr && p.currency !== curr) return false;
-        return true;
-    });
+    const cSel = fCat.getSelected(), coSel = fCountry.getSelected(),
+          rSel = fRegion.getSelected(), cuSel = fCurr.getSelected();
+    return products.filter(p =>
+        msMatch(cSel, p.category) && msMatch(coSel, p.country) &&
+        msMatch(rSel, p.region) && msMatch(cuSel, p.currency));
 }
 
 function filterMerchants() {

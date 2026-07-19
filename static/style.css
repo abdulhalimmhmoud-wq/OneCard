@@ -549,3 +549,34 @@ select { cursor: pointer; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--bg-3); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+
+/* ── Multi-select dropdown (v8) ─────────────────────────── */
+.ms-wrap { position: relative; display: inline-block; }
+.ms-btn {
+    display: flex; align-items: center; gap: 8px; justify-content: space-between;
+    min-width: 170px; max-width: 240px;
+    padding: 10px 14px; font-size: 13px; cursor: pointer;
+    background: var(--bg-2); color: var(--text-1);
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.ms-btn.ms-active { border-color: var(--accent); color: var(--accent); }
+.ms-btn .ms-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ms-caret { font-size: 10px; opacity: .6; }
+.ms-panel {
+    display: none; position: absolute; top: calc(100% + 6px); left: 0; z-index: 300;
+    width: 260px; padding: 10px;
+    background: var(--bg-1); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); box-shadow: 0 12px 32px rgba(0,0,0,.45);
+}
+.ms-panel.open { display: block; }
+.ms-search { width: 100%; padding: 8px 10px; font-size: 12.5px; margin-bottom: 6px; }
+.ms-actions { display: flex; justify-content: flex-end; margin-bottom: 4px; }
+.ms-clear { font-size: 11px; color: var(--accent); cursor: pointer; }
+.ms-list { max-height: 240px; overflow-y: auto; }
+.ms-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 6px; font-size: 12.5px; cursor: pointer; border-radius: 6px;
+}
+.ms-item:hover { background: var(--glass); }
+.ms-item input { width: auto; }
+.ms-empty { padding: 12px; font-size: 12px; color: var(--text-3); text-align: center; }

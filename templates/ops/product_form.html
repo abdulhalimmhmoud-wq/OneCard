@@ -50,7 +50,7 @@
                 <label class="form-label">Region</label>
                 <select name="region">
                     {% for r in regions %}<option value="{{ r }}" {{ 'selected' if product and product.region == r }}>{{ r }}</option>{% endfor %}
-                    <option value="eSIM" {{ 'selected' if product and product.region == 'eSIM' }}>eSIM</option>
+                    {% if 'eSIM' not in regions %}<option value="eSIM" {{ 'selected' if product and product.region == 'eSIM' }}>eSIM</option>{% endif %}
                 </select>
             </div>
             <div class="form-group" style="flex:1">
@@ -99,6 +99,7 @@
 
 <datalist id="countriesList">{% for c in countries %}<option value="{{ c }}">{% endfor %}</datalist>
 <datalist id="currenciesList">{% for c in currencies %}<option value="{{ c }}">{% endfor %}</datalist>
+<datalist id="merchantsList">{% for m in merchants %}<option value="{{ m }}">{% endfor %}</datalist>
 {% endblock %}
 
 {% block scripts %}

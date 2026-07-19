@@ -170,9 +170,11 @@ def block_in_preview():
 
 # ── Global Routes ────────────────────────────────────────────────
 
+# v8: CCO is the platform owner — lands on the full admin dashboard
 ROLE_HOME = {'admin': 'admin_dashboard', 'sales': 'sales_dashboard',
-             'cco': 'cco_dashboard', 'finance': 'finance_dashboard',
-             'ops': 'ops_dashboard', 'reseller': 'reseller_dashboard'}
+             'cco': 'admin_dashboard', 'finance': 'finance_dashboard',
+             'ops': 'ops_dashboard', 'bd': 'bd_dashboard',
+             'reseller': 'reseller_dashboard'}
 
 
 @app.route('/')
@@ -396,7 +398,7 @@ def sales_register():
         pw = request.form.get('password')
         sales = float(request.form.get('expected_sales') or 0)
         notes = request.form.get('notes', '')
-        client_type = request.form.get('client_type', '')
+        client_types = request.form.getlist('client_types')
         countries = request.form.getlist('countries')
 
         assigned = models.auto_assign_tier(sales)
@@ -406,7 +408,7 @@ def sales_register():
         if uid:
             curr = auth.get_current_user()
             models.create_reseller(uid, comp, sales, tier_id, curr['id'], notes,
-                                   client_type=client_type, countries=countries)
+                                   client_types=client_types, countries=countries)
             flash(f"Reseller '{comp}' registered successfully with "
                   f"'{assigned['name'] if assigned else 'None'}' plan.", "success")
             return redirect(url_for('sales_dashboard'))
@@ -676,9 +678,11 @@ def ops_add_product():
             flash(f"Product added (#{pid}). It appears as a New Arrival for 30 days.", "success")
             return redirect(url_for('ops_products'))
     return render_template('ops/product_form.html', active_tab='ops_products',
-                           product=None, categories=models.get_all_categories(),
-                           countries=models.get_all_countries(), regions=models.get_all_regions(),
-                           currencies=models.get_all_currencies())
+                           product=None, categories=models.get_form_categories(),
+                           countries=models.get_all_countries_full(),
+                           regions=models.get_all_regions_full(),
+                           currencies=models.get_all_currencies(),
+                           merchants=[m['merchant'] for m in models.get_all_merchants()])
 
 
 @app.route('/ops/products/<int:pid>/edit', methods=['GET', 'POST'])
@@ -702,9 +706,11 @@ def ops_edit_product(pid):
             flash("No changes detected.", "info")
         return redirect(url_for('ops_products'))
     return render_template('ops/product_form.html', active_tab='ops_products',
-                           product=product, categories=models.get_all_categories(),
-                           countries=models.get_all_countries(), regions=models.get_all_regions(),
-                           currencies=models.get_all_currencies())
+                           product=product, categories=models.get_form_categories(),
+                           countries=models.get_all_countries_full(),
+                           regions=models.get_all_regions_full(),
+                           currencies=models.get_all_currencies(),
+                           merchants=[m['merchant'] for m in models.get_all_merchants()])
 
 
 @app.route('/ops/products/<int:pid>/toggle', methods=['POST'])
@@ -940,6 +946,107 @@ def ops_batches():
                            products_json=products_json, offers_json=jdump(offers))
 
 
+# ── Ops: Issuing Hub (v8) — we issue & sell partner gift cards ───
+
+@app.route('/ops/issuing', methods=['GET', 'POST'])
+@auth.ops_required
+def ops_issuing():
+    curr = auth.get_current_user()
+    if request.method == 'POST':
+        pid = request.form.get('partner_id') or None
+        name = request.form.get('name', '').strip()
+        if not name:
+            flash("Partner name is required.", "error")
+        else:
+            models.upsert_issuing_partner(int(pid) if pid else None, name,
+                                          request.form.get('contact_person', ''),
+                                          request.form.get('email', ''),
+                                          request.form.get('phone', ''),
+                                          float(request.form.get('share_pct') or 80),
+                                          request.form.get('status', 'active'),
+                                          request.form.get('notes', ''), curr['id'])
+            flash(f"Partner '{name}' saved.", "success")
+            return redirect(url_for('ops_issuing'))
+    partners = models.get_issuing_partners()
+    report = models.get_partner_report()
+    totals = {
+        'partners': len(partners),
+        'products': sum(p['product_count'] for p in partners),
+        'stock': sum(p['stock_available'] for p in partners),
+        'sold': sum(p['sold_total'] for p in partners),
+        'profit': sum(r['profit_sar'] for r in report),
+    }
+    return render_template('ops/issuing.html', active_tab='ops_issuing',
+                           partners=partners, totals=totals)
+
+
+@app.route('/ops/issuing/products', methods=['GET', 'POST'])
+@auth.ops_required
+def ops_issuing_products():
+    curr = auth.get_current_user()
+    if request.method == 'POST':
+        try:
+            prow, err = models.create_issued_product(
+                int(request.form.get('partner_id')),
+                request.form.get('product_name', '').strip(),
+                request.form.get('sku', '').strip(),
+                float(request.form.get('face_value') or 0),
+                float(request.form.get('selling_price') or 0),
+                request.form.get('currency', 'SAR').strip() or 'SAR',
+                request.form.get('category', 'Gift Cards & Vouchers'),
+                request.form.get('country', 'Saudi Arabia'),
+                curr['id'])
+        except (TypeError, ValueError):
+            prow, err = None, "Fill all fields with valid values."
+        if err:
+            flash(err, "error")
+        else:
+            flash("Issued product created — it is now live in every reseller catalogue. "
+                  "Generate a code batch so it can actually sell.", "success")
+            return redirect(url_for('ops_issuing_products'))
+    products = models.get_issued_products()
+    partners = models.get_issuing_partners()
+    return render_template('ops/issuing_products.html', active_tab='ops_issuing',
+                           products=products, partners=partners,
+                           low_threshold=models.ISSUED_LOW_STOCK_THRESHOLD)
+
+
+@app.route('/ops/issuing/batch', methods=['POST'])
+@auth.ops_required
+def ops_issuing_batch():
+    curr = auth.get_current_user()
+    prow = int(request.form.get('product_rowid') or 0)
+    qty = int(request.form.get('quantity') or 0)
+    if not prow or qty <= 0 or qty > 100000:
+        flash("Enter a valid quantity (1 – 100,000).", "error")
+        return redirect(url_for('ops_issuing_products'))
+    result, err = models.generate_voucher_batch(prow, qty, curr['id'],
+                                                request.form.get('note', ''))
+    if err:
+        flash(err, "error")
+    else:
+        flash(f"Batch {result['batch_ref']} generated — {qty:,} unique codes added to stock.", "success")
+    return redirect(url_for('ops_issuing_products'))
+
+
+@app.route('/ops/issuing/checker', methods=['GET', 'POST'])
+@auth.ops_required
+def ops_issuing_checker():
+    result = None
+    code = ''
+    if request.method == 'POST':
+        code = request.form.get('code', '').strip()
+        action = request.form.get('action')
+        if action == 'redeem' and code:
+            ok, msg = models.redeem_voucher(code)
+            flash(msg, "success" if ok else "error")
+        result = models.check_voucher(code) if code else None
+        if code and not result:
+            flash("Code not found in the system.", "error")
+    return render_template('ops/issuing_checker.html', active_tab='ops_issuing',
+                           result=result, code=code)
+
+
 # ── Finance: Batch Reconciliation (v6) ───────────────────────────
 
 @app.route('/finance/batches')
@@ -965,6 +1072,70 @@ def finance_batch_review(bid):
     else:
         flash(f"Batch #{bid} marked as disputed — Ops notified.", "warning")
     return redirect(url_for('finance_batches'))
+
+
+# ── BD: Deal Pipeline (v8) ───────────────────────────────────────
+
+@app.route('/bd')
+@auth.bd_required
+def bd_dashboard():
+    curr = auth.get_current_user()
+    mine = models.get_bd_requests(created_by=curr['id'] if curr['role'] == 'bd' else None)
+    kpis = models.get_sourcing_kpis()
+    counts = {'submitted': 0, 'in_progress': 0, 'done': 0, 'rejected': 0}
+    for d in mine:
+        counts[d['status']] = counts.get(d['status'], 0) + 1
+    return render_template('bd/dashboard.html', active_tab='bd_dashboard',
+                           deals=mine[:8], counts=counts, kpis=kpis)
+
+
+@app.route('/deals', methods=['GET', 'POST'])
+@auth.deals_required
+def deals():
+    curr = auth.get_current_user()
+    if request.method == 'POST':
+        # Only BD (and admin/cco) submit deals; Ops act on them
+        if curr['role'] == 'ops':
+            flash("Ops execute deals — Business Development submits them.", "error")
+            return redirect(url_for('deals'))
+        dtype = request.form.get('type')
+        title = request.form.get('title', '').strip()
+        if dtype not in models.BD_DEAL_TYPES or not title:
+            flash("Deal type and title are required.", "error")
+        else:
+            models.create_bd_request(dtype, title,
+                                     request.form.get('merchant', '').strip(),
+                                     request.form.get('supplier_name', '').strip(),
+                                     request.form.get('details', ''),
+                                     request.form.get('expected_terms', ''),
+                                     curr['id'])
+            flash("Deal submitted — Operations were notified to enter the data.", "success")
+            return redirect(url_for('deals'))
+
+    scope_mine = curr['id'] if curr['role'] == 'bd' else None
+    all_deals = models.get_bd_requests(created_by=scope_mine)
+    return render_template('deals.html', active_tab='deals',
+                           deals=all_deals, deal_types=models.BD_DEAL_TYPES,
+                           can_create=curr['role'] in ('bd', 'admin', 'cco'),
+                           can_handle=curr['role'] in ('ops', 'admin', 'cco'))
+
+
+@app.route('/deals/<int:rid>/status', methods=['POST'])
+@auth.deals_required
+def deal_status(rid):
+    curr = auth.get_current_user()
+    if curr['role'] == 'bd':
+        flash("Only Operations update deal status.", "error")
+        return redirect(url_for('deals'))
+    status = request.form.get('status')
+    if status not in ('in_progress', 'done', 'rejected'):
+        flash("Invalid status.", "error")
+        return redirect(url_for('deals'))
+    req = models.update_bd_request_status(rid, status, curr['id'],
+                                          request.form.get('note', ''))
+    if req:
+        flash(f"Deal '{req['title']}' marked {status.replace('_', ' ')} — BD notified.", "success")
+    return redirect(url_for('deals'))
 
 
 # ── Finance: FX Rates (v7 hardening) ─────────────────────────────
@@ -994,15 +1165,26 @@ def finance_rates():
 # ── BD / CCO: Sourcing Intelligence (v6) ─────────────────────────
 
 @app.route('/sourcing-intel')
-@auth.cco_required
+@auth.bd_required          # BD works on margin improvement — needs this view too
 def sourcing_intel():
     ym = request.args.get('ym') or datetime.now(timezone.utc).strftime('%Y-%m')
     kpis = models.get_sourcing_kpis()
     sales_by_supplier = models.get_sales_by_supplier(ym)
     sales_all_time = models.get_sales_by_supplier(None)
     scorecards = models.get_supplier_scorecards()
+    rates = models.get_fx_rates()
+    units30 = models.get_units_sold_30d()
     opportunities = [r for r in models.get_sourcing_matrix() if r['saving_vs_std'] > 0]
-    opportunities.sort(key=lambda x: -x['saving_vs_std'])
+    # v8: turn raw savings into decision-ready numbers — estimated SAR/month
+    for o in opportunities:
+        sold = units30.get(o['id'], 0)
+        rate = rates.get(o['currency'] or 'SAR', 1)
+        o['units_30d'] = sold
+        o['est_monthly_saving_sar'] = round(o['saving_vs_std'] * sold * rate, 0)
+        o['saving_sar_unit'] = round(o['saving_vs_std'] * rate, 2)
+    opportunities.sort(key=lambda x: (-x['est_monthly_saving_sar'], -x['saving_sar_unit']))
+    # Recommended actions = opportunities with actual recent sales (money now, not theory)
+    actions = [o for o in opportunities if o['est_monthly_saving_sar'] > 0][:5]
     improvements = models.get_margin_improvements()
     variance_batches = [b for b in models.get_batches() if b['sourcing_variance'] > 0][:15]
     return render_template('sourcing_intel.html', active_tab='sourcing_intel',
@@ -1011,6 +1193,7 @@ def sourcing_intel():
                            sales_all_time=sales_all_time,
                            scorecards=scorecards,
                            opportunities=opportunities[:15],
+                           actions=actions,
                            improvements=improvements,
                            variance_batches=variance_batches)
 
@@ -1146,7 +1329,12 @@ def reseller_recommended():
 
     # ── Personalized recommendation scoring ──
     my_countries = set(profile.get('countries') or [])
-    affinity_cats = set(models.CLIENT_TYPE_AFFINITY.get(profile.get('client_type') or '', []))
+    # v8: client can be several types at once — combine all their affinities
+    my_types = profile.get('client_types') or []
+    affinity_cats = set()
+    for t in my_types:
+        affinity_cats |= set(models.CLIENT_TYPE_AFFINITY.get(t, []))
+    types_label = ' / '.join(my_types) if my_types else (profile.get('client_type') or '')
 
     def country_match(p):
         if p['country'] in my_countries:
@@ -1167,7 +1355,7 @@ def reseller_recommended():
         p['rec_score'] = round(score, 4)
         reasons = []
         if p['popularity'] > 80: reasons.append('Top seller')
-        if p['category'] in affinity_cats: reasons.append(f"Popular with {profile.get('client_type') or 'similar clients'}")
+        if p['category'] in affinity_cats: reasons.append(f"Popular with {types_label or 'similar clients'}")
         if p['country'] in my_countries: reasons.append('Your market')
         if p['margin_pct'] >= max_margin * 0.6: reasons.append('High margin')
         if p.get('is_new'): reasons.append('New')
@@ -1181,7 +1369,7 @@ def reseller_recommended():
     return render_template('reseller/recommended.html', active_tab='recommended',
                            profile=profile, products_json=jdump(enriched[:200]),
                            top_for_type=top_for_type, top_markets=top_markets,
-                           categories=categories)
+                           categories=categories, types_label=types_label)
 
 
 # ── Reseller: Forecast (pre-contract purchase intent) ────────────
@@ -1301,6 +1489,7 @@ def reseller_orders():
     orders = models.get_orders(profile['id'])
     for o in orders:
         o['items'] = models.get_order_items(o['id'])
+        o['codes'] = models.get_order_codes(o['id'])   # v8: gift-card codes they bought
 
     return render_template('reseller/orders.html', active_tab='orders',
                            profile=profile, products_json=jdump(enriched),

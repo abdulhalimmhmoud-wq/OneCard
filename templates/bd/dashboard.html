@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Business Development — OneCard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">🤝 Business Development</h1>
+        <p class="page-subtitle">Negotiate deals, hand them to Operations, and watch the margin improve</p>
+    </div>
+    <div class="page-actions">
+        <a href="/deals" class="btn btn-primary">📨 Submit New Deal</a>
+    </div>
+</div>
+
+<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">
+    <div class="stat-card" style="{{ 'border:2px solid var(--warning)' if counts.submitted }}">
+        <div class="stat-icon">📥</div>
+        <div class="stat-value">{{ counts.submitted }}</div>
+        <div class="stat-label">Waiting for Operations</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🔧</div>
+        <div class="stat-value">{{ counts.in_progress }}</div>
+        <div class="stat-label">Being Entered</div>
+    </div>
+    <div class="stat-card" style="{{ 'border:2px solid var(--success)' if counts.done }}">
+        <div class="stat-icon">✅</div>
+        <div class="stat-value">{{ counts.done }}</div>
+        <div class="stat-label">Live on the System</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">💡</div>
+        <div class="stat-value">{{ kpis.potential_saving|money }}</div>
+        <div class="stat-label">Potential Saving on the Table (SAR/unit-set)</div>
+    </div>
+</div>
+
+<div class="table-card">
+    <div class="table-header">
+        <div class="table-title">📨 My Recent Deals</div>
+        <a href="/deals" class="btn btn-sm btn-ghost">Full Pipeline →</a>
+    </div>
+    <div class="table-scroll">
+        <table>
+            <thead><tr><th>Deal</th><th>Type</th><th>Status</th><th>Handled By</th></tr></thead>
+            <tbody>
+            {% for d in deals %}
+            <tr>
+                <td class="fw6">{{ d.title }}
+                    <div class="text-muted" style="font-size:10px">{{ d.created_at[:10] }}{% if d.merchant %} · {{ d.merchant }}{% endif %}</div>
+                </td>
+                <td><span class="badge badge-info" style="font-size:10px">{{ d.type.replace('_',' ') }}</span></td>
+                <td>
+                    {% if d.status == 'submitted' %}<span class="badge badge-warning">📥 Waiting</span>
+                    {% elif d.status == 'in_progress' %}<span class="badge badge-info">🔧 In progress</span>
+                    {% elif d.status == 'done' %}<span class="badge badge-success">✅ Done</span>
+                    {% else %}<span class="badge badge-danger">❌ Rejected</span>{% endif %}
+                </td>
+                <td class="text-muted" style="font-size:12px">{{ d.handled_by_name or '—' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4" style="text-align:center;padding:36px;color:var(--text-3)">
+                No deals yet — <a href="/deals" style="color:var(--accent)">submit your first deal →</a>
+            </td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

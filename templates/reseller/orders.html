@@ -120,8 +120,22 @@
                             {% for it in o['items'] %}
                             <div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)">
                                 <span class="truncate" style="max-width:280px">{{ it.product_name }} <span class="text-muted">× {{ it.quantity }}</span></span>
-                                <span class="fw6">{{ it.line_total|money }} SAR</span>
+                                <span class="fw6">{{ (it.line_total_sar if it.line_total_sar is not none else it.line_total)|money }} SAR</span>
                             </div>
+                            {% if o['codes'].get(it.id) %}
+                            <details style="margin:4px 0 8px 12px">
+                                <summary style="font-size:11px;color:var(--accent);cursor:pointer">🎫 View your {{ o['codes'][it.id]|length }} gift-card codes</summary>
+                                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:6px;margin-top:8px">
+                                    {% for c in o['codes'][it.id] %}
+                                    <div style="font-family:monospace;font-size:11px;padding:6px 10px;background:var(--bg-1);border:1px solid var(--border);border-radius:6px">
+                                        {{ c.code }}<br>
+                                        <span class="text-muted">PIN: {{ c.pin }}</span>
+                                        {% if c.status == 'redeemed' %} <span class="badge badge-warning" style="font-size:8px">used</span>{% endif %}
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                            </details>
+                            {% endif %}
                             {% endfor %}
                         </td>
                     </tr>

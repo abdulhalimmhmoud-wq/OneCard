@@ -46,7 +46,15 @@ CLIENT_TYPE_AFFINITY = {
     'Other':                    [],
 }
 
-ROLES = ('admin', 'sales', 'reseller', 'cco', 'finance', 'ops')
+ROLES = ('admin', 'sales', 'reseller', 'cco', 'finance', 'ops', 'bd')
+
+BD_DEAL_TYPES = {
+    'new_merchant': 'New Merchant Deal',
+    'better_rate': 'Better Rate Negotiated',
+    'new_supplier': 'New Supplier Found',
+    'gift_card_program': 'Gift Card Issuing Lead',
+    'other': 'Other',
+}
 
 # Margin guard: alert BD/CCO when an ops price change leaves a product below
 # this OneCard margin %, or cuts the margin by more than half.
@@ -69,7 +77,7 @@ def init_db():
             email TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             name TEXT NOT NULL,
-            role TEXT NOT NULL CHECK(role IN ('admin','sales','reseller','cco','finance','ops')),
+            role TEXT NOT NULL CHECK(role IN ('admin','sales','reseller','cco','finance','ops','bd')),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -104,6 +112,13 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             reseller_id INTEGER NOT NULL REFERENCES reseller_profiles(id) ON DELETE CASCADE,
             country TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS reseller_client_types (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reseller_id INTEGER NOT NULL REFERENCES reseller_profiles(id) ON DELETE CASCADE,
+            client_type TEXT NOT NULL,
+            UNIQUE(reseller_id, client_type)
         );
 
         CREATE TABLE IF NOT EXISTS reseller_regions (
@@ -302,6 +317,65 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
+        -- ── v8: Issuing Hub — we issue & manage digital gift cards
+        -- for partner merchants and sell them through our channels ──
+        CREATE TABLE IF NOT EXISTS issuing_partners (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            contact_person TEXT,
+            email TEXT,
+            phone TEXT,
+            partner_share_pct REAL NOT NULL DEFAULT 80,   -- % of selling price paid to the partner
+            status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','paused')),
+            notes TEXT,
+            created_by INTEGER REFERENCES users(id),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS issued_batches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_rowid INTEGER NOT NULL REFERENCES products(id),
+            batch_ref TEXT,
+            quantity INTEGER NOT NULL,
+            generated_by INTEGER REFERENCES users(id),
+            note TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS issued_vouchers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id INTEGER NOT NULL REFERENCES issued_batches(id) ON DELETE CASCADE,
+            product_rowid INTEGER NOT NULL,
+            code TEXT UNIQUE NOT NULL,
+            pin TEXT,
+            status TEXT NOT NULL DEFAULT 'available'
+                CHECK(status IN ('available','sold','redeemed','void')),
+            order_item_id INTEGER REFERENCES order_items(id),
+            sold_at TIMESTAMP,
+            redeemed_at TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_vouchers_stock ON issued_vouchers(product_rowid, status);
+        CREATE INDEX IF NOT EXISTS idx_vouchers_order_item ON issued_vouchers(order_item_id);
+
+        -- ── v8: BD Deal Pipeline (BD negotiates → Ops executes) ──
+        CREATE TABLE IF NOT EXISTS bd_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT NOT NULL CHECK(type IN ('new_merchant','better_rate','new_supplier','gift_card_program','other')),
+            title TEXT NOT NULL,
+            merchant TEXT,
+            supplier_name TEXT,
+            details TEXT,
+            expected_terms TEXT,
+            status TEXT NOT NULL DEFAULT 'submitted'
+                CHECK(status IN ('submitted','in_progress','done','rejected')),
+            created_by INTEGER NOT NULL REFERENCES users(id),
+            handled_by INTEGER REFERENCES users(id),
+            handler_note TEXT,
+            handled_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
         -- ── v6: Multi-supplier sourcing ───────────────────────
         -- One product can be offered by many suppliers, each at their own cost.
         CREATE TABLE IF NOT EXISTS supplier_products (
@@ -390,7 +464,7 @@ def migrate_db():
 
     # 1. users.role CHECK must allow all v5 roles → rebuild table if old constraint
     ddl = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").fetchone()
-    if ddl and ("'cco'" not in ddl['sql'] or "'ops'" not in ddl['sql']):
+    if ddl and ("'cco'" not in ddl['sql'] or "'ops'" not in ddl['sql'] or "'bd'" not in ddl['sql']):
         conn.executescript("""
             PRAGMA foreign_keys=OFF;
             CREATE TABLE users_new (
@@ -398,7 +472,7 @@ def migrate_db():
                 email TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 name TEXT NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('admin','sales','reseller','cco','finance','ops')),
+                role TEXT NOT NULL CHECK(role IN ('admin','sales','reseller','cco','finance','ops','bd')),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             INSERT INTO users_new (id,email,password_hash,name,role,created_at)
@@ -458,6 +532,20 @@ def migrate_db():
             conn.execute("INSERT OR IGNORE INTO currency_rates (currency, rate_to_sar) VALUES (?,?)",
                          (cur, rate))
         conn.commit()
+
+    # 7a. v8: Issuing Hub flags on products
+    pcols2 = {r['name'] for r in conn.execute("PRAGMA table_info(products)")}
+    if 'is_issued' not in pcols2:
+        conn.execute("ALTER TABLE products ADD COLUMN is_issued INTEGER NOT NULL DEFAULT 0")
+    if 'issuing_partner_id' not in pcols2:
+        conn.execute("ALTER TABLE products ADD COLUMN issuing_partner_id INTEGER")
+    conn.commit()
+
+    # 7. v8: client types became multi-select — backfill from the legacy column
+    conn.execute("""INSERT OR IGNORE INTO reseller_client_types (reseller_id, client_type)
+                    SELECT id, client_type FROM reseller_profiles
+                    WHERE client_type IS NOT NULL AND client_type != ''""")
+    conn.commit()
 
     if needs_fx_backfill:
         # Backfill historical order lines + recompute order totals in SAR
@@ -589,16 +677,22 @@ def next_lower_tier(current_tier_id):
 # ── Reseller Profiles ─────────────────────────────────────────────
 
 def create_reseller(user_id, company_name, expected_sales, tier_id, registered_by,
-                    notes='', client_type='', countries=None):
+                    notes='', client_type='', countries=None, client_types=None):
+    """client_types: list (v8 multi-select). client_type stays as the primary/legacy value."""
+    types = [t for t in (client_types or ([client_type] if client_type else [])) if t]
+    primary = types[0] if types else (client_type or '')
     conn = get_db()
     conn.execute("""INSERT INTO reseller_profiles
                     (user_id, company_name, expected_monthly_sales, assigned_tier_id,
                      registered_by, notes, client_type)
                     VALUES (?,?,?,?,?,?,?)""",
-                 (user_id, company_name, expected_sales, tier_id, registered_by, notes, client_type))
+                 (user_id, company_name, expected_sales, tier_id, registered_by, notes, primary))
     reseller_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     for c in (countries or []):
         conn.execute("INSERT INTO reseller_countries (reseller_id, country) VALUES (?,?)", (reseller_id, c))
+    for t in types:
+        conn.execute("INSERT OR IGNORE INTO reseller_client_types (reseller_id, client_type) VALUES (?,?)",
+                     (reseller_id, t))
     conn.commit()
     conn.close()
     return reseller_id
@@ -613,6 +707,10 @@ def get_reseller_profile(user_id):
     p = dict(profile)
     p['countries'] = [r['country'] for r in conn.execute(
         "SELECT country FROM reseller_countries WHERE reseller_id=?", (p['id'],))]
+    p['client_types'] = [r['client_type'] for r in conn.execute(
+        "SELECT client_type FROM reseller_client_types WHERE reseller_id=?", (p['id'],))]
+    if not p['client_types'] and p.get('client_type'):
+        p['client_types'] = [p['client_type']]
     if profile['assigned_tier_id']:
         tier = conn.execute("SELECT * FROM tier_rules WHERE id=?", (profile['assigned_tier_id'],)).fetchone()
         p['tier'] = dict(tier) if tier else None
@@ -802,6 +900,36 @@ def get_all_countries():
     rows = conn.execute("SELECT DISTINCT country FROM products WHERE country NOT LIKE 'eSIM%' ORDER BY country").fetchall()
     conn.close()
     return [r['country'] for r in rows]
+
+
+# Full canonical category list — form dropdowns must cover everything,
+# not only the categories that happen to exist in the DB right now.
+CANONICAL_CATEGORIES = [
+    'Entertainment & Streaming', 'Entertainment & Leisure', 'Food & Delivery',
+    'Gaming', 'Gift Cards & Vouchers', 'Health & Fitness', 'Shopping & Retail',
+    'Software & Subscriptions', 'Telecom & Recharge', 'Transportation',
+    'eSIM & Connectivity', 'Other',
+]
+
+
+def get_form_categories():
+    """DB categories merged with the canonical list — a complete dropdown."""
+    return sorted(set(get_all_categories()) | set(CANONICAL_CATEGORIES))
+
+
+def get_all_countries_full():
+    """Every country in the catalogue INCLUDING eSIM markets (ops forms)."""
+    conn = get_db()
+    rows = conn.execute("SELECT DISTINCT country FROM products ORDER BY country").fetchall()
+    conn.close()
+    return [r['country'] for r in rows]
+
+
+def get_all_regions_full():
+    conn = get_db()
+    rows = conn.execute("SELECT DISTINCT region FROM products ORDER BY region").fetchall()
+    conn.close()
+    return [r['region'] for r in rows]
 
 
 def get_all_currencies():
@@ -1082,6 +1210,17 @@ def create_order(reseller_id, items):
     if not bal:
         conn.close()
         return None, "Reseller not found."
+    # v8 Issuing Hub: never sell codes we don't have — validate stock first
+    for it in items:
+        prow = it.get('product_rowid')
+        if prow:
+            p = conn.execute("SELECT is_issued, product_name FROM products WHERE id=?", (prow,)).fetchone()
+            if p and p['is_issued']:
+                left = voucher_stock(conn, prow)
+                if left < it['quantity']:
+                    conn.close()
+                    return None, (f"Only {left} gift-card codes left for '{p['product_name']}' "
+                                  f"(you requested {it['quantity']}). Ops were alerted to restock.")
     if bal['wallet_balance'] < total_cost:
         conn.close()
         return None, (f"Insufficient wallet balance. Order total is {total_cost:,.0f} SAR "
@@ -1106,8 +1245,11 @@ def create_order(reseller_id, items):
                  (reseller_id, 'order', -total_cost, 'approved', f'Order #{oid}'))
     # v6: tie every sold unit to the supplier batch it came from (FIFO)
     _allocate_order_fifo(conn, oid)
+    # v8: hand actual gift-card codes to the buyer for issued products
+    touched_issued = _assign_issued_codes(conn, oid)
     conn.commit()
     conn.close()
+    notify_low_issued_stock(touched_issued)
     return oid, None
 
 
@@ -1249,6 +1391,58 @@ def decide_discount_request(rid, approve, decided_by, decision_note=''):
                      (req['reseller_id'], req['merchant'], req['requested_share_pct'], rid))
     conn.commit()
     conn.close()
+    return dict(req)
+
+
+# ── BD Deal Pipeline (v8) ────────────────────────────────────────
+
+def create_bd_request(dtype, title, merchant, supplier_name, details, expected_terms, created_by):
+    conn = get_db()
+    conn.execute("""INSERT INTO bd_requests (type, title, merchant, supplier_name, details, expected_terms, created_by)
+                    VALUES (?,?,?,?,?,?,?)""",
+                 (dtype, title, merchant, supplier_name, details, expected_terms, created_by))
+    rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit()
+    conn.close()
+    notify(get_user_ids_by_role('ops'),
+           "New deal from Business Development 📨",
+           f"{BD_DEAL_TYPES.get(dtype, dtype)}: {title}. Please enter the data into the system.",
+           "/deals")
+    return rid
+
+
+def get_bd_requests(created_by=None, status=None):
+    conn = get_db()
+    q = """SELECT br.*, cu.name as created_by_name, hu.name as handled_by_name
+           FROM bd_requests br
+           JOIN users cu ON br.created_by=cu.id
+           LEFT JOIN users hu ON br.handled_by=hu.id WHERE 1=1"""
+    params = []
+    if created_by:
+        q += " AND br.created_by=?"
+        params.append(created_by)
+    if status:
+        q += " AND br.status=?"
+        params.append(status)
+    q += " ORDER BY CASE br.status WHEN 'submitted' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END, br.created_at DESC"
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_bd_request_status(rid, status, handled_by, note=''):
+    conn = get_db()
+    req = conn.execute("SELECT * FROM bd_requests WHERE id=?", (rid,)).fetchone()
+    if not req:
+        conn.close()
+        return None
+    conn.execute("""UPDATE bd_requests SET status=?, handled_by=?, handler_note=?,
+                    handled_at=CURRENT_TIMESTAMP WHERE id=?""", (status, handled_by, note, rid))
+    conn.commit()
+    conn.close()
+    labels = {'in_progress': 'is being worked on 🔧', 'done': 'is DONE ✅', 'rejected': 'was rejected ❌'}
+    notify(req['created_by'], f"Your deal '{req['title']}' {labels.get(status, status)}",
+           note or '', "/deals")
     return dict(req)
 
 
@@ -1905,6 +2099,18 @@ def get_margin_improvements(limit=25):
     return out[:limit]
 
 
+def get_units_sold_30d():
+    """product_rowid -> units sold in the last 30 days (drives 'estimated monthly saving')."""
+    conn = get_db()
+    rows = conn.execute("""SELECT oi.product_rowid, SUM(oi.quantity) as units
+                           FROM order_items oi JOIN orders o ON oi.order_id=o.id
+                           WHERE o.created_at >= datetime('now','-30 days')
+                             AND oi.product_rowid IS NOT NULL
+                           GROUP BY oi.product_rowid""").fetchall()
+    conn.close()
+    return {r['product_rowid']: r['units'] for r in rows}
+
+
 def get_sourcing_kpis():
     conn = get_db()
     k = {}
@@ -2098,6 +2304,229 @@ def expire_new_flags():
     conn.close()
 
 
+# ── Issuing Hub (v8): we issue partner gift cards & sell them ────
+
+ISSUED_LOW_STOCK_THRESHOLD = 20
+
+REGION_MAP_SIMPLE = {
+    'Saudi Arabia': 'GCC', 'UAE': 'GCC', 'Kuwait': 'GCC', 'Qatar': 'GCC',
+    'Bahrain': 'GCC', 'Oman': 'GCC', 'Egypt': 'North Africa', 'Jordan': 'Levant',
+    'Global': 'Global',
+}
+
+
+def upsert_issuing_partner(pid, name, contact_person, email, phone, share_pct, status, notes, created_by):
+    conn = get_db()
+    if pid:
+        conn.execute("""UPDATE issuing_partners SET name=?, contact_person=?, email=?, phone=?,
+                        partner_share_pct=?, status=?, notes=? WHERE id=?""",
+                     (name, contact_person, email, phone, share_pct, status, notes, pid))
+    else:
+        conn.execute("""INSERT INTO issuing_partners
+                        (name, contact_person, email, phone, partner_share_pct, status, notes, created_by)
+                        VALUES (?,?,?,?,?,?,?,?)""",
+                     (name, contact_person, email, phone, share_pct, status, notes, created_by))
+        pid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit()
+    conn.close()
+    return pid
+
+
+def get_issuing_partners():
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT ip.*,
+               (SELECT COUNT(*) FROM products p WHERE p.issuing_partner_id=ip.id) as product_count,
+               (SELECT COUNT(*) FROM issued_vouchers v JOIN products p ON v.product_rowid=p.id
+                WHERE p.issuing_partner_id=ip.id AND v.status='available') as stock_available,
+               (SELECT COUNT(*) FROM issued_vouchers v JOIN products p ON v.product_rowid=p.id
+                WHERE p.issuing_partner_id=ip.id AND v.status IN ('sold','redeemed')) as sold_total
+        FROM issuing_partners ip ORDER BY ip.name""").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def create_issued_product(partner_id, name, sku, face_value, selling_price, currency,
+                          category, country, created_by):
+    """An issued product IS a catalogue product (merchant = partner name) so tiers,
+    orders, wallets and analytics all work unchanged.
+    cost = partner payout per unit = selling_price x partner share %."""
+    conn = get_db()
+    partner = conn.execute("SELECT * FROM issuing_partners WHERE id=?", (partner_id,)).fetchone()
+    if not partner:
+        conn.close()
+        return None, "Partner not found."
+    payout = round(selling_price * partner['partner_share_pct'] / 100.0, 4)
+    margin, pct = _margin_fields(payout, selling_price)
+    conn.execute("""INSERT INTO products
+                    (product_id, product_name, merchant, merchant_id, category, country, region,
+                     currency, cost, default_price, face_value, oc_margin, oc_margin_pct,
+                     popularity, is_new, is_active, added_at, is_issued, issuing_partner_id)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,55,1,1,CURRENT_TIMESTAMP,1,?)""",
+                 (sku, name, partner['name'], f'ISSUED-{partner_id}', category, country,
+                  REGION_MAP_SIMPLE.get(country, 'GCC'), currency, payout, selling_price,
+                  face_value, margin, pct, partner_id))
+    prow = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    _log_price_change(conn, prow, name, partner['name'], 'created', field='default_price',
+                      new=selling_price, source='issuing', user_id=created_by)
+    conn.commit()
+    conn.close()
+    return prow, None
+
+
+def generate_voucher_batch(product_rowid, quantity, generated_by, note=''):
+    """Generate unique voucher codes + PINs for an issued product."""
+    import secrets as _sec
+    conn = get_db()
+    p = conn.execute("SELECT product_name, is_issued FROM products WHERE id=?", (product_rowid,)).fetchone()
+    if not p or not p['is_issued']:
+        conn.close()
+        return None, "Not an issued product."
+    ref = f"GC-{datetime.now(timezone.utc).strftime('%y%m%d')}-{_sec.token_hex(2).upper()}"
+    conn.execute("""INSERT INTO issued_batches (product_rowid, batch_ref, quantity, generated_by, note)
+                    VALUES (?,?,?,?,?)""", (product_rowid, ref, quantity, generated_by, note))
+    bid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    for _ in range(quantity):
+        code = '-'.join(_sec.token_hex(2).upper() for _ in range(4))
+        pin = str(_sec.randbelow(900000) + 100000)
+        conn.execute("""INSERT INTO issued_vouchers (batch_id, product_rowid, code, pin)
+                        VALUES (?,?,?,?)""", (bid, product_rowid, code, pin))
+    conn.commit()
+    conn.close()
+    return {'batch_id': bid, 'batch_ref': ref}, None
+
+
+def get_issued_products(partner_id=None):
+    conn = get_db()
+    q = """SELECT p.id, p.product_name, p.product_id as sku, p.face_value, p.default_price,
+                  p.cost as partner_payout, p.currency, p.category, p.country, p.is_active,
+                  ip.name as partner_name, ip.partner_share_pct,
+                  (SELECT COUNT(*) FROM issued_vouchers v WHERE v.product_rowid=p.id AND v.status='available') as available,
+                  (SELECT COUNT(*) FROM issued_vouchers v WHERE v.product_rowid=p.id AND v.status='sold') as sold,
+                  (SELECT COUNT(*) FROM issued_vouchers v WHERE v.product_rowid=p.id AND v.status='redeemed') as redeemed
+           FROM products p JOIN issuing_partners ip ON p.issuing_partner_id=ip.id
+           WHERE p.is_issued=1"""
+    params = []
+    if partner_id:
+        q += " AND p.issuing_partner_id=?"
+        params.append(partner_id)
+    q += " ORDER BY ip.name, p.product_name"
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def voucher_stock(conn, product_rowid):
+    return conn.execute("""SELECT COUNT(*) FROM issued_vouchers
+                           WHERE product_rowid=? AND status='available'""", (product_rowid,)).fetchone()[0]
+
+
+def _assign_issued_codes(conn, order_id):
+    """Attach actual voucher codes to every issued-product line of an order.
+    Stock is validated before the order is accepted."""
+    items = conn.execute("""SELECT oi.id, oi.product_rowid, oi.quantity FROM order_items oi
+                            JOIN products p ON oi.product_rowid=p.id
+                            WHERE oi.order_id=? AND p.is_issued=1""", (order_id,)).fetchall()
+    touched = []
+    for it in items:
+        vids = [r['id'] for r in conn.execute(
+            """SELECT id FROM issued_vouchers WHERE product_rowid=? AND status='available'
+               ORDER BY id LIMIT ?""", (it['product_rowid'], it['quantity']))]
+        for vid in vids:
+            conn.execute("""UPDATE issued_vouchers SET status='sold', order_item_id=?,
+                            sold_at=CURRENT_TIMESTAMP WHERE id=?""", (it['id'], vid))
+        touched.append(it['product_rowid'])
+    return touched
+
+
+def notify_low_issued_stock(product_rowids):
+    """After a sale, warn Ops once per day per product when stock runs low."""
+    if not product_rowids:
+        return
+    conn = get_db()
+    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    for pid in set(product_rowids):
+        left = voucher_stock(conn, pid)
+        if left <= ISSUED_LOW_STOCK_THRESHOLD:
+            p = conn.execute("SELECT product_name FROM products WHERE id=?", (pid,)).fetchone()
+            _nudge_once(f"lowstock:{pid}:{today}", get_user_ids_by_role('ops'),
+                        "⚠️ Gift card stock running low",
+                        f"Only {left} codes left for '{p['product_name']}'. Generate a new batch.",
+                        "/ops/issuing/products")
+    conn.close()
+
+
+def get_order_codes(order_id):
+    """order_item_id -> list of {code, pin, status} for issued products in an order."""
+    conn = get_db()
+    rows = conn.execute("""SELECT v.order_item_id, v.code, v.pin, v.status
+                           FROM issued_vouchers v
+                           JOIN order_items oi ON v.order_item_id=oi.id
+                           WHERE oi.order_id=? ORDER BY v.id""", (order_id,)).fetchall()
+    conn.close()
+    out = {}
+    for r in rows:
+        out.setdefault(r['order_item_id'], []).append(dict(r))
+    return out
+
+
+def check_voucher(code):
+    conn = get_db()
+    row = conn.execute("""SELECT v.*, p.product_name, p.face_value, p.currency,
+                                 ip.name as partner_name, b.batch_ref
+                          FROM issued_vouchers v
+                          JOIN products p ON v.product_rowid=p.id
+                          LEFT JOIN issuing_partners ip ON p.issuing_partner_id=ip.id
+                          JOIN issued_batches b ON v.batch_id=b.id
+                          WHERE v.code=?""", (code.strip(),)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def redeem_voucher(code):
+    conn = get_db()
+    v = conn.execute("SELECT id, status FROM issued_vouchers WHERE code=?", (code.strip(),)).fetchone()
+    if not v or v['status'] != 'sold':
+        conn.close()
+        return False, ("Code not found." if not v else f"Cannot redeem - status is '{v['status']}'.")
+    conn.execute("UPDATE issued_vouchers SET status='redeemed', redeemed_at=CURRENT_TIMESTAMP WHERE id=?",
+                 (v['id'],))
+    conn.commit()
+    conn.close()
+    return True, "Redeemed successfully."
+
+
+def get_partner_report():
+    """Per partner economics: sold units, gross revenue (SAR), partner payout, OneCard profit."""
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT ip.id, ip.name, ip.partner_share_pct,
+               COUNT(DISTINCT p.id) as products,
+               COALESCE(SUM(CASE WHEN v.status IN ('sold','redeemed') THEN 1 ELSE 0 END),0) as units_sold,
+               COALESCE(SUM(CASE WHEN v.status='redeemed' THEN 1 ELSE 0 END),0) as units_redeemed,
+               COALESCE(SUM(CASE WHEN v.status='available' THEN 1 ELSE 0 END),0) as stock_left
+        FROM issuing_partners ip
+        LEFT JOIN products p ON p.issuing_partner_id=ip.id
+        LEFT JOIN issued_vouchers v ON v.product_rowid=p.id
+        GROUP BY ip.id ORDER BY units_sold DESC""").fetchall()
+    report = [dict(r) for r in rows]
+    for r in report:
+        money = conn.execute("""
+            SELECT COALESCE(SUM(v.cnt * oi.unit_price * oi.fx_rate),0) as revenue,
+                   COALESCE(SUM(v.cnt * p.cost * oi.fx_rate),0) as payout
+            FROM (SELECT order_item_id, COUNT(*) as cnt FROM issued_vouchers
+                  WHERE status IN ('sold','redeemed') AND order_item_id IS NOT NULL
+                  GROUP BY order_item_id) v
+            JOIN order_items oi ON oi.id=v.order_item_id
+            JOIN products p ON oi.product_rowid=p.id
+            WHERE p.issuing_partner_id=?""", (r['id'],)).fetchone()
+        r['revenue_sar'] = round(money['revenue'], 2)
+        r['payout_sar'] = round(money['payout'], 2)
+        r['profit_sar'] = round(money['revenue'] - money['payout'], 2)
+    conn.close()
+    return report
+
+
 # ── Tier Compliance Automation ───────────────────────────────────
 
 def _month_bounds(d=None):
@@ -2212,6 +2641,7 @@ def seed_default_data():
         ('cco@onecard.com',     'Cco2025!',     'Chief Commercial Officer', 'cco'),
         ('finance@onecard.com', 'Finance2025!', 'Finance Team',   'finance'),
         ('ops@onecard.com',     'Ops2025!',     'Operations Team', 'ops'),
+        ('bd@onecard.com',      'Bd2025!',      'Business Development', 'bd'),
     ]
     for email, pw, name, role in defaults_users:
         if not get_user_by_email(email):

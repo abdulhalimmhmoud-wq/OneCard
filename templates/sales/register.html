@@ -35,12 +35,15 @@
 
         <div class="card-header mt-16"><div class="card-title">🎯 Business Profile <span class="text-muted" style="font-size:11px;font-weight:400">(drives the Recommended page)</span></div></div>
         <div class="form-group">
-            <label class="form-label">Client Type *</label>
-            <select name="client_type" required>
-                <option value="">-- Select client type --</option>
-                {% for t in client_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
-            </select>
-            <div class="form-hint">What kind of business is this reseller? Used to recommend the right products.</div>
+            <label class="form-label">Client Type(s) * <span class="text-muted" style="font-weight:400;font-size:11px">— select every type that applies</span></label>
+            <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px;background:var(--bg-2);display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:4px">
+                {% for t in client_types %}
+                <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding:3px 6px;border-radius:6px">
+                    <input type="checkbox" name="client_types" value="{{ t }}" style="width:auto"> {{ t }}
+                </label>
+                {% endfor %}
+            </div>
+            <div class="form-hint">A client can be a Bank AND a Fintech at once — recommendations combine all selected types.</div>
         </div>
         <div class="form-group">
             <label class="form-label">Operating Countries / Markets</label>

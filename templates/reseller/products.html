@@ -9,33 +9,18 @@
     </div>
 </div>
 
-<!-- Filters -->
+<!-- Filters (multi-select: pick as many as you like in each) -->
 <div class="card mb-24">
     <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
         <div class="search-box">
             <span class="search-icon">🔍</span>
             <input type="search" id="searchInput" placeholder="Search products or merchants..." oninput="filterTable()">
         </div>
-        <select id="merchantFilter" style="width:180px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterTable()">
-            <option value="">All Merchants</option>
-            {% for m in merchants %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
-        </select>
-        <select id="catFilter" style="width:180px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterTable()">
-            <option value="">All Categories</option>
-            {% for c in categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
-        </select>
-        <select id="countryFilter" style="width:160px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterTable()">
-            <option value="">All Countries</option>
-            {% for c in countries %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
-        </select>
-        <select id="regionFilter" style="width:150px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterTable()">
-            <option value="">All Regions</option>
-            {% for r in regions %}<option value="{{ r }}">{{ r }}</option>{% endfor %}
-        </select>
-        <select id="currencyFilter" style="width:130px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterTable()">
-            <option value="">All Currencies</option>
-            {% for c in currencies %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
-        </select>
+        <div id="merchantFilter"></div>
+        <div id="catFilter"></div>
+        <div id="countryFilter"></div>
+        <div id="regionFilter"></div>
+        <div id="currencyFilter"></div>
         <span id="resultCount" class="text-muted" style="font-size:13px"></span>
     </div>
 </div>
@@ -76,21 +61,24 @@ let currentPage = 1;
 const pageSize = 50;
 let sortCol = -1, sortAsc = true;
 
+// Multi-select filters (options derived from the live catalogue)
+const uniq = k => [...new Set(allProducts.map(p => p[k]).filter(Boolean))].sort();
+const fMerch = msCreate('merchantFilter', uniq('merchant'), 'All Merchants', filterTable);
+const fCat = msCreate('catFilter', uniq('category'), 'All Categories', filterTable);
+const fCountry = msCreate('countryFilter', uniq('country'), 'All Countries', filterTable);
+const fRegion = msCreate('regionFilter', uniq('region'), 'All Regions', filterTable);
+const fCurr = msCreate('currencyFilter', uniq('currency'), 'All Currencies', filterTable);
+
 function filterTable() {
     const search = document.getElementById('searchInput').value.toLowerCase();
-    const cat = document.getElementById('catFilter').value;
-    const merch = document.getElementById('merchantFilter').value;
-    const country = document.getElementById('countryFilter').value;
-    const reg = document.getElementById('regionFilter').value;
-    const curr = document.getElementById('currencyFilter').value;
+    const mSel = fMerch.getSelected(), cSel = fCat.getSelected(),
+          coSel = fCountry.getSelected(), rSel = fRegion.getSelected(),
+          cuSel = fCurr.getSelected();
     filtered = allProducts.filter(p => {
         if (search && !p.product_name.toLowerCase().includes(search) && !p.merchant.toLowerCase().includes(search)) return false;
-        if (cat && p.category !== cat) return false;
-        if (merch && p.merchant !== merch) return false;
-        if (country && p.country !== country) return false;
-        if (reg && p.region !== reg) return false;
-        if (curr && p.currency !== curr) return false;
-        return true;
+        return msMatch(mSel, p.merchant) && msMatch(cSel, p.category) &&
+               msMatch(coSel, p.country) && msMatch(rSel, p.region) &&
+               msMatch(cuSel, p.currency);
     });
     currentPage = 1;
     renderTable();

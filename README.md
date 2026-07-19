@@ -1,4 +1,4 @@
-# OneCard — Reseller Operations Platform (v7)
+# OneCard — Reseller Operations Platform (v8)
 
 A **6-role web platform** that digitizes OneCard's full reseller lifecycle — from first contact
 to contract, wallet funding, ordering, monthly commitment tracking, catalogue operations and
@@ -16,6 +16,32 @@ in `models.py`.
 | **Finance** | Verifies bank-transfer receipts and credits reseller wallets. |
 | **Operations** | Owns the catalogue: adds products, updates supplier prices (manual or bulk file), activates/deactivates products, manages the supplier directory. Every change is audited in the Price Change Log with automatic low-margin alerts to BD/CCO. |
 | **Reseller** | Browses the catalogue with tier pricing, submits purchase plans (forecasts), tops up a wallet, places orders, and tracks their own purchase analysis. |
+
+## v8 — Role Restructure, Issuing Hub & UX
+
+**Role model (v8):**
+- **CCO is the platform owner** — full admin powers everywhere (dashboard, users, tiers, every
+  approval queue). The `admin` account remains as the technical owner.
+- **BD (Business Development)** is a dedicated role: negotiates merchant deals, better rates,
+  new suppliers and gift-card issuing leads — but never enters data. They submit deals through
+  the **Deal Pipeline** (`/deals`); Operations execute and mark them done; both sides get notified.
+  BD also has read access to Sourcing Intelligence.
+
+**Issuing Hub** (Ops → `/ops/issuing`): OneCard issues and manages digital gift cards for partner
+merchants that have none, and sells them through all our channels:
+- Issuing partners with a revenue-share % (partner share vs OneCard share)
+- Card programs are real catalogue products (merchant = partner name) — tiers, wallets, orders
+  and analytics work unchanged
+- Voucher code batches (unique code + PIN) with available/sold/redeemed tracking
+- Orders can never exceed code stock; buyers receive their actual codes inside Order History
+- Code Checker for support (check status / mark redeemed) and low-stock alerts to Ops
+- Partner economics report: units sold, revenue (SAR), partner payout, OneCard profit
+
+**UX upgrades:** multi-select filters (merchant/category/country/region/currency) across all
+catalogue views; multi-select client types at registration (a client can be Bank + Fintech —
+recommendations combine all affinities); ops product form fixed (full merchant/category/country
+lists incl. eSIM markets); **Sourcing Intelligence rebuilt in plain language** — a "Do This Now"
+action list with estimated SAR/month savings, renamed jargon, tooltips and a glossary.
 
 ## Production Hardening (v7)
 
@@ -75,11 +101,12 @@ in `models.py`.
 
 | Role | Email | Password |
 |------|-------|----------|
-| Admin | `admin@onecard.com` | `OneCard2025!` |
+| CCO (full control) | `cco@onecard.com` | `Cco2025!` |
+| Admin (technical) | `admin@onecard.com` | `OneCard2025!` |
 | Sales | `sales@onecard.com` | `Sales2025!` |
-| CCO | `cco@onecard.com` | `Cco2025!` |
-| Finance | `finance@onecard.com` | `Finance2025!` |
+| Business Development | `bd@onecard.com` | `Bd2025!` |
 | Operations | `ops@onecard.com` | `Ops2025!` |
+| Finance | `finance@onecard.com` | `Finance2025!` |
 
 > Change these before any non-local deployment.
 

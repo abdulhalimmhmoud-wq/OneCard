@@ -53,7 +53,7 @@ email = f"e2e_{uuid.uuid4().hex[:8]}@test.com"
 s, b = post(sales, '/sales/register', {
     'company_name': 'E2E Trading Co', 'contact_name': 'E2E Tester',
     'contact_email': email, 'password': 'Test123!',
-    'expected_sales': '250000', 'notes': 'e2e', 'client_type': 'Bank',
+    'expected_sales': '250000', 'notes': 'e2e', 'client_types': 'Bank',
     'countries': 'Saudi Arabia'})
 check('register reseller (Gold expected)', 'Gold' in b or 'registered successfully' in b)
 

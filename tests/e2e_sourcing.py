@@ -51,16 +51,20 @@ check('batches page + variance badges', s == 200 and 'Record New Batch' in b and
 s, b = get(fin, '/finance/batches')
 check('finance reconciliation queue', s == 200 and 'Awaiting Reconciliation' in b)
 s, b = get(cco, '/sourcing-intel')
-check('sourcing intelligence (cco)', s == 200 and 'Who Are We Selling From' in b and 'Supplier Scorecards' in b)
-check('margin improvements visible', 'Margin Improvements' in b and 'Batch #' in b)
-check('variance governance visible', 'bought above best' in b)
+check('sourcing intelligence (cco)', s == 200 and 'Who Are We Selling From' in b and 'Supplier Report Card' in b)
+check('margin improvements visible', 'Where Our Profit Improved' in b)
+check('variance governance visible', 'Bought Above Best Price' in b)
 s, b = get(admin, '/sourcing-intel')
 check('sourcing intelligence (admin)', s == 200)
 s, b = get(fin, '/finance')
 check('finance dashboard batch card', 'Batches to Reconcile' in b)
 
 # ── 2. Ops adds/edits a supplier offer ──
-prod = q("SELECT id, product_id FROM products WHERE is_active=1 AND cost > 5 ORDER BY id DESC LIMIT 1")[0]
+# pick a normal (non-issued) product with no existing stock so FIFO must hit our new batch
+prod = q("""SELECT p.id, p.product_id FROM products p
+            WHERE p.is_active=1 AND p.cost > 5 AND COALESCE(p.is_issued,0)=0
+              AND NOT EXISTS (SELECT 1 FROM purchase_batches b WHERE b.product_rowid=p.id)
+            ORDER BY p.id DESC LIMIT 1""")[0]
 sup = q("SELECT id, name FROM suppliers ORDER BY id LIMIT 1")[0]
 s, b = post(ops, '/ops/sourcing/price', {'supplier_id': sup['id'], 'product_rowid': prod['id'], 'cost': '11.5'})
 check('add offer', 'Offer saved' in b)

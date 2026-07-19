@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}Card Programs — Issuing Hub{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">🗂️ Card Programs & Code Batches</h1>
+        <p class="page-subtitle">Every program is a live catalogue product — resellers buy it like anything else, and the buyer receives real codes</p>
+    </div>
+    <div class="page-actions">
+        <a href="/ops/issuing" class="btn btn-ghost">← Partners</a>
+    </div>
+</div>
+
+<div class="grid-2" style="align-items:start">
+    <!-- Create program -->
+    <div class="card">
+        <div class="card-header"><div class="card-title">➕ New Card Program</div></div>
+        <form method="POST" action="/ops/issuing/products">
+            <div class="form-group">
+                <label class="form-label">Issuing Partner *</label>
+                <select name="partner_id" required>
+                    <option value="">-- Choose partner --</option>
+                    {% for p in partners %}<option value="{{ p.id }}">{{ p.name }} ({{ p.partner_share_pct }}% share)</option>{% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Card Name *</label>
+                <input type="text" name="product_name" required placeholder="e.g. Chef Burger Gift Card SAR 100">
+            </div>
+            <div class="form-row">
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">SKU</label>
+                    <input type="text" name="sku" placeholder="e.g. CB-100">
+                </div>
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Currency</label>
+                    <input type="text" name="currency" value="SAR">
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Face Value *</label>
+                    <input type="number" name="face_value" required min="1" step="1" placeholder="100">
+                    <div class="form-hint">What the end customer redeems</div>
+                </div>
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Selling Price *</label>
+                    <input type="number" name="selling_price" required min="1" step="0.01" placeholder="97">
+                    <div class="form-hint">Base price to resellers (tiers apply on top)</div>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Category</label>
+                    <input type="text" name="category" value="Gift Cards & Vouchers">
+                </div>
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Country</label>
+                    <input type="text" name="country" value="Saudi Arabia">
+                </div>
+            </div>
+            <button type="submit" class="btn btn-primary btn-lg" style="width:100%;justify-content:center">
+                ✅ Create Program (goes live in catalogues)
+            </button>
+        </form>
+    </div>
+
+    <!-- Programs + stock -->
+    <div>
+        {% for p in products %}
+        <div class="card mb-24" style="{{ 'border-left:3px solid var(--danger)' if p.available <= low_threshold else '' }}">
+            <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
+                <div style="flex:1;min-width:230px">
+                    <div class="fw6" style="font-size:15px">{{ p.product_name }}</div>
+                    <div class="text-muted" style="font-size:11.5px;margin-top:2px">
+                        {{ p.partner_name }} · SKU {{ p.sku or '—' }} · face {{ p.face_value|money }} {{ p.currency }}
+                        · sells at {{ p.default_price }} · partner gets {{ p.partner_payout }} ({{ p.partner_share_pct }}%)
+                    </div>
+                    <div style="display:flex;gap:12px;margin-top:10px;font-size:12.5px;flex-wrap:wrap">
+                        <span>📦 In stock: <b class="{{ 'text-d' if p.available <= low_threshold else 'text-s' }}">{{ p.available|money }}</b>
+                            {% if p.available <= low_threshold %}<span class="badge badge-danger" style="font-size:9px">LOW</span>{% endif %}
+                        </span>
+                        <span>🛒 Sold: <b>{{ p.sold|money }}</b></span>
+                        <span>✔️ Redeemed: <b>{{ p.redeemed|money }}</b></span>
+                    </div>
+                </div>
+                <form method="POST" action="/ops/issuing/batch" style="display:flex;flex-direction:column;gap:6px;min-width:170px">
+                    <input type="hidden" name="product_rowid" value="{{ p.id }}">
+                    <input type="number" name="quantity" min="1" max="100000" placeholder="e.g. 500" required style="font-size:12px;padding:7px 10px">
+                    <button type="submit" class="btn btn-sm btn-primary"
+                            onclick="return confirm('Generate this batch of unique codes?')">⚡ Generate Codes</button>
+                </form>
+            </div>
+        </div>
+        {% else %}
+        <div class="card" style="text-align:center;padding:50px">
+            <div style="font-size:40px;margin-bottom:12px">🗂️</div>
+            <div class="fw6">No card programs yet</div>
+            <div class="text-muted" style="font-size:13px;margin-top:4px">Create the first program — it appears instantly in reseller catalogues</div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}
