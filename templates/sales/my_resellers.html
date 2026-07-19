@@ -53,6 +53,24 @@
                 <td>
                     <div style="display:flex;gap:6px;flex-wrap:wrap">
                         <a href="/sales/preview/{{ r.user_id }}" class="btn btn-sm btn-ghost">👁️ Preview</a>
+                        <details style="position:relative">
+                            <summary class="btn btn-sm btn-ghost" style="list-style:none;cursor:pointer">🔌 API {{ '🟢' if r.api_key else '' }}</summary>
+                            <div style="position:absolute;right:0;top:110%;z-index:200;background:var(--bg-1);border:1px solid var(--border);border-radius:10px;padding:12px;width:280px;box-shadow:0 12px 32px rgba(0,0,0,.5)">
+                                <form method="POST" action="/sales/resellers/{{ r.id }}/api" style="margin-bottom:8px">
+                                    <input type="hidden" name="action" value="rotate">
+                                    <button class="btn btn-sm btn-primary" style="width:100%"
+                                            onclick="return confirm('{{ 'Rotate' if r.api_key else 'Generate' }} the API key? Any old key stops working.')">
+                                        🔑 {{ 'Rotate API Key' if r.api_key else 'Generate API Key' }}
+                                    </button>
+                                </form>
+                                <form method="POST" action="/sales/resellers/{{ r.id }}/api" style="display:flex;gap:6px">
+                                    <input type="hidden" name="action" value="webhook">
+                                    <input type="url" name="webhook_url" value="{{ r.webhook_url or '' }}" placeholder="https://their-system/webhook" style="font-size:11px;padding:6px 8px;flex:1">
+                                    <button class="btn btn-sm btn-ghost" type="submit">💾</button>
+                                </form>
+                                <div class="text-muted" style="font-size:10px;margin-top:6px">Contract in API_GUIDE.md — X-API-Key header.</div>
+                            </div>
+                        </details>
                         {% if r.contract_status != 'contracted' %}
                         <form method="POST" action="/resellers/{{ r.id }}/contract" onsubmit="return confirm('Mark contract as SIGNED for {{ r.company_name }}? This enables ordering.')">
                             <input type="hidden" name="status" value="contracted">

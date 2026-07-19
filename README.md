@@ -1,4 +1,20 @@
-# OneCard — Reseller Operations Platform (v8)
+# OneCard — Reseller Operations Platform (v9)
+
+## Integration API v1 (v9) — see `API_GUIDE.md`
+
+The machine-to-machine layer the technical team connects everything through:
+
+- **Reseller API** (`/api/v1/*`, `X-API-Key` per reseller, generated from My Resellers → 🔌 API):
+  ping, paginated/filterable priced catalogue, wallet, **order creation with idempotency keys**
+  (safe retries, no double billing), order list/detail, and unified code retrieval.
+- **Fulfillment Adapter pattern**: `register_fulfillment_adapter(merchant, fn)` — at checkout
+  the adapter fetches real codes from the provider; lines are `delivered` or stay `external`
+  for the async worker (`deliver_external_codes()`). A reference adapter ships for the demo
+  merchant "Nexon EU Store"; Issuing-Hub products always deliver from our own voucher stock.
+- **Outbound webhooks** per reseller (`order.placed`, logged in `webhook_deliveries`).
+- **Supplier price feed** (`POST /api/supplier-prices`, per-supplier key) — unchanged.
+- Structured error model: `{"error": {"code", "message"}}` with proper HTTP statuses.
+- Coverage: `tests/e2e_api.py` (26 checks incl. a live local webhook receiver).
 
 A **6-role web platform** that digitizes OneCard's full reseller lifecycle — from first contact
 to contract, wallet funding, ordering, monthly commitment tracking, catalogue operations and

@@ -447,6 +447,25 @@ def sales_update_reseller(rid):
     return redirect(url_for('sales_resellers'))
 
 
+@app.route('/sales/resellers/<int:rid>/api', methods=['POST'])
+@auth.sales_required
+def sales_reseller_api(rid):
+    """Generate/rotate the reseller's API key and set their webhook URL."""
+    curr = auth.get_current_user()
+    profile = models.get_reseller_profile_by_id(rid)
+    if not profile or (curr['role'] not in ('admin', 'cco') and profile['registered_by'] != curr['id']):
+        flash("Access denied.", "error")
+        return redirect(url_for('sales_resellers'))
+    action = request.form.get('action')
+    if action == 'rotate':
+        key = models.set_reseller_api(rid, rotate_key=True)
+        flash(f"API key for {profile['company_name']} (copy it now, it is shown once): {key}", "success")
+    elif action == 'webhook':
+        models.set_reseller_api(rid, webhook_url=request.form.get('webhook_url', ''))
+        flash(f"Webhook URL saved for {profile['company_name']}.", "success")
+    return redirect(url_for('sales_resellers'))
+
+
 @app.route('/sales/catalogue')
 @auth.sales_required
 def sales_catalogue():
@@ -882,6 +901,195 @@ def ops_supplier_apikey(sid):
     models.set_supplier_api_key(sid, key)
     flash(f"API key generated for automated price sync: {key}", "success")
     return redirect(url_for('ops_suppliers'))
+
+
+# ═════════════════ Integration API v1 (v9) ══════════════════════
+# Machine-to-machine endpoints. Auth: X-API-Key header (or Bearer token)
+# holding the reseller's key. CSRF-exempt by /api/ prefix. Full contract
+# in API_GUIDE.md.
+
+def api_error(code, message, http=400):
+    return {'error': {'code': code, 'message': message}}, http
+
+
+def require_api_reseller():
+    key = (request.headers.get('X-API-Key')
+           or (request.headers.get('Authorization') or '').replace('Bearer ', '').strip())
+    return models.get_reseller_by_api_key(key)
+
+
+@app.route('/api/v1/ping')
+def api_ping():
+    profile = require_api_reseller()
+    if not profile:
+        return api_error('unauthorized', 'Missing or invalid API key.', 401)
+    return {'ok': True, 'company': profile['company_name'],
+            'contract_status': profile['contract_status']}
+
+
+@app.route('/api/v1/catalogue')
+def api_catalogue():
+    profile = require_api_reseller()
+    if not profile:
+        return api_error('unauthorized', 'Missing or invalid API key.', 401)
+    enriched = models.enrich_products_for_reseller(profile)
+
+    def fparam(name):
+        v = request.args.get(name, '').strip()
+        return v or None
+    merchant, category = fparam('merchant'), fparam('category')
+    country, region, currency = fparam('country'), fparam('region'), fparam('currency')
+    search = (fparam('search') or '').lower()
+
+    rows = [p for p in enriched if
+            (not merchant or p['merchant'] == merchant) and
+            (not category or p['category'] == category) and
+            (not country or p['country'] == country) and
+            (not region or p['region'] == region) and
+            (not currency or p['currency'] == currency) and
+            (not search or search in p['product_name'].lower()
+             or search in p['merchant'].lower())]
+
+    try:
+        page = max(1, int(request.args.get('page', 1)))
+        page_size = min(500, max(1, int(request.args.get('page_size', 100))))
+    except ValueError:
+        return api_error('bad_request', 'page and page_size must be integers.')
+    total = len(rows)
+    chunk = rows[(page - 1) * page_size: page * page_size]
+
+    items = [{'id': p['id'], 'sku': p['product_id'], 'name': p['product_name'],
+              'merchant': p['merchant'], 'category': p['category'],
+              'country': p['country'], 'region': p['region'],
+              'currency': p['currency'], 'face_value': p['face_value'],
+              'your_price': p['client_price'], 'your_discount': p['discount'],
+              'margin_pct': p['margin_pct'], 'is_new': bool(p.get('is_new')),
+              'special_rate': bool(p.get('has_override'))} for p in chunk]
+    return {'ok': True, 'page': page, 'page_size': page_size, 'total': total,
+            'items': items}
+
+
+@app.route('/api/v1/wallet')
+def api_wallet():
+    profile = require_api_reseller()
+    if not profile:
+        return api_error('unauthorized', 'Missing or invalid API key.', 401)
+    txns = models.get_wallet_transactions(profile['id'], limit=20)
+    return {'ok': True, 'currency': 'SAR',
+            'balance': round(profile['wallet_balance'], 2),
+            'recent_transactions': [{'type': t['type'], 'amount': t['amount'],
+                                     'status': t['status'], 'at': t['created_at']}
+                                    for t in txns]}
+
+
+def _api_order_payload(order):
+    items = models.get_order_items(order['id'])
+    codes = models.get_all_codes_for_order(order['id'])
+    return {'order_id': order['id'], 'status': order['status'],
+            'created_at': order['created_at'],
+            'total_sar': order['total_cost'],
+            'items': [{'line_id': it['id'], 'product_id': it['product_rowid'],
+                       'name': it['product_name'], 'merchant': it['merchant'],
+                       'quantity': it['quantity'],
+                       'unit_price': it['unit_price'], 'currency': it['currency'],
+                       'line_total_sar': it.get('line_total_sar'),
+                       'fulfillment_status': it.get('fulfillment_status', 'external'),
+                       'codes': [{'code': cd['code'], 'pin': cd.get('pin')}
+                                 for cd in codes.get(it['id'], [])]}
+                      for it in items]}
+
+
+@app.route('/api/v1/orders', methods=['GET', 'POST'])
+def api_orders():
+    profile = require_api_reseller()
+    if not profile:
+        return api_error('unauthorized', 'Missing or invalid API key.', 401)
+
+    if request.method == 'GET':
+        orders = models.get_orders(profile['id'])[:50]
+        return {'ok': True,
+                'orders': [{'order_id': o['id'], 'status': o['status'],
+                            'created_at': o['created_at'], 'total_sar': o['total_cost'],
+                            'item_count': o['item_count']} for o in orders]}
+
+    # ── POST: create order ──
+    if profile['contract_status'] != 'contracted':
+        return api_error('contract_required',
+                         'Ordering unlocks after your contract is signed.', 403)
+    body = request.get_json(silent=True) or {}
+    idem = (body.get('idempotency_key') or request.headers.get('Idempotency-Key') or '').strip()
+    if idem:
+        existing = models.idempotency_lookup(idem, profile['id'])
+        if existing:
+            order = next((o for o in models.get_orders(profile['id']) if o['id'] == existing), None)
+            if order:
+                resp = _api_order_payload(order)
+                resp.update({'ok': True, 'idempotent_replay': True})
+                return resp
+
+    raw_items = body.get('items') or []
+    if not isinstance(raw_items, list) or not raw_items:
+        return api_error('bad_request', "Body must include a non-empty 'items' array.")
+
+    enriched = models.enrich_products_for_reseller(profile)
+    by_id = {p['id']: p for p in enriched}
+    by_sku = {str(p['product_id']): p for p in enriched if p['product_id']}
+    order_items = []
+    for it in raw_items:
+        p = by_id.get(it.get('id')) or by_sku.get(str(it.get('sku', '')).strip())
+        try:
+            qty = int(it.get('quantity') or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if not p:
+            return api_error('unknown_product',
+                             f"Product not found: {it.get('id') or it.get('sku')}", 422)
+        if qty <= 0:
+            return api_error('bad_request', f"Invalid quantity for '{p['product_name']}'.")
+        order_items.append({'product_rowid': p['id'], 'product_name': p['product_name'],
+                            'merchant': p['merchant'], 'category': p['category'],
+                            'currency': p['currency'], 'quantity': qty,
+                            'unit_price': p['client_price'], 'unit_face': p['face_value']})
+
+    oid, err = models.create_order(profile['id'], order_items)
+    if err:
+        code = ('insufficient_balance' if 'wallet' in err.lower()
+                else 'insufficient_stock' if 'codes left' in err
+                else 'order_rejected')
+        return api_error(code, err, 409)
+    if idem:
+        models.idempotency_store(idem, profile['id'], oid)
+    order = next(o for o in models.get_orders(profile['id']) if o['id'] == oid)
+    resp = _api_order_payload(order)
+    resp['ok'] = True
+    return resp, 201
+
+
+@app.route('/api/v1/orders/<int:oid>')
+def api_order_detail(oid):
+    profile = require_api_reseller()
+    if not profile:
+        return api_error('unauthorized', 'Missing or invalid API key.', 401)
+    order = next((o for o in models.get_orders(profile['id']) if o['id'] == oid), None)
+    if not order:
+        return api_error('not_found', 'Order not found.', 404)
+    resp = _api_order_payload(order)
+    resp['ok'] = True
+    return resp
+
+
+@app.route('/api/v1/orders/<int:oid>/codes')
+def api_order_codes(oid):
+    profile = require_api_reseller()
+    if not profile:
+        return api_error('unauthorized', 'Missing or invalid API key.', 401)
+    order = next((o for o in models.get_orders(profile['id']) if o['id'] == oid), None)
+    if not order:
+        return api_error('not_found', 'Order not found.', 404)
+    codes = models.get_all_codes_for_order(oid)
+    return {'ok': True, 'order_id': oid,
+            'codes': [{'line_id': line, 'code': c['code'], 'pin': c.get('pin')}
+                      for line, arr in codes.items() for c in arr]}
 
 
 @app.route('/api/supplier-prices', methods=['POST'])

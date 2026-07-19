@@ -358,6 +358,36 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_vouchers_stock ON issued_vouchers(product_rowid, status);
         CREATE INDEX IF NOT EXISTS idx_vouchers_order_item ON issued_vouchers(order_item_id);
 
+        -- ── v9: Integration API ───────────────────────────────
+        CREATE TABLE IF NOT EXISTS api_idempotency (
+            key TEXT PRIMARY KEY,
+            reseller_id INTEGER NOT NULL,
+            order_id INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        -- Codes delivered by EXTERNAL provider adapters (issued-hub codes
+        -- live in issued_vouchers; this unifies fulfillment for the rest)
+        CREATE TABLE IF NOT EXISTS external_codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_item_id INTEGER NOT NULL REFERENCES order_items(id) ON DELETE CASCADE,
+            code TEXT NOT NULL,
+            pin TEXT,
+            provider TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_external_codes_item ON external_codes(order_item_id);
+
+        CREATE TABLE IF NOT EXISTS webhook_deliveries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reseller_id INTEGER NOT NULL,
+            event TEXT NOT NULL,
+            url TEXT NOT NULL,
+            status_code INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
         -- ── v8: BD Deal Pipeline (BD negotiates → Ops executes) ──
         CREATE TABLE IF NOT EXISTS bd_requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -532,6 +562,22 @@ def migrate_db():
             conn.execute("INSERT OR IGNORE INTO currency_rates (currency, rate_to_sar) VALUES (?,?)",
                          (cur, rate))
         conn.commit()
+
+    # 7c. v9: reseller API credentials + webhook
+    rcols = {r['name'] for r in conn.execute("PRAGMA table_info(reseller_profiles)")}
+    if 'api_key' not in rcols:
+        conn.execute("ALTER TABLE reseller_profiles ADD COLUMN api_key TEXT")
+    if 'webhook_url' not in rcols:
+        conn.execute("ALTER TABLE reseller_profiles ADD COLUMN webhook_url TEXT")
+
+    # 7d. v9: per-line fulfillment status ('delivered' = codes attached,
+    # 'external' = awaiting a provider adapter for that merchant)
+    oicols2 = {r['name'] for r in conn.execute("PRAGMA table_info(order_items)")}
+    if 'fulfillment_status' not in oicols2:
+        conn.execute("ALTER TABLE order_items ADD COLUMN fulfillment_status TEXT NOT NULL DEFAULT 'external'")
+        conn.execute("""UPDATE order_items SET fulfillment_status='delivered'
+                        WHERE product_rowid IN (SELECT id FROM products WHERE is_issued=1)""")
+    conn.commit()
 
     # 7b. v8.1: partner portal login link
     ipcols = {r['name'] for r in conn.execute("PRAGMA table_info(issuing_partners)")}
@@ -1253,9 +1299,13 @@ def create_order(reseller_id, items):
     _allocate_order_fifo(conn, oid)
     # v8: hand actual gift-card codes to the buyer for issued products
     touched_issued = _assign_issued_codes(conn, oid)
+    # v9: run provider adapters for merchants that have one registered
+    _run_fulfillment_adapters(conn, oid)
     conn.commit()
     conn.close()
     notify_low_issued_stock(touched_issued)
+    send_webhook(reseller_id, 'order.placed',
+                 {'order_id': oid, 'total_sar': total_cost})
     return oid, None
 
 
@@ -2441,6 +2491,9 @@ def _assign_issued_codes(conn, order_id):
         for vid in vids:
             conn.execute("""UPDATE issued_vouchers SET status='sold', order_item_id=?,
                             sold_at=CURRENT_TIMESTAMP WHERE id=?""", (it['id'], vid))
+        if vids:
+            conn.execute("UPDATE order_items SET fulfillment_status='delivered' WHERE id=?",
+                         (it['id'],))
         touched.append(it['product_rowid'])
     return touched
 
@@ -2531,6 +2584,158 @@ def get_partner_report():
         r['profit_sar'] = round(money['revenue'] - money['payout'], 2)
     conn.close()
     return report
+
+
+# ── Integration API (v9) ─────────────────────────────────────────
+
+def set_reseller_api(reseller_id, rotate_key=False, webhook_url=None):
+    """Generate/rotate a reseller API key and/or set their webhook URL.
+    Returns the (new) key when rotated, else None."""
+    import secrets as _sec
+    conn = get_db()
+    new_key = None
+    if rotate_key:
+        new_key = f"rk_{_sec.token_hex(24)}"
+        conn.execute("UPDATE reseller_profiles SET api_key=? WHERE id=?", (new_key, reseller_id))
+    if webhook_url is not None:
+        conn.execute("UPDATE reseller_profiles SET webhook_url=? WHERE id=?",
+                     (webhook_url.strip() or None, reseller_id))
+    conn.commit()
+    conn.close()
+    return new_key
+
+
+def get_reseller_by_api_key(key):
+    """Full reseller profile (tier + overrides) for a valid API key, else None."""
+    if not key:
+        return None
+    conn = get_db()
+    row = conn.execute("SELECT user_id FROM reseller_profiles WHERE api_key=?", (key,)).fetchone()
+    conn.close()
+    return get_reseller_profile(row['user_id']) if row else None
+
+
+def idempotency_lookup(key, reseller_id):
+    conn = get_db()
+    row = conn.execute("SELECT order_id FROM api_idempotency WHERE key=? AND reseller_id=?",
+                       (key, reseller_id)).fetchone()
+    conn.close()
+    return row['order_id'] if row else None
+
+
+def idempotency_store(key, reseller_id, order_id):
+    conn = get_db()
+    conn.execute("INSERT OR IGNORE INTO api_idempotency (key, reseller_id, order_id) VALUES (?,?,?)",
+                 (key, reseller_id, order_id))
+    conn.commit()
+    conn.close()
+
+
+# ── Fulfillment adapters (v9) ────────────────────────────────────
+# THE integration pattern for the technical team:
+#   register_fulfillment_adapter('<Merchant Name>', fn)
+#   fn(order_item: dict) -> list[{'code': str, 'pin': str|None}]  (raise on failure)
+# When a reseller order contains that merchant's products, the adapter is
+# called at checkout; returned codes are stored in external_codes and the
+# line becomes fulfillment_status='delivered'. No adapter -> stays 'external'
+# (your provisioning worker fulfills it later and calls deliver_external_codes).
+
+FULFILLMENT_ADAPTERS = {}
+
+
+def register_fulfillment_adapter(merchant, fn):
+    FULFILLMENT_ADAPTERS[merchant] = fn
+
+
+def deliver_external_codes(order_item_id, codes, provider):
+    """Store provider codes for an order line and mark it delivered."""
+    conn = get_db()
+    for c in codes:
+        conn.execute("""INSERT INTO external_codes (order_item_id, code, pin, provider)
+                        VALUES (?,?,?,?)""",
+                     (order_item_id, c['code'], c.get('pin'), provider))
+    conn.execute("UPDATE order_items SET fulfillment_status='delivered' WHERE id=?", (order_item_id,))
+    conn.commit()
+    conn.close()
+
+
+def _run_fulfillment_adapters(conn, order_id):
+    """Called inside create_order's transaction for non-issued lines."""
+    items = conn.execute("""SELECT oi.id, oi.product_rowid, oi.product_name, oi.merchant,
+                                   oi.quantity, oi.currency
+                            FROM order_items oi JOIN products p ON oi.product_rowid=p.id
+                            WHERE oi.order_id=? AND COALESCE(p.is_issued,0)=0""",
+                         (order_id,)).fetchall()
+    for it in items:
+        fn = FULFILLMENT_ADAPTERS.get(it['merchant'])
+        if not fn:
+            continue
+        try:
+            codes = fn(dict(it))
+        except Exception:
+            continue   # stays 'external'; the retry worker owns failures
+        for c in codes[:it['quantity']]:
+            conn.execute("""INSERT INTO external_codes (order_item_id, code, pin, provider)
+                            VALUES (?,?,?,?)""",
+                         (it['id'], c['code'], c.get('pin'), f"adapter:{it['merchant']}"))
+        conn.execute("UPDATE order_items SET fulfillment_status='delivered' WHERE id=?", (it['id'],))
+
+
+def _demo_adapter(item):
+    """Reference adapter (see API_GUIDE.md). A real one calls the provider API:
+    resp = requests.post(PROVIDER_URL, json={'sku': item['product_name'],
+                                             'qty': item['quantity']}, ...)
+    and returns resp.json()['codes']."""
+    import secrets as _sec
+    return [{'code': f"EXT-{_sec.token_hex(6).upper()}", 'pin': str(_sec.randbelow(9000) + 1000)}
+            for _ in range(item['quantity'])]
+
+
+# Demo registration so the pattern is visible end-to-end in this prototype
+register_fulfillment_adapter('Nexon EU Store', _demo_adapter)
+
+
+def get_all_codes_for_order(order_id):
+    """Unified codes per order line: issuing-hub vouchers + external provider codes."""
+    out = get_order_codes(order_id)                     # issued vouchers
+    conn = get_db()
+    rows = conn.execute("""SELECT ec.order_item_id, ec.code, ec.pin, 'delivered' as status
+                           FROM external_codes ec
+                           JOIN order_items oi ON ec.order_item_id=oi.id
+                           WHERE oi.order_id=? ORDER BY ec.id""", (order_id,)).fetchall()
+    conn.close()
+    for r in rows:
+        out.setdefault(r['order_item_id'], []).append(
+            {'code': r['code'], 'pin': r['pin'], 'status': r['status']})
+    return out
+
+
+# ── Webhooks (v9): best-effort, logged ───────────────────────────
+
+def send_webhook(reseller_id, event, payload):
+    """POST an event to the reseller's webhook URL (3s timeout, never raises).
+    INTEGRATION NOTE: production should queue + retry with signatures."""
+    conn = get_db()
+    row = conn.execute("SELECT webhook_url FROM reseller_profiles WHERE id=?", (reseller_id,)).fetchone()
+    url = row['webhook_url'] if row else None
+    conn.close()
+    if not url:
+        return
+    import json as _json
+    import urllib.request as _rq
+    status = None
+    try:
+        req = _rq.Request(url, data=_json.dumps({'event': event, 'data': payload}).encode(),
+                          headers={'Content-Type': 'application/json',
+                                   'X-OneCard-Event': event})
+        status = _rq.urlopen(req, timeout=3).status
+    except Exception:
+        status = 0
+    conn = get_db()
+    conn.execute("""INSERT INTO webhook_deliveries (reseller_id, event, url, status_code)
+                    VALUES (?,?,?,?)""", (reseller_id, event, url, status))
+    conn.commit()
+    conn.close()
 
 
 # ── Partner Portal (v8.1): the business we issue cards FOR ──────

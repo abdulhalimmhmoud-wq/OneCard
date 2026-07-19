@@ -13,6 +13,7 @@ onecard.db
 
 # Allow core documentation & packages
 !README.md
+!API_GUIDE.md
 !requirements.txt
 
 # Allow legacy CMS v2 files
