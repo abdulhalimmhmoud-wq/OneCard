@@ -46,7 +46,7 @@ CLIENT_TYPE_AFFINITY = {
     'Other':                    [],
 }
 
-ROLES = ('admin', 'sales', 'reseller', 'cco', 'finance', 'ops', 'bd')
+ROLES = ('admin', 'sales', 'reseller', 'cco', 'finance', 'ops', 'bd', 'partner')
 
 BD_DEAL_TYPES = {
     'new_merchant': 'New Merchant Deal',
@@ -77,7 +77,7 @@ def init_db():
             email TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             name TEXT NOT NULL,
-            role TEXT NOT NULL CHECK(role IN ('admin','sales','reseller','cco','finance','ops','bd')),
+            role TEXT NOT NULL CHECK(role IN ('admin','sales','reseller','cco','finance','ops','bd','partner')),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -464,7 +464,7 @@ def migrate_db():
 
     # 1. users.role CHECK must allow all v5 roles → rebuild table if old constraint
     ddl = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").fetchone()
-    if ddl and ("'cco'" not in ddl['sql'] or "'ops'" not in ddl['sql'] or "'bd'" not in ddl['sql']):
+    if ddl and ("'cco'" not in ddl['sql'] or "'ops'" not in ddl['sql'] or "'bd'" not in ddl['sql'] or "'partner'" not in ddl['sql']):
         conn.executescript("""
             PRAGMA foreign_keys=OFF;
             CREATE TABLE users_new (
@@ -472,7 +472,7 @@ def migrate_db():
                 email TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 name TEXT NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('admin','sales','reseller','cco','finance','ops','bd')),
+                role TEXT NOT NULL CHECK(role IN ('admin','sales','reseller','cco','finance','ops','bd','partner')),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             INSERT INTO users_new (id,email,password_hash,name,role,created_at)
@@ -532,6 +532,12 @@ def migrate_db():
             conn.execute("INSERT OR IGNORE INTO currency_rates (currency, rate_to_sar) VALUES (?,?)",
                          (cur, rate))
         conn.commit()
+
+    # 7b. v8.1: partner portal login link
+    ipcols = {r['name'] for r in conn.execute("PRAGMA table_info(issuing_partners)")}
+    if 'portal_user_id' not in ipcols:
+        conn.execute("ALTER TABLE issuing_partners ADD COLUMN portal_user_id INTEGER REFERENCES users(id)")
+    conn.commit()
 
     # 7a. v8: Issuing Hub flags on products
     pcols2 = {r['name'] for r in conn.execute("PRAGMA table_info(products)")}
@@ -2525,6 +2531,109 @@ def get_partner_report():
         r['profit_sar'] = round(money['revenue'] - money['payout'], 2)
     conn.close()
     return report
+
+
+# ── Partner Portal (v8.1): the business we issue cards FOR ──────
+
+def create_partner_login(partner_id, email, password, contact_name):
+    """Ops creates the portal login for an issuing partner (role='partner')."""
+    uid = create_user(email, password, contact_name, 'partner')
+    if not uid:
+        return None
+    conn = get_db()
+    conn.execute("UPDATE issuing_partners SET portal_user_id=? WHERE id=?", (uid, partner_id))
+    conn.commit()
+    conn.close()
+    return uid
+
+
+def get_partner_by_user(user_id):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM issuing_partners WHERE portal_user_id=?", (user_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_partner_stats(partner_id):
+    """Everything the partner sees on their dashboard — scoped to THEM only."""
+    conn = get_db()
+    programs = [dict(r) for r in conn.execute("""
+        SELECT p.id, p.product_name, p.face_value, p.currency,
+               (SELECT COUNT(*) FROM issued_vouchers v WHERE v.product_rowid=p.id AND v.status='available') as stock,
+               (SELECT COUNT(*) FROM issued_vouchers v WHERE v.product_rowid=p.id AND v.status='sold') as sold,
+               (SELECT COUNT(*) FROM issued_vouchers v WHERE v.product_rowid=p.id AND v.status='redeemed') as redeemed
+        FROM products p WHERE p.issuing_partner_id=? ORDER BY p.product_name""", (partner_id,))]
+    money = conn.execute("""
+        SELECT COALESCE(SUM(x.cnt * p.cost * oi.fx_rate),0) as payout,
+               COALESCE(SUM(x.cnt),0) as units
+        FROM (SELECT order_item_id, COUNT(*) as cnt FROM issued_vouchers
+              WHERE status IN ('sold','redeemed') AND order_item_id IS NOT NULL
+              GROUP BY order_item_id) x
+        JOIN order_items oi ON oi.id=x.order_item_id
+        JOIN products p ON oi.product_rowid=p.id
+        WHERE p.issuing_partner_id=?""", (partner_id,)).fetchone()
+    recent = [dict(r) for r in conn.execute("""
+        SELECT v.code, v.redeemed_at, p.product_name, p.face_value, p.currency
+        FROM issued_vouchers v JOIN products p ON v.product_rowid=p.id
+        WHERE p.issuing_partner_id=? AND v.status='redeemed'
+        ORDER BY v.redeemed_at DESC LIMIT 10""", (partner_id,))]
+    conn.close()
+    totals = {
+        'programs': len(programs),
+        'stock': sum(x['stock'] for x in programs),
+        'sold': sum(x['sold'] for x in programs),
+        'redeemed': sum(x['redeemed'] for x in programs),
+        'units_paid': money['units'],
+        'earnings_sar': round(money['payout'], 2),
+    }
+    return programs, totals, recent
+
+
+def get_partner_statement(partner_id):
+    """Monthly settlement view: units sold, gross sales, the partner's payout (SAR)."""
+    conn = get_db()
+    rows = [dict(r) for r in conn.execute("""
+        SELECT strftime('%Y-%m', v.sold_at) as ym,
+               COUNT(*) as units,
+               ROUND(SUM(oi.unit_price * oi.fx_rate), 2) as gross_sar,
+               ROUND(SUM(p.cost * oi.fx_rate), 2) as payout_sar
+        FROM issued_vouchers v
+        JOIN order_items oi ON v.order_item_id=oi.id
+        JOIN products p ON v.product_rowid=p.id
+        WHERE p.issuing_partner_id=? AND v.status IN ('sold','redeemed')
+        GROUP BY ym ORDER BY ym DESC""", (partner_id,))]
+    conn.close()
+    return rows
+
+
+def partner_check_voucher(partner_id, code):
+    """Look a code up — but ONLY if it belongs to this partner's programs."""
+    v = check_voucher(code)
+    if not v:
+        return None, "Code not found."
+    conn = get_db()
+    owner = conn.execute("SELECT issuing_partner_id FROM products WHERE id=?",
+                         (v['product_rowid'],)).fetchone()
+    conn.close()
+    if not owner or owner['issuing_partner_id'] != partner_id:
+        return None, "This code does not belong to your gift cards."
+    return v, None
+
+
+def partner_redeem(partner_id, code, pin):
+    """Cashier redemption: code + PIN must match, card must be sold and theirs."""
+    v, err = partner_check_voucher(partner_id, code)
+    if err:
+        return False, err
+    if str(v.get('pin') or '') != str(pin or '').strip():
+        return False, "Wrong PIN — check the card details with the customer."
+    if v['status'] == 'available':
+        return False, "This card was never sold — it cannot be redeemed."
+    if v['status'] == 'redeemed':
+        return False, f"Already used on {v['redeemed_at']}."
+    if v['status'] != 'sold':
+        return False, f"Cannot redeem — card status is '{v['status']}'."
+    return redeem_voucher(code)
 
 
 # ── Tier Compliance Automation ───────────────────────────────────

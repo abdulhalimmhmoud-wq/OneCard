@@ -1,0 +1,8 @@
+<div class="nav-section">My Gift Cards</div>
+<a href="/partner" class="nav-item {{ 'active' if active_tab == 'partner_dashboard' }}"><span class="icon">📊</span>Dashboard</a>
+<a href="/partner/redeem" class="nav-item {{ 'active' if active_tab == 'partner_redeem' }}"><span class="icon">✅</span>Redeem Station</a>
+<a href="/partner/statement" class="nav-item {{ 'active' if active_tab == 'partner_statement' }}"><span class="icon">💵</span>My Statement</a>
+<div class="nav-section">Account</div>
+<a href="/notifications" class="nav-item {{ 'active' if active_tab == 'notifications' }}"><span class="icon">🔔</span>Notifications
+    {% if unread_notifications %}<span class="badge badge-danger" style="margin-left:auto">{{ unread_notifications }}</span>{% endif %}
+</a>

@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}My Statement — {{ partner.name }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">💵 My Settlement Statement</h1>
+        <p class="page-subtitle">Month by month: cards sold through OneCard channels and what you earn ({{ partner.partner_share_pct }}% share)</p>
+    </div>
+</div>
+
+<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr))">
+    <div class="stat-card">
+        <div class="stat-icon">🛒</div>
+        <div class="stat-value">{{ totals.units|money }}</div>
+        <div class="stat-label">Total Cards Sold</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">💰</div>
+        <div class="stat-value">{{ totals.gross|money }}</div>
+        <div class="stat-label">Gross Sales (SAR)</div>
+    </div>
+    <div class="stat-card" style="border:2px solid var(--success)">
+        <div class="stat-icon">💵</div>
+        <div class="stat-value" style="color:var(--success)">{{ totals.payout|money }}</div>
+        <div class="stat-label">Your Total Earnings (SAR)</div>
+    </div>
+</div>
+
+<div class="table-card">
+    <div class="table-header"><div class="table-title">📅 Monthly Breakdown</div></div>
+    <div class="table-scroll">
+        <table>
+            <thead><tr><th>Month</th><th>Cards Sold</th><th>Gross Sales (SAR)</th><th>Your Share ({{ partner.partner_share_pct }}%)</th></tr></thead>
+            <tbody>
+            {% for r in statement %}
+            <tr>
+                <td class="fw6">{{ r.ym }}</td>
+                <td>{{ r.units|money }}</td>
+                <td>{{ r.gross_sar|money }}</td>
+                <td class="fw6 text-s">{{ r.payout_sar|money }} SAR</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4" style="text-align:center;padding:40px;color:var(--text-3)">No sales yet — your cards are live in OneCard channels</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card mt-24" style="border:1px dashed var(--border);max-width:720px">
+    <div style="font-size:12.5px;color:var(--text-2);line-height:1.7">
+        ℹ️ Settlement is based on <b>sold</b> cards (the moment OneCard channels sell them), not on redemption.
+        OneCard Finance transfers your share according to the agreement terms.
+    </div>
+</div>
+{% endblock %}

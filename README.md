@@ -27,8 +27,15 @@ in `models.py`.
   the **Deal Pipeline** (`/deals`); Operations execute and mark them done; both sides get notified.
   BD also has read access to Sourcing Intelligence.
 
+**Issuing Partner Portal** (v8.1, role `partner`): the business we issue cards FOR (a perfume shop,
+a restaurant chain — any brand with no digital gift cards) gets its own login, created by Ops from
+the Issuing Hub. The partner sees ONLY their world: a dashboard (cards sold / redeemed / stock /
+earnings), a **Redeem Station** for their cashiers (code + PIN, ownership-checked, no double
+redemption), and a monthly **settlement statement** (gross sales × their share). They can never see
+resellers, margins or the catalogue.
+
 **Issuing Hub** (Ops → `/ops/issuing`): OneCard issues and manages digital gift cards for partner
-merchants that have none, and sells them through all our channels:
+businesses that have none, and sells them through all our channels:
 - Issuing partners with a revenue-share % (partner share vs OneCard share)
 - Card programs are real catalogue products (merchant = partner name) — tiers, wallets, orders
   and analytics work unchanged
@@ -107,6 +114,7 @@ action list with estimated SAR/month savings, renamed jargon, tooltips and a glo
 | Business Development | `bd@onecard.com` | `Bd2025!` |
 | Operations | `ops@onecard.com` | `Ops2025!` |
 | Finance | `finance@onecard.com` | `Finance2025!` |
+| Issuing Partner (demo: Chef Burger) | `portal@chefburger.sa` | `Partner2025!` |
 
 > Change these before any non-local deployment.
 

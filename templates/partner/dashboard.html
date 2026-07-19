@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}{{ partner.name }} — Gift Card Partner{% endblock %}
+
+{% block content %}
+<div class="welcome-banner fade-in">
+    <div class="welcome-title">Welcome, {{ partner.name }} 👋</div>
+    <div class="welcome-sub">Your digital gift cards — issued and sold for you by OneCard across all our channels</div>
+    <div class="welcome-tier" style="background:rgba(16,185,129,0.15);color:var(--success);margin-top:10px">
+        💼 Your share: {{ partner.partner_share_pct }}% of every sale
+    </div>
+</div>
+
+<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">
+    <div class="stat-card">
+        <div class="stat-icon">🗂️</div>
+        <div class="stat-value">{{ totals.programs }}</div>
+        <div class="stat-label">Card Programs</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🛒</div>
+        <div class="stat-value">{{ totals.sold + totals.redeemed }}</div>
+        <div class="stat-label">Cards Sold (total)</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">✅</div>
+        <div class="stat-value">{{ totals.redeemed }}</div>
+        <div class="stat-label">Redeemed in Your Stores</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">📦</div>
+        <div class="stat-value">{{ totals.stock|money }}</div>
+        <div class="stat-label">Codes Still in Stock</div>
+    </div>
+    <div class="stat-card" style="border:2px solid var(--success)">
+        <div class="stat-icon">💵</div>
+        <div class="stat-value" style="color:var(--success)">{{ totals.earnings_sar|money }}</div>
+        <div class="stat-label">Your Earnings So Far (SAR)</div>
+    </div>
+</div>
+
+<div class="grid-2">
+    <!-- Programs -->
+    <div class="card">
+        <div class="card-header"><div class="card-title">🗂️ Your Card Programs</div></div>
+        <table style="width:100%">
+            <thead><tr><th>Card</th><th>Sold</th><th>Redeemed</th><th>In Stock</th></tr></thead>
+            <tbody>
+            {% for p in programs %}
+            <tr>
+                <td class="fw6">{{ p.product_name }}
+                    <div class="text-muted" style="font-size:10px">face {{ p.face_value|money }} {{ p.currency }}</div>
+                </td>
+                <td>{{ p.sold + p.redeemed }}</td>
+                <td class="text-s fw6">{{ p.redeemed }}</td>
+                <td>{{ p.stock|money }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4" style="text-align:center;padding:30px;color:var(--text-3)">No programs yet — OneCard is preparing your first cards</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Recent redemptions -->
+    <div class="card">
+        <div class="card-header">
+            <div class="card-title">✅ Latest Redemptions in Your Stores</div>
+            <a href="/partner/redeem" class="btn btn-sm btn-primary">Open Redeem Station →</a>
+        </div>
+        <table style="width:100%">
+            <thead><tr><th>Card</th><th>Code</th><th>When</th></tr></thead>
+            <tbody>
+            {% for r in recent %}
+            <tr>
+                <td style="font-size:12px">{{ r.product_name }}</td>
+                <td style="font-family:monospace;font-size:11px">{{ r.code[:9] }}···</td>
+                <td class="text-muted" style="font-size:11px">{{ r.redeemed_at[:16] }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="3" style="text-align:center;padding:30px;color:var(--text-3)">No redemptions yet</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

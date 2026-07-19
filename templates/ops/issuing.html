@@ -61,8 +61,9 @@
         <form method="POST" action="/ops/issuing">
             <input type="hidden" name="partner_id" id="ipId">
             <div class="form-group">
-                <label class="form-label">Partner (Merchant) Name *</label>
-                <input type="text" name="name" id="ipName" required placeholder="e.g. Chef Burger KSA">
+                <label class="form-label">Partner Brand Name *</label>
+                <input type="text" name="name" id="ipName" required placeholder="e.g. Golden Oud Perfumes">
+                <div class="form-hint">A business with NO digital gift cards — we issue them and sell through our channels. This name appears as the brand in reseller catalogues.</div>
             </div>
             <div class="form-row">
                 <div class="form-group" style="flex:1">
@@ -123,6 +124,21 @@
                     {% if p.notes %}<div class="text-muted" style="font-size:11.5px;margin-top:6px">🗒️ {{ p.notes }}</div>{% endif %}
                 </div>
                 <button class="btn btn-sm btn-ghost" onclick='editPartner({{ p|tojson }})'>✏️ Edit</button>
+            </div>
+            <!-- Partner portal access -->
+            <div style="border-top:1px solid var(--border);margin-top:12px;padding-top:10px">
+                {% if p.portal_user_id %}
+                <span class="badge badge-success">🔑 Portal login active</span>
+                <span class="text-muted" style="font-size:11px">— the partner signs in at /login and gets their dashboard, Redeem Station and statement</span>
+                {% else %}
+                <form method="POST" action="/ops/issuing/{{ p.id }}/login" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+                    <span class="text-muted" style="font-size:11.5px">🔑 Create portal login:</span>
+                    <input type="text" name="contact_name" placeholder="User name" style="font-size:12px;padding:6px 10px;max-width:140px">
+                    <input type="email" name="email" required placeholder="login email" style="font-size:12px;padding:6px 10px;max-width:190px">
+                    <input type="password" name="password" required minlength="6" placeholder="password (6+)" style="font-size:12px;padding:6px 10px;max-width:150px">
+                    <button type="submit" class="btn btn-sm btn-primary">Create</button>
+                </form>
+                {% endif %}
             </div>
         </div>
         {% else %}

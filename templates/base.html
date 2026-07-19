@@ -24,6 +24,7 @@
                     {% elif current_user.role == 'finance' %}Finance Panel
                     {% elif current_user.role == 'ops' %}Operations Panel
                     {% elif current_user.role == 'bd' %}Business Development
+                    {% elif current_user.role == 'partner' %}Gift Card Partner
                     {% else %}Reseller Portal{% endif %}
                 </div>
             </div>
@@ -43,6 +44,8 @@
                     {% include 'partials/_nav_ops.html' %}
                 {% elif current_user.role == 'bd' %}
                     {% include 'partials/_nav_bd.html' %}
+                {% elif current_user.role == 'partner' %}
+                    {% include 'partials/_nav_partner.html' %}
                 {% endif %}
             {% endblock %}
         </nav>

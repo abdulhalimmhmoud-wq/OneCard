@@ -174,6 +174,7 @@ def block_in_preview():
 ROLE_HOME = {'admin': 'admin_dashboard', 'sales': 'sales_dashboard',
              'cco': 'admin_dashboard', 'finance': 'finance_dashboard',
              'ops': 'ops_dashboard', 'bd': 'bd_dashboard',
+             'partner': 'partner_dashboard',
              'reseller': 'reseller_dashboard'}
 
 
@@ -1047,6 +1048,80 @@ def ops_issuing_checker():
                            result=result, code=code)
 
 
+# ── Partner Portal (v8.1) — the business we issue cards FOR ─────
+
+def _current_partner():
+    curr = auth.get_current_user()
+    return models.get_partner_by_user(curr['id']) if curr else None
+
+
+@app.route('/partner')
+@auth.partner_required
+def partner_dashboard():
+    partner = _current_partner()
+    if not partner:
+        flash("No issuing-partner record is linked to this account.", "error")
+        return _no_reseller_profile()
+    programs, totals, recent = models.get_partner_stats(partner['id'])
+    return render_template('partner/dashboard.html', active_tab='partner_dashboard',
+                           partner=partner, programs=programs, totals=totals, recent=recent)
+
+
+@app.route('/partner/redeem', methods=['GET', 'POST'])
+@auth.partner_required
+def partner_redeem():
+    partner = _current_partner()
+    if not partner:
+        return _no_reseller_profile()
+    result = None
+    code = ''
+    if request.method == 'POST':
+        code = request.form.get('code', '').strip()
+        pin = request.form.get('pin', '').strip()
+        action = request.form.get('action')
+        if action == 'redeem':
+            ok, msg = models.partner_redeem(partner['id'], code, pin)
+            flash(msg, "success" if ok else "error")
+        result, err = models.partner_check_voucher(partner['id'], code) if code else (None, None)
+        if code and err and action != 'redeem':
+            flash(err, "error")
+    return render_template('partner/redeem.html', active_tab='partner_redeem',
+                           partner=partner, result=result, code=code)
+
+
+@app.route('/partner/statement')
+@auth.partner_required
+def partner_statement():
+    partner = _current_partner()
+    if not partner:
+        return _no_reseller_profile()
+    statement = models.get_partner_statement(partner['id'])
+    totals = {
+        'units': sum(r['units'] for r in statement),
+        'gross': sum(r['gross_sar'] for r in statement),
+        'payout': sum(r['payout_sar'] for r in statement),
+    }
+    return render_template('partner/statement.html', active_tab='partner_statement',
+                           partner=partner, statement=statement, totals=totals)
+
+
+@app.route('/ops/issuing/<int:pid>/login', methods=['POST'])
+@auth.ops_required
+def ops_partner_login(pid):
+    email = request.form.get('email', '').strip()
+    password = request.form.get('password', '')
+    contact = request.form.get('contact_name', '').strip() or 'Partner User'
+    if not email or len(password) < 6:
+        flash("Email and a password of 6+ characters are required.", "error")
+        return redirect(url_for('ops_issuing'))
+    uid = models.create_partner_login(pid, email, password, contact)
+    if uid:
+        flash(f"Portal login created — the partner signs in at /login with {email}.", "success")
+    else:
+        flash("That email is already in use.", "error")
+    return redirect(url_for('ops_issuing'))
+
+
 # ── Finance: Batch Reconciliation (v6) ───────────────────────────
 
 @app.route('/finance/batches')
@@ -1243,6 +1318,16 @@ def sales_scorecard():
 
 # ── Reseller Portal Routes ────────────────────────────────────────
 
+def _no_reseller_profile():
+    """Staff hitting reseller-only pages must NOT be logged out — send them home.
+    Only an actual reseller with a broken profile is signed out."""
+    curr = auth.get_current_user()
+    if curr and curr['role'] != 'reseller':
+        flash("That page belongs to the reseller portal.", "warning")
+        return redirect(url_for(ROLE_HOME.get(curr['role'], 'login')))
+    return _no_reseller_profile()
+
+
 def _reseller_ctx():
     """Common data for reseller pages: enriched products + profile."""
     uid = get_active_reseller_uid()
@@ -1256,7 +1341,7 @@ def reseller_dashboard():
     uid, enriched, profile = _reseller_ctx()
     if not profile:
         flash("Reseller profile not found.", "error")
-        return redirect(url_for('logout'))
+        return _no_reseller_profile()
 
     cat_counts = {}
     merchants = set()
@@ -1280,7 +1365,7 @@ def reseller_dashboard():
 def reseller_products():
     uid, enriched, profile = _reseller_ctx()
     if not profile:
-        return redirect(url_for('logout'))
+        return _no_reseller_profile()
     merchants = sorted({p['merchant'] for p in enriched})
     categories = sorted({p['category'] for p in enriched})
     countries = sorted({p['country'] for p in enriched})
@@ -1298,7 +1383,7 @@ def reseller_products():
 def reseller_merchants():
     uid, enriched, profile = _reseller_ctx()
     if not profile:
-        return redirect(url_for('logout'))
+        return _no_reseller_profile()
     merchants = sorted({p['merchant'] for p in enriched})
     categories = sorted({p['category'] for p in enriched})
     countries = sorted({p['country'] for p in enriched})
@@ -1315,7 +1400,7 @@ def reseller_merchants():
 def reseller_calculator():
     uid, enriched, profile = _reseller_ctx()
     if not profile:
-        return redirect(url_for('logout'))
+        return _no_reseller_profile()
     return render_template('reseller/calculator.html', active_tab='calculator',
                            profile=profile, products_json=jdump(enriched))
 
@@ -1325,7 +1410,7 @@ def reseller_calculator():
 def reseller_recommended():
     uid, enriched, profile = _reseller_ctx()
     if not profile:
-        return redirect(url_for('logout'))
+        return _no_reseller_profile()
 
     # ── Personalized recommendation scoring ──
     my_countries = set(profile.get('countries') or [])
@@ -1379,7 +1464,7 @@ def reseller_recommended():
 def reseller_forecast():
     uid, enriched, profile = _reseller_ctx()
     if not profile:
-        return redirect(url_for('logout'))
+        return _no_reseller_profile()
 
     if request.method == 'POST':
         if block_in_preview():
@@ -1443,7 +1528,7 @@ def reseller_forecast():
 def reseller_orders():
     uid, enriched, profile = _reseller_ctx()
     if not profile:
-        return redirect(url_for('logout'))
+        return _no_reseller_profile()
 
     if profile['contract_status'] != 'contracted':
         return render_template('reseller/orders_locked.html', active_tab='orders', profile=profile)
@@ -1504,7 +1589,7 @@ def reseller_orders():
 def reseller_wallet():
     uid, _, profile = _reseller_ctx()
     if not profile:
-        return redirect(url_for('logout'))
+        return _no_reseller_profile()
 
     if request.method == 'POST':
         if block_in_preview():
@@ -1549,7 +1634,7 @@ def reseller_wallet():
 def reseller_analysis():
     uid, enriched, profile = _reseller_ctx()
     if not profile:
-        return redirect(url_for('logout'))
+        return _no_reseller_profile()
     data = models.get_reseller_analysis(profile['id'])
 
     insights = []

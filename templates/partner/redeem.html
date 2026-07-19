@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Redeem Station — {{ partner.name }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">✅ Redeem Station</h1>
+        <p class="page-subtitle">For your cashiers: enter the customer's card code and PIN to accept it as payment</p>
+    </div>
+</div>
+
+<div class="card" style="max-width:560px">
+    <form method="POST" action="/partner/redeem">
+        <div class="form-group">
+            <label class="form-label">Card Code</label>
+            <input type="text" name="code" value="{{ code }}" required placeholder="XXXX-XXXX-XXXX-XXXX"
+                   style="font-family:monospace;font-size:17px;letter-spacing:1.5px;text-transform:uppercase" autofocus>
+        </div>
+        <div class="form-group">
+            <label class="form-label">PIN</label>
+            <input type="text" name="pin" required placeholder="6-digit PIN" maxlength="6"
+                   style="font-family:monospace;font-size:17px;letter-spacing:3px;max-width:200px">
+        </div>
+        <div style="display:flex;gap:10px">
+            <button type="submit" name="action" value="check" class="btn btn-ghost">🔎 Check First</button>
+            <button type="submit" name="action" value="redeem" class="btn btn-primary btn-lg"
+                    onclick="return confirm('Accept this card? It becomes used and cannot be reversed.')">✅ Accept & Redeem</button>
+        </div>
+    </form>
+</div>
+
+{% if result %}
+<div class="card mt-24" style="max-width:560px;border-left:4px solid
+    {{ 'var(--info)' if result.status == 'sold' else ('var(--warning)' if result.status == 'redeemed' else 'var(--danger)') }}">
+    <div class="card-header">
+        <div class="card-title" style="font-family:monospace">{{ result.code }}</div>
+        {% if result.status == 'sold' %}<span class="badge badge-success">✔ Valid — ready to redeem</span>
+        {% elif result.status == 'redeemed' %}<span class="badge badge-warning">Already used</span>
+        {% elif result.status == 'available' %}<span class="badge badge-danger">Never sold — do NOT accept</span>
+        {% else %}<span class="badge badge-danger">Void</span>{% endif %}
+    </div>
+    <table style="width:100%;font-size:13.5px">
+        <tr><td class="text-muted" style="width:150px">Card</td><td class="fw6">{{ result.product_name }}</td></tr>
+        <tr><td class="text-muted">Value</td><td class="fw6" style="font-size:17px">{{ result.face_value|money }} {{ result.currency }}</td></tr>
+        <tr><td class="text-muted">Used On</td><td>{{ result.redeemed_at or '—' }}</td></tr>
+    </table>
+</div>
+{% endif %}
+
+<div class="card mt-24" style="max-width:560px;border:1px dashed var(--border)">
+    <div style="font-size:12.5px;color:var(--text-2);line-height:1.8">
+        <b style="color:var(--text-1)">How it works at the counter:</b><br>
+        1. Customer shows the card (code + PIN)<br>
+        2. Enter both and press <b>Check First</b> to see the value and validity<br>
+        3. Press <b>Accept & Redeem</b> — the card is marked used instantly, everywhere<br>
+        ⚠️ A card that says "Never sold" or "Already used" must not be accepted.
+    </div>
+</div>
+{% endblock %}

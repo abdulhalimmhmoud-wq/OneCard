@@ -69,5 +69,6 @@ reseller_required = _role_required('reseller')
 ops_required = _role_required('ops')
 finance_required = _role_required('finance')
 bd_required = _role_required('bd')
+partner_required = _role_required('partner')
 # Deal pipeline is shared: BD creates, Ops executes, admin/cco oversee
 deals_required = _role_required('bd', 'ops')
