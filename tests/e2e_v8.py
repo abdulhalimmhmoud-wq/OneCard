@@ -2,10 +2,14 @@
 Deal Pipeline, Sourcing Intelligence redesign, Issuing Hub."""
 import urllib.request, urllib.parse, urllib.error, http.cookiejar as cj
 import re as _re
-import json, sqlite3, os, uuid
+import json, sqlite3, os, sys, uuid
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+import models   # noqa: E402 — codes/PINs are encrypted at rest (v10)
 
 BASE = 'http://127.0.0.1:8000'
-DB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'onecard.db')
+DB = os.path.join(ROOT, 'onecard.db')
 results = []
 
 def check(name, ok, extra=''):
@@ -145,12 +149,12 @@ if placed:
 # checker + redeem
 code_row = q("SELECT code FROM issued_vouchers WHERE status='sold' LIMIT 1")
 if code_row:
-    code = code_row[0]['code']
+    code = models._dec(code_row[0]['code'])   # encrypted at rest (v10)
     s, b = post(ops, '/ops/issuing/checker', {'code': code, 'action': 'check'})
     check('checker shows sold status', 'Sold' in b and code in b)
     s, b = post(ops, '/ops/issuing/checker', {'code': code, 'action': 'redeem'})
     check('code redeemed', 'Redeemed successfully' in b)
-    st = q("SELECT status FROM issued_vouchers WHERE code=?", code)[0]['status']
+    st = q("SELECT status FROM issued_vouchers WHERE code_hash=?", models._code_hash(code))[0]['status']
     check('DB status redeemed', st == 'redeemed')
 else:
     check('sold code exists for checker', False)

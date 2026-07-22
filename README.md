@@ -1,4 +1,30 @@
-# OneCard — Reseller Operations Platform (v9)
+# OneCard — Reseller Operations Platform (v10)
+
+## Security & Correctness Hardening (v10)
+
+A second hardening pass, prompted by a full technical review of v9:
+
+- **Gift-card codes/PINs encrypted at rest** (Fernet, key in `ONECARD_ENCRYPTION_KEY` or a
+  persisted git-ignored `instance_encryption.key`). Lookups use a SHA-256 `code_hash` column
+  instead of the plaintext — the database no longer holds a readable copy of any code or PIN.
+  Existing rows are migrated automatically and idempotently at startup.
+- **Wallet-overdraft and gift-card-oversell races closed**: `create_order()` and
+  `review_topup()` now run their balance/stock check *and* the deduction inside one
+  `BEGIN IMMEDIATE` transaction, so two concurrent orders (or two Finance approvals of the same
+  top-up) can no longer both pass a stale check — the second cleanly fails instead of the wallet
+  going negative or a customer being under-delivered gift-card codes. Verified with real
+  concurrent threads in `tests/e2e_hardening2.py`, not just sequential calls.
+- **Redemption brute-force guard**: repeated wrong-PIN attempts on the same gift-card code are
+  rate-limited (8 / 15 min), reusing the same in-memory limiter as login.
+- **Session cookie policy**: `HttpOnly`, `SameSite=Lax`, a 12-hour lifetime (down from Flask's
+  31-day default), and `SESSION_COOKIE_SECURE` toggled via `ONECARD_COOKIE_SECURE=1` once
+  deployed behind HTTPS.
+- **Receipt uploads validated by content, not filename** — magic-byte sniffing accepts real
+  PNG/JPEG/PDF/WEBP bytes only; a renamed non-image file is rejected regardless of its extension.
+- **Automatic daily database backups** (SQLite backup API, 14-day rotation) plus an admin
+  "Backup Database Now" button; the daily compliance check that used to open a DB connection on
+  *every* request is now throttled in-process first.
+- Coverage: `tests/e2e_hardening2.py` (27 checks) — all 8 suites green, 222 checks total.
 
 ## Integration API v1 (v9) — see `API_GUIDE.md`
 
@@ -137,7 +163,7 @@ action list with estimated SAR/month savings, renamed jargon, tooltips and a glo
 ## Quick Start
 
 ```bash
-pip install -r requirements.txt   # flask, pandas, openpyxl, bcrypt
+pip install -r requirements.txt   # flask, pandas, openpyxl, bcrypt, cryptography
 python seed_products.py           # first run — import Full Catalogue.xls
 python app.py                     # http://localhost:8000
 ```
@@ -167,22 +193,27 @@ All reads/writes go through `models.py`. To connect production systems, swap the
 
 ## Handover Notes for the Technical Team
 
-**What is already production-grade**: role model & permissions, all business workflows, audit trails,
-CSRF/session/upload hardening, FX-consistent money math, automated migrations, and the e2e test
-suite in `tests/` (103 checks across three files — run the app, then `python tests/e2e_*.py`).
+**What is already production-grade**: role model & permissions, all business workflows, audit
+trails, encryption-at-rest for gift-card codes/PINs, race-condition-safe wallet and stock
+operations, CSRF/session/rate-limit/content-sniffing hardening, automated daily backups,
+FX-consistent money math, a documented Integration API v1 with idempotency + webhooks, automated
+migrations, and the e2e test suite in `tests/` (**222 checks across 8 files** — run the app, then
+`python tests/e2e_*.py`).
 
 **Deliberately left for the integration phase** (by design, not omission):
 
 | Area | Current state | Recommended move |
 |------|---------------|------------------|
-| Database | SQLite (single-writer) | PostgreSQL + `DECIMAL` money columns + Alembic migrations; use `SELECT … FOR UPDATE` on wallet ops |
-| Catalogue payloads | Full catalogue rendered per page (~1.4 MB) | Server-side pagination/search API + cache (rates change rarely) |
-| Background jobs | Daily checks piggyback on requests (`run_tier_compliance`) | Move to cron/Celery; the functions are already self-contained |
-| APIs | Supplier price sync only (`POST /api/supplier-prices`) | Full REST layer for mobile/external systems; add idempotency keys + outbound webhooks |
+| Database | SQLite, serialized with `BEGIN IMMEDIATE` on money/stock writes | PostgreSQL + `DECIMAL` money columns + Alembic migrations; `BEGIN IMMEDIATE` was the SQLite-appropriate fix, `SELECT … FOR UPDATE` is the Postgres equivalent |
+| Catalogue payloads | Full catalogue rendered per page (~1.5 MB) | Server-side pagination/search (the `/api/v1/catalogue` endpoint already paginates — reuse that pattern for the HTML views) |
+| Background jobs | Daily checks piggyback on requests, now throttled in-process first (`daily_compliance_check`) | Move to cron/Celery; the functions are already self-contained |
+| APIs | ✅ Done in v9 — `/api/v1/*` (catalogue, wallet, orders, codes), idempotency keys, outbound webhooks, fulfillment adapters | Add auth scopes/rotation policy + rate limiting at the API layer for production traffic |
 | Sales data | Platform orders stand in for real sales | Point `get_month_total_orders()` at the company sales feed |
-| Payments | Manual receipt verification | Bank API/webhooks writing into the same `wallet_transactions` ledger |
-| Deployment | `python app.py` (Waitress/Gunicorn ready) | WSGI server behind a reverse proxy + `ONECARD_SECRET_KEY` env + Docker |
-| Order lifecycle | `placed` only | Add fulfillment/delivery states when connected to provisioning |
+| Payments | Manual receipt verification (now content-sniffed on upload) | Bank API/webhooks writing into the same `wallet_transactions` ledger |
+| Deployment | `python app.py` (Waitress/Gunicorn ready) | WSGI server behind a reverse proxy + `ONECARD_SECRET_KEY`/`ONECARD_ENCRYPTION_KEY`/`ONECARD_COOKIE_SECURE` env + Docker |
+| Order lifecycle | `placed` + per-line `fulfillment_status` (delivered/external) | Add cancel/refund and full delivery states when connected to provisioning |
+| Backups | Local daily SQLite snapshot, 14-day rotation | Ship backups off-box (S3/blob) — a local copy next to the live DB doesn't survive a disk failure |
+| Not yet built | Invoicing/VAT, refunds, partner-settlement execution (marking a payout as *paid*), multi-user partner accounts (one login per branch/cashier), email/SMS notifications | Product-scope decisions for the next iteration, not technical debt |
 
 ---
 

@@ -11,6 +11,9 @@
         <form method="POST" action="/admin/compliance/run" onsubmit="return confirm('Run the monthly tier-compliance check now? Warnings/downgrades will be applied and everyone notified.')">
             <button type="submit" class="btn btn-ghost">🛡️ Run Compliance Check</button>
         </form>
+        <form method="POST" action="/admin/backup/run">
+            <button type="submit" class="btn btn-ghost">💾 Backup Database Now</button>
+        </form>
     </div>
 </div>
 
@@ -92,5 +95,25 @@
         <div style="text-align:center;padding:30px;color:var(--text-3)">No resellers registered yet</div>
         {% endif %}
     </div>
+</div>
+
+<div class="card mt-24">
+    <div class="card-header"><div class="card-title">💾 Recent Database Backups</div></div>
+    {% if backups %}
+    <table style="width:100%">
+        <thead><tr><th>File</th><th>Size</th><th>Created</th></tr></thead>
+        <tbody>
+        {% for b in backups %}
+        <tr>
+            <td class="fw6">{{ b.name }}</td>
+            <td>{{ b.size_kb }} KB</td>
+            <td class="text-muted">{{ b.created_at }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div style="text-align:center;padding:20px;color:var(--text-3)">No backups yet — one is taken automatically once a day, or press "Backup Database Now" above.</div>
+    {% endif %}
 </div>
 {% endblock %}

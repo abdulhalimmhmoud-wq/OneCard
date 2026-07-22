@@ -39,5 +39,9 @@ onecard.db
 !tests/
 !tests/**
 
-# Never commit the local session secret
+# Never commit local secrets, backups or uploaded files (all already
+# excluded by the default-deny above; listed here for clarity)
 instance_secret.key
+instance_encryption.key
+backups/
+uploads/

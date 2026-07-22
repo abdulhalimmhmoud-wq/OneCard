@@ -18,7 +18,7 @@ import json
 import time
 import uuid
 import secrets as _secrets
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import models
 import auth
 
@@ -42,13 +42,25 @@ app.secret_key = _key
 # ── Hardening: upload size cap (largest legit upload is a price file) ──
 app.config['MAX_CONTENT_LENGTH'] = 8 * 1024 * 1024   # 8 MB
 
+# ── Hardening: session cookie policy ──
+# SESSION_COOKIE_SECURE is off by default because the prototype serves plain
+# HTTP on localhost — browsers silently drop "Secure" cookies over HTTP, which
+# would break every login. Set ONECARD_COOKIE_SECURE=1 once deployed behind
+# HTTPS (production must run behind TLS regardless).
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = os.environ.get('ONECARD_COOKIE_SECURE', '0') == '1'
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=12)
+
 DEBUG_MODE = os.environ.get('ONECARD_DEBUG', '0') == '1'
 
 UPLOAD_DIR = os.path.join(BASE_DIR, 'uploads', 'receipts')
 PRICEFILE_DIR = os.path.join(BASE_DIR, 'uploads', 'pricefiles')
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(PRICEFILE_DIR, exist_ok=True)
-ALLOWED_RECEIPT_EXT = {'.png', '.jpg', '.jpeg', '.pdf', '.webp'}
+# Receipt uploads are validated by content (see _sniff_receipt_ext), not
+# extension — they're reachable by any reseller. Price files stay
+# extension-checked; only staff (Ops) can reach that upload.
 ALLOWED_PRICEFILE_EXT = {'.xls', '.xlsx'}
 
 
@@ -58,20 +70,49 @@ def jdump(obj):
     return json.dumps(obj).replace('</', '<\\/')
 
 
-# ── Hardening: simple login rate-limit (per email+IP, in-memory) ──
-_login_attempts = {}
+def _sniff_receipt_ext(file_storage):
+    """Identify the real file type from its magic bytes rather than trusting
+    the claimed filename extension — a renamed .html/.exe must not pass as a
+    receipt just because someone typed .png on the end. Returns the true
+    extension to save with, or None if the content isn't one of the allowed
+    types at all."""
+    head = file_storage.stream.read(16)
+    file_storage.stream.seek(0)
+    if head.startswith(b'\x89PNG\r\n\x1a\n'):
+        return '.png'
+    if head.startswith(b'\xff\xd8\xff'):
+        return '.jpg'
+    if head.startswith(b'%PDF-'):
+        return '.pdf'
+    if head[:4] == b'RIFF' and head[8:12] == b'WEBP':
+        return '.webp'
+    return None
+
+
+# ── Hardening: generic in-memory attempt limiter ──────────────────
+# Shared by login (per email+IP) and gift-card redemption (per code) so a
+# PIN can't be brute-forced any more than a password can. In-memory only:
+# resets on restart and is per-worker, which is fine at prototype scale —
+# a production deployment should back this with Redis/memcached.
+_attempt_log = {}
+
+
+def rate_limited(bucket, key, max_tries, window_sec):
+    now = time.time()
+    log_key = f"{bucket}:{key}"
+    tries = [t for t in _attempt_log.get(log_key, []) if now - t < window_sec]
+    _attempt_log[log_key] = tries
+    return len(tries) >= max_tries
+
+
+def record_attempt(bucket, key):
+    _attempt_log.setdefault(f"{bucket}:{key}", []).append(time.time())
+
+
 LOGIN_MAX_TRIES = 5
 LOGIN_WINDOW_SEC = 15 * 60
-
-
-def login_blocked(key):
-    tries = [t for t in _login_attempts.get(key, []) if time.time() - t < LOGIN_WINDOW_SEC]
-    _login_attempts[key] = tries
-    return len(tries) >= LOGIN_MAX_TRIES
-
-
-def record_login_failure(key):
-    _login_attempts.setdefault(key, []).append(time.time())
+REDEEM_MAX_TRIES = 8
+REDEEM_WINDOW_SEC = 15 * 60
 
 
 # ── Context Processor ─────────────────────────────────────────────
@@ -119,11 +160,26 @@ def csrf_protect():
             abort(403, description='CSRF token missing or invalid. Refresh the page and try again.')
 
 
+_last_compliance_tick = 0.0
+COMPLIANCE_TICK_INTERVAL = 300   # seconds
+
+
 @app.before_request
 def daily_compliance_check():
-    """Lazy daily tier-compliance run (throttled inside the function)."""
-    if request.endpoint not in ('static',):
-        models.run_tier_compliance()
+    """Lazy daily tier-compliance run. models.run_tier_compliance() already
+    throttles itself to once/day via app_meta, but that still means an extra
+    SQLite connection + query on every single request. This in-process gate
+    (per worker) caps how often we even open a connection to ask; a few
+    minutes' delay in noticing the day rolled over is irrelevant for a
+    monthly compliance job."""
+    global _last_compliance_tick
+    if request.endpoint == 'static':
+        return
+    now = time.time()
+    if now - _last_compliance_tick < COMPLIANCE_TICK_INTERVAL:
+        return
+    _last_compliance_tick = now
+    models.run_tier_compliance()
 
 
 # ── Hardening: friendly error pages ──────────────────────────────
@@ -194,18 +250,18 @@ def login():
         email = (request.form.get('email') or '').lower().strip()
         password = request.form.get('password')
         rl_key = f"{email}|{request.remote_addr}"
-        if login_blocked(rl_key):
+        if rate_limited('login', rl_key, LOGIN_MAX_TRIES, LOGIN_WINDOW_SEC):
             flash("Too many failed attempts — try again in 15 minutes.", "error")
             return render_template('login.html'), 429
         user = auth.login_user(email, password)
         if user:
-            _login_attempts.pop(rl_key, None)
+            _attempt_log.pop(f"login:{rl_key}", None)
             session['user_id'] = user['id']
             session.permanent = True
             flash(f"Welcome back, {user['name']}!", "success")
             return redirect(url_for('index'))
         else:
-            record_login_failure(rl_key)
+            record_attempt('login', rl_key)
             flash("Invalid email or password.", "error")
     return render_template('login.html')
 
@@ -249,9 +305,11 @@ def admin_dashboard():
     resellers = models.get_all_resellers()
     pending_topups = len(models.get_topups('pending'))
     pending_discounts = len(models.get_discount_requests('pending'))
+    backups = models.list_backups()[:5]
     return render_template('admin/dashboard.html', active_tab='dashboard', stats=stats,
                            tiers=tiers, resellers=resellers,
-                           pending_topups=pending_topups, pending_discounts=pending_discounts)
+                           pending_topups=pending_topups, pending_discounts=pending_discounts,
+                           backups=backups)
 
 
 @app.route('/admin/tiers', methods=['GET', 'POST'])
@@ -345,6 +403,15 @@ def admin_run_compliance():
         flash("Compliance check done: " + " | ".join(actions), "info")
     else:
         flash("Compliance check done — all contracted resellers are on track.", "success")
+    return redirect(url_for('admin_dashboard'))
+
+
+@app.route('/admin/backup/run', methods=['POST'])
+@auth.admin_required
+def admin_run_backup():
+    path = models.backup_database()
+    flash(f"Backup created: {os.path.basename(path)}. Older than "
+          f"{models.BACKUP_RETENTION_DAYS} days are pruned automatically.", "success")
     return redirect(url_for('admin_dashboard'))
 
 
@@ -1246,9 +1313,15 @@ def ops_issuing_checker():
     if request.method == 'POST':
         code = request.form.get('code', '').strip()
         action = request.form.get('action')
+        if code and rate_limited('redeem', code, REDEEM_MAX_TRIES, REDEEM_WINDOW_SEC):
+            flash("Too many attempts on this code — try again in 15 minutes.", "error")
+            return render_template('ops/issuing_checker.html', active_tab='ops_issuing',
+                                   result=None, code=code), 429
         if action == 'redeem' and code:
             ok, msg = models.redeem_voucher(code)
             flash(msg, "success" if ok else "error")
+            if not ok:
+                record_attempt('redeem', code)
         result = models.check_voucher(code) if code else None
         if code and not result:
             flash("Code not found in the system.", "error")
@@ -1287,9 +1360,15 @@ def partner_redeem():
         code = request.form.get('code', '').strip()
         pin = request.form.get('pin', '').strip()
         action = request.form.get('action')
+        if code and rate_limited('redeem', code, REDEEM_MAX_TRIES, REDEEM_WINDOW_SEC):
+            flash("Too many attempts on this code — try again in 15 minutes.", "error")
+            return render_template('partner/redeem.html', active_tab='partner_redeem',
+                                   partner=partner, result=None, code=code), 429
         if action == 'redeem':
             ok, msg = models.partner_redeem(partner['id'], code, pin)
             flash(msg, "success" if ok else "error")
+            if not ok:
+                record_attempt('redeem', code)
         result, err = models.partner_check_voucher(partner['id'], code) if code else (None, None)
         if code and err and action != 'redeem':
             flash(err, "error")
@@ -1812,11 +1891,11 @@ def reseller_wallet():
         elif not file or not file.filename:
             flash("Please attach the bank transfer receipt.", "error")
         else:
-            ext = os.path.splitext(file.filename)[1].lower()
-            if ext not in ALLOWED_RECEIPT_EXT:
-                flash("Receipt must be an image (PNG/JPG/WEBP) or PDF.", "error")
+            sniffed_ext = _sniff_receipt_ext(file)
+            if not sniffed_ext:
+                flash("Receipt must be a genuine image (PNG/JPG/WEBP) or PDF file.", "error")
             else:
-                fname = f"r{profile['id']}_{uuid.uuid4().hex[:12]}{ext}"
+                fname = f"r{profile['id']}_{uuid.uuid4().hex[:12]}{sniffed_ext}"
                 file.save(os.path.join(UPLOAD_DIR, fname))
                 txn_id = models.create_topup_request(profile['id'], amount, bank_ref, fname, note)
                 models.notify(models.get_user_ids_by_role('finance'),

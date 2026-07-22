@@ -20,10 +20,72 @@ import sqlite3
 import os
 import math
 import calendar
+import hashlib
 import bcrypt
 from datetime import datetime, date, timedelta, timezone
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'onecard.db')
+
+
+# ── Encryption at rest (v10 hardening) ────────────────────────────
+# Gift-card codes and PINs are money. They are encrypted before being
+# written to the database; a deterministic hash column enables lookup
+# by plaintext code without ever storing the code unencrypted.
+
+_FERNET = None
+
+
+def _get_fernet():
+    global _FERNET
+    if _FERNET is not None:
+        return _FERNET
+    from cryptography.fernet import Fernet
+    key = os.environ.get('ONECARD_ENCRYPTION_KEY')
+    if not key:
+        key_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instance_encryption.key')
+        if os.path.exists(key_file):
+            key = open(key_file).read().strip()
+        else:
+            key = Fernet.generate_key().decode()
+            with open(key_file, 'w') as f:
+                f.write(key)
+    _FERNET = Fernet(key.encode() if isinstance(key, str) else key)
+    return _FERNET
+
+
+def _enc(plaintext):
+    if plaintext is None:
+        return None
+    return _get_fernet().encrypt(str(plaintext).encode()).decode()
+
+
+def _dec(token):
+    """Decrypt; tolerates already-plaintext legacy values so old rows
+    (before this migration ran) don't crash the UI."""
+    if token is None:
+        return None
+    try:
+        return _get_fernet().decrypt(token.encode()).decode()
+    except Exception:
+        return token
+
+
+def _code_hash(code):
+    """Deterministic lookup key for an encrypted code — never reversible."""
+    return hashlib.sha256(code.strip().encode()).hexdigest()
+
+
+def _ensure_table_encrypted(conn, table, id_col='id'):
+    """One-time upgrade: any row whose code/pin fail to decrypt is legacy
+    plaintext and gets encrypted in place. Idempotent — already-encrypted
+    rows decrypt successfully and are left untouched."""
+    rows = conn.execute(f"SELECT {id_col} as rid, code, pin FROM {table}").fetchall()
+    for r in rows:
+        try:
+            _get_fernet().decrypt(r['code'].encode())
+        except Exception:
+            conn.execute(f"UPDATE {table} SET code=?, pin=? WHERE {id_col}=?",
+                         (_enc(r['code']), _enc(r['pin']) if r['pin'] is not None else None, r['rid']))
 
 # ── Business Constants ───────────────────────────────────────────
 
@@ -65,6 +127,10 @@ def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # A concurrent writer waits up to 5s for the lock instead of failing
+    # immediately with "database is locked" (matters once BEGIN IMMEDIATE
+    # transactions, e.g. in create_order, start serializing writers).
+    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 
@@ -346,7 +412,8 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             batch_id INTEGER NOT NULL REFERENCES issued_batches(id) ON DELETE CASCADE,
             product_rowid INTEGER NOT NULL,
-            code TEXT UNIQUE NOT NULL,
+            code TEXT NOT NULL,
+            code_hash TEXT UNIQUE NOT NULL,
             pin TEXT,
             status TEXT NOT NULL DEFAULT 'available'
                 CHECK(status IN ('available','sold','redeemed','void')),
@@ -357,6 +424,9 @@ def init_db():
 
         CREATE INDEX IF NOT EXISTS idx_vouchers_stock ON issued_vouchers(product_rowid, status);
         CREATE INDEX IF NOT EXISTS idx_vouchers_order_item ON issued_vouchers(order_item_id);
+        -- idx_vouchers_code_hash is created in migrate_db(): on an existing
+        -- (pre-v10) database this table still lacks code_hash at this point
+        -- in the script, and CREATE TABLE IF NOT EXISTS above is then a no-op.
 
         -- ── v9: Integration API ───────────────────────────────
         CREATE TABLE IF NOT EXISTS api_idempotency (
@@ -612,6 +682,53 @@ def migrate_db():
             conn.execute("UPDATE orders SET total_cost=?, total_face=?, total_savings=? WHERE id=?",
                          (round(tot[0], 2), round(tot[1], 2), round(tot[1] - tot[0], 2), o['id']))
         conn.commit()
+
+    # 8. v10 hardening: encrypt voucher codes/PINs at rest.
+    # issued_vouchers gets a rebuild (adds the code_hash lookup column and
+    # drops the old plaintext-unique constraint on code); external_codes has
+    # no lookup path so it's just encrypted in place.
+    ivcols = {r['name'] for r in conn.execute("PRAGMA table_info(issued_vouchers)")}
+    if 'code_hash' not in ivcols:
+        old_rows = conn.execute("SELECT * FROM issued_vouchers").fetchall()
+        conn.executescript("""
+            CREATE TABLE issued_vouchers_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id INTEGER NOT NULL REFERENCES issued_batches(id) ON DELETE CASCADE,
+                product_rowid INTEGER NOT NULL,
+                code TEXT NOT NULL,
+                code_hash TEXT UNIQUE NOT NULL,
+                pin TEXT,
+                status TEXT NOT NULL DEFAULT 'available'
+                    CHECK(status IN ('available','sold','redeemed','void')),
+                order_item_id INTEGER REFERENCES order_items(id),
+                sold_at TIMESTAMP,
+                redeemed_at TIMESTAMP
+            );
+        """)
+        for r in old_rows:
+            conn.execute("""INSERT INTO issued_vouchers_new
+                            (id, batch_id, product_rowid, code, code_hash, pin, status,
+                             order_item_id, sold_at, redeemed_at)
+                            VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                         (r['id'], r['batch_id'], r['product_rowid'], _enc(r['code']),
+                          _code_hash(r['code']), _enc(r['pin']) if r['pin'] is not None else None,
+                          r['status'], r['order_item_id'], r['sold_at'], r['redeemed_at']))
+        conn.executescript("""
+            DROP TABLE issued_vouchers;
+            ALTER TABLE issued_vouchers_new RENAME TO issued_vouchers;
+            CREATE INDEX IF NOT EXISTS idx_vouchers_stock ON issued_vouchers(product_rowid, status);
+            CREATE INDEX IF NOT EXISTS idx_vouchers_order_item ON issued_vouchers(order_item_id);
+            CREATE INDEX IF NOT EXISTS idx_vouchers_code_hash ON issued_vouchers(code_hash);
+        """)
+        conn.commit()
+    else:
+        _ensure_table_encrypted(conn, 'issued_vouchers')
+        conn.commit()
+    # Unconditional: covers both the rebuild path above and a fresh install
+    # where issued_vouchers was created with code_hash already present.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_vouchers_code_hash ON issued_vouchers(code_hash)")
+    _ensure_table_encrypted(conn, 'external_codes')
+    conn.commit()
 
     conn.commit()
     conn.close()
@@ -1143,8 +1260,14 @@ def get_topup(txn_id):
 def review_topup(txn_id, approve, reviewer_id, note=''):
     """Finance approves/rejects a top-up. On approval the wallet is credited."""
     conn = get_db()
+    # BEGIN IMMEDIATE: two Finance users approving the same top-up at nearly
+    # the same moment must not both pass the 'pending' check and both credit
+    # the wallet — that would create money. Locking here makes the second
+    # click's SELECT see the already-'approved'/'rejected' row and no-op.
+    conn.execute("BEGIN IMMEDIATE")
     txn = conn.execute("SELECT * FROM wallet_transactions WHERE id=? AND status='pending'", (txn_id,)).fetchone()
     if not txn:
+        conn.rollback()
         conn.close()
         return False
     status = 'approved' if approve else 'rejected'
@@ -1258,8 +1381,17 @@ def create_order(reseller_id, items):
     total_cost = round(total_cost, 2)
     total_face = round(total_face, 2)
     conn = get_db()
+    # BEGIN IMMEDIATE acquires the write lock up front, before the balance/
+    # stock checks below. Without this, two concurrent orders for the same
+    # reseller (or the same limited-stock gift card) can both read a stale
+    # "sufficient" balance/stock, since a plain SELECT takes no lock — the
+    # classic check-then-act race. Holding the lock from here through
+    # commit() makes the whole check-and-deduct sequence atomic; a second
+    # concurrent call simply waits (up to the busy_timeout in get_db()).
+    conn.execute("BEGIN IMMEDIATE")
     bal = conn.execute("SELECT wallet_balance FROM reseller_profiles WHERE id=?", (reseller_id,)).fetchone()
     if not bal:
+        conn.rollback()
         conn.close()
         return None, "Reseller not found."
     # v8 Issuing Hub: never sell codes we don't have — validate stock first
@@ -1270,10 +1402,12 @@ def create_order(reseller_id, items):
             if p and p['is_issued']:
                 left = voucher_stock(conn, prow)
                 if left < it['quantity']:
+                    conn.rollback()
                     conn.close()
                     return None, (f"Only {left} gift-card codes left for '{p['product_name']}' "
                                   f"(you requested {it['quantity']}). Ops were alerted to restock.")
     if bal['wallet_balance'] < total_cost:
+        conn.rollback()
         conn.close()
         return None, (f"Insufficient wallet balance. Order total is {total_cost:,.0f} SAR "
                       f"but wallet has {bal['wallet_balance']:,.0f} SAR.")
@@ -2360,6 +2494,59 @@ def expire_new_flags():
     conn.close()
 
 
+# ── Database backups (v10 hardening) ──────────────────────────────
+
+BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backups')
+BACKUP_RETENTION_DAYS = 14
+
+
+def backup_database():
+    """Consistent hot-backup of the live SQLite file via the sqlite3 backup
+    API (safe to run while the app is serving requests — it doesn't lock out
+    writers for more than a moment). Backups older than BACKUP_RETENTION_DAYS
+    are pruned. Returns the backup file path.
+
+    INTEGRATION NOTE: this covers "no backups at all" for the prototype.
+    A real deployment should also ship these off-box (S3/blob storage) —
+    a local backup next to the live DB doesn't survive a disk failure."""
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime('%Y-%m-%d_%H%M%S')
+    dest_path = os.path.join(BACKUP_DIR, f'onecard_{stamp}.db')
+    src = sqlite3.connect(DB_PATH)
+    dst = sqlite3.connect(dest_path)
+    with dst:
+        src.backup(dst)
+    src.close()
+    dst.close()
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=BACKUP_RETENTION_DAYS)
+    for fname in os.listdir(BACKUP_DIR):
+        if not (fname.startswith('onecard_') and fname.endswith('.db')):
+            continue
+        fpath = os.path.join(BACKUP_DIR, fname)
+        try:
+            mtime = datetime.fromtimestamp(os.path.getmtime(fpath), tz=timezone.utc)
+            if mtime < cutoff:
+                os.remove(fpath)
+        except OSError:
+            pass
+    return dest_path
+
+
+def list_backups():
+    if not os.path.isdir(BACKUP_DIR):
+        return []
+    out = []
+    for fname in sorted(os.listdir(BACKUP_DIR), reverse=True):
+        if fname.startswith('onecard_') and fname.endswith('.db'):
+            fpath = os.path.join(BACKUP_DIR, fname)
+            out.append({'name': fname,
+                       'size_kb': round(os.path.getsize(fpath) / 1024, 1),
+                       'created_at': datetime.fromtimestamp(
+                           os.path.getmtime(fpath), tz=timezone.utc).strftime('%Y-%m-%d %H:%M UTC')})
+    return out
+
+
 # ── Issuing Hub (v8): we issue partner gift cards & sell them ────
 
 ISSUED_LOW_STOCK_THRESHOLD = 20
@@ -2445,8 +2632,9 @@ def generate_voucher_batch(product_rowid, quantity, generated_by, note=''):
     for _ in range(quantity):
         code = '-'.join(_sec.token_hex(2).upper() for _ in range(4))
         pin = str(_sec.randbelow(900000) + 100000)
-        conn.execute("""INSERT INTO issued_vouchers (batch_id, product_rowid, code, pin)
-                        VALUES (?,?,?,?)""", (bid, product_rowid, code, pin))
+        conn.execute("""INSERT INTO issued_vouchers (batch_id, product_rowid, code, code_hash, pin)
+                        VALUES (?,?,?,?,?)""",
+                     (bid, product_rowid, _enc(code), _code_hash(code), _enc(pin)))
     conn.commit()
     conn.close()
     return {'batch_id': bid, 'batch_ref': ref}, None
@@ -2525,7 +2713,9 @@ def get_order_codes(order_id):
     conn.close()
     out = {}
     for r in rows:
-        out.setdefault(r['order_item_id'], []).append(dict(r))
+        d = dict(r)
+        d['code'], d['pin'] = _dec(d['code']), _dec(d['pin'])
+        out.setdefault(r['order_item_id'], []).append(d)
     return out
 
 
@@ -2537,15 +2727,26 @@ def check_voucher(code):
                           JOIN products p ON v.product_rowid=p.id
                           LEFT JOIN issuing_partners ip ON p.issuing_partner_id=ip.id
                           JOIN issued_batches b ON v.batch_id=b.id
-                          WHERE v.code=?""", (code.strip(),)).fetchone()
+                          WHERE v.code_hash=?""", (_code_hash(code),)).fetchone()
     conn.close()
-    return dict(row) if row else None
+    if not row:
+        return None
+    d = dict(row)
+    d['code'], d['pin'] = _dec(d['code']), _dec(d['pin'])
+    return d
 
 
 def redeem_voucher(code):
     conn = get_db()
-    v = conn.execute("SELECT id, status FROM issued_vouchers WHERE code=?", (code.strip(),)).fetchone()
+    # BEGIN IMMEDIATE: two near-simultaneous redemption attempts on the same
+    # code (accidental double-scan, network retry) must not both see status
+    # ='sold' and both succeed — the second must see 'redeemed' and be
+    # rejected, not just get lucky sequencing.
+    conn.execute("BEGIN IMMEDIATE")
+    v = conn.execute("SELECT id, status FROM issued_vouchers WHERE code_hash=?",
+                     (_code_hash(code),)).fetchone()
     if not v or v['status'] != 'sold':
+        conn.rollback()
         conn.close()
         return False, ("Code not found." if not v else f"Cannot redeem - status is '{v['status']}'.")
     conn.execute("UPDATE issued_vouchers SET status='redeemed', redeemed_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -2653,7 +2854,7 @@ def deliver_external_codes(order_item_id, codes, provider):
     for c in codes:
         conn.execute("""INSERT INTO external_codes (order_item_id, code, pin, provider)
                         VALUES (?,?,?,?)""",
-                     (order_item_id, c['code'], c.get('pin'), provider))
+                     (order_item_id, _enc(c['code']), _enc(c.get('pin')), provider))
     conn.execute("UPDATE order_items SET fulfillment_status='delivered' WHERE id=?", (order_item_id,))
     conn.commit()
     conn.close()
@@ -2677,7 +2878,7 @@ def _run_fulfillment_adapters(conn, order_id):
         for c in codes[:it['quantity']]:
             conn.execute("""INSERT INTO external_codes (order_item_id, code, pin, provider)
                             VALUES (?,?,?,?)""",
-                         (it['id'], c['code'], c.get('pin'), f"adapter:{it['merchant']}"))
+                         (it['id'], _enc(c['code']), _enc(c.get('pin')), f"adapter:{it['merchant']}"))
         conn.execute("UPDATE order_items SET fulfillment_status='delivered' WHERE id=?", (it['id'],))
 
 
@@ -2706,7 +2907,7 @@ def get_all_codes_for_order(order_id):
     conn.close()
     for r in rows:
         out.setdefault(r['order_item_id'], []).append(
-            {'code': r['code'], 'pin': r['pin'], 'status': r['status']})
+            {'code': _dec(r['code']), 'pin': _dec(r['pin']), 'status': r['status']})
     return out
 
 
@@ -2782,6 +2983,8 @@ def get_partner_stats(partner_id):
         FROM issued_vouchers v JOIN products p ON v.product_rowid=p.id
         WHERE p.issuing_partner_id=? AND v.status='redeemed'
         ORDER BY v.redeemed_at DESC LIMIT 10""", (partner_id,))]
+    for r in recent:
+        r['code'] = _dec(r['code'])
     conn.close()
     totals = {
         'programs': len(programs),
@@ -2872,6 +3075,10 @@ def run_tier_compliance(force=False):
     # Daily housekeeping piggybacks on the same once-a-day gate
     run_sla_nudges()
     expire_new_flags()
+    try:
+        backup_database()
+    except OSError:
+        pass   # disk/permission issue shouldn't take the whole request down
 
     prev_month_end = today.replace(day=1) - timedelta(days=1)
     prev_ym = prev_month_end.strftime('%Y-%m')

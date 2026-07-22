@@ -1,10 +1,15 @@
 """E2E test for v8.1: Issuing Partner Portal (dashboard, redeem station, statement)."""
 import urllib.request, urllib.parse, urllib.error, http.cookiejar as cj
 import re as _re
-import sqlite3, os
+import sqlite3, os, sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+import models   # noqa: E402 — codes/PINs are encrypted at rest (v10); use
+                # models._dec()/_code_hash() instead of the raw DB columns.
 
 BASE = 'http://127.0.0.1:8000'
-DB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'onecard.db')
+DB = os.path.join(ROOT, 'onecard.db')
 results = []
 
 def check(name, ok, extra=''):
@@ -67,11 +72,14 @@ sold = q("""SELECT v.code, v.pin FROM issued_vouchers v
             WHERE ip.name='Chef Burger KSA' AND v.status='sold' LIMIT 1""")
 check('a sold card exists to test with', bool(sold))
 if sold:
-    code, pin = sold[0]['code'], sold[0]['pin']
+    # codes/PINs are encrypted at rest (v10) — decrypt for the HTTP calls,
+    # and look status up by code_hash since the raw `code` column is now
+    # ciphertext (different every read) and can't be matched with `=`.
+    code, pin = models._dec(sold[0]['code']), models._dec(sold[0]['pin'])
     # wrong PIN rejected
     s, b = post(p, '/partner/redeem', {'code': code, 'pin': '000000', 'action': 'redeem'})
     check('wrong PIN rejected', 'Wrong PIN' in b)
-    st = q("SELECT status FROM issued_vouchers WHERE code=?", code)[0]['status']
+    st = q("SELECT status FROM issued_vouchers WHERE code_hash=?", models._code_hash(code))[0]['status']
     check('card still sold after wrong PIN', st == 'sold')
     # check first shows value
     s, b = post(p, '/partner/redeem', {'code': code, 'pin': pin, 'action': 'check'})
@@ -79,7 +87,7 @@ if sold:
     # correct redeem
     s, b = post(p, '/partner/redeem', {'code': code, 'pin': pin, 'action': 'redeem'})
     check('redeem succeeds with correct PIN', 'Redeemed successfully' in b)
-    st = q("SELECT status FROM issued_vouchers WHERE code=?", code)[0]['status']
+    st = q("SELECT status FROM issued_vouchers WHERE code_hash=?", models._code_hash(code))[0]['status']
     check('DB shows redeemed', st == 'redeemed')
     # double redeem blocked
     s, b = post(p, '/partner/redeem', {'code': code, 'pin': pin, 'action': 'redeem'})
@@ -91,7 +99,8 @@ avail = q("""SELECT v.code, v.pin FROM issued_vouchers v
              JOIN issuing_partners ip ON pr.issuing_partner_id=ip.id
              WHERE ip.name='Chef Burger KSA' AND v.status='available' LIMIT 1""")
 if avail:
-    s, b = post(p, '/partner/redeem', {'code': avail[0]['code'], 'pin': avail[0]['pin'], 'action': 'redeem'})
+    a_code, a_pin = models._dec(avail[0]['code']), models._dec(avail[0]['pin'])
+    s, b = post(p, '/partner/redeem', {'code': a_code, 'pin': a_pin, 'action': 'redeem'})
     check('unsold card rejected', 'never sold' in b)
 
 # ── 4. Ops-side login creation UI present ──
