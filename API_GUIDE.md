@@ -176,11 +176,15 @@ Success → `201` with the full order payload:
 
 ## 3. Webhooks (outbound)
 
-Set the reseller's `webhook_url` from **My Resellers → 🔌 API**. The platform POSTs:
+Set the reseller's `webhook_url` from **My Resellers → 🔌 API**. Doing so also mints a
+**signing secret** (`whsec_...`, shown in the same panel). The platform POSTs:
 
 ```
 POST <webhook_url>
 X-OneCard-Event: order.placed
+X-OneCard-Timestamp: 1753280045
+X-OneCard-Signature: sha256=<hex hmac>
+X-OneCard-Delivery: 8231
 {"event": "order.placed", "data": {"order_id": 19, "total_sar": 1264.0}}
 ```
 
@@ -189,10 +193,26 @@ Current events:
 - `statement.issued` — `{statement_id, amount_sar, due_at}` (a new invoice for a credit/consignment line)
 - `statement.overdue` — `{statement_id, amount_sar}` (past due; the account is now frozen until settled)
 
-Delivery is best-effort with a 3s timeout and is logged in
-`webhook_deliveries` (reseller, event, HTTP status).
-**Production hardening (your side):** move sending to a queue with retries + HMAC signature
-header; the call site is one function — `models.send_webhook()`.
+Header names are case-insensitive (per HTTP) — look them up accordingly.
+
+**Verify the signature.** Recompute HMAC-SHA256 over `"<X-OneCard-Timestamp>.<raw body>"`
+with your secret and constant-time compare against `X-OneCard-Signature`:
+
+```python
+import hmac, hashlib
+def valid(secret, timestamp, raw_body, header):
+    expected = 'sha256=' + hmac.new(secret.encode(),
+        f"{timestamp}.{raw_body}".encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, header)
+```
+Reject stale timestamps (e.g. older than 5 minutes) to prevent replay.
+
+**Delivery semantics.** Delivery is durable: events are queued and drained by a
+background worker, **retried with exponential backoff** (up to 6 attempts: 30s, 2m,
+10m, 30m, 2h, 6h) on any non-2xx or network error, then marked `failed`. Each attempt
+is recorded in `webhook_deliveries` (status, attempts, HTTP code, last error). Respond
+`2xx` quickly and process asynchronously on your side; **deduplicate on
+`X-OneCard-Delivery`** since a retry may re-deliver an event you already handled.
 
 ---
 

@@ -1,4 +1,27 @@
-# OneCard — Reseller Operations Platform (v15)
+# OneCard — Reseller Operations Platform (v16)
+
+## Webhook Hardening & Credit Reporting — Phase 4 (v16)
+
+Production hardening for outbound webhooks plus Finance/CCO reporting — the final
+phase of the account-models programme.
+
+- **Durable, retried, signed webhooks** — `send_webhook` now enqueues into
+  `webhook_deliveries` (a real queue) and a background worker drains it. Failed
+  deliveries **retry with exponential backoff** (up to 6 attempts: 30s → 6h) then
+  mark `failed`; every attempt records status/attempts/HTTP code/last error. Each
+  POST is **HMAC-SHA256 signed** with a per-reseller secret (`whsec_…`, minted when a
+  webhook URL is set, shown to Sales) via `X-OneCard-Signature` +
+  `X-OneCard-Timestamp`, with `X-OneCard-Delivery` for idempotent de-duplication.
+  `statement.issued` / `statement.overdue` / `order.placed` all flow through it.
+- **Receivables aging** — the Finance **Credit & Settlements** hub shows open
+  statements bucketed by overdue age (not-due, 1-30, 31-60, 61-90, 90+ days).
+- **Portfolio CSV export** — `/finance/credit/export.csv` downloads the full
+  credit/consignment book (limit, outstanding, unbilled, overdue, oldest-overdue
+  days, frozen, terms) for offline reporting.
+
+Signature verification + delivery semantics are documented in
+[API_GUIDE.md](API_GUIDE.md). Coverage: `tests/e2e_v16.py` (15 checks, incl. a live
+signed-delivery + retry test). **The account-models programme (v13–v16) is complete.**
 
 ## Consignment via API & Account Endpoints — Phase 3 (v15)
 

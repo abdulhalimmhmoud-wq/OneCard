@@ -167,12 +167,19 @@ s, r = api('/api/v1/orders/999999', key=KEY)
 check('foreign order 404', s == 404)
 
 # ── 8. Webhooks received ──
-import time
-time.sleep(0.5)
+# v16: delivery is now a durable async queue drained by a background worker.
+# Flush it in-process so the test is deterministic (the server runs with the
+# worker disabled under ONECARD_NO_WEBHOOK_WORKER=1).
+import time, sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import models
+for _ in range(3):
+    models.deliver_due_webhooks()
+    time.sleep(0.2)
 check('webhooks delivered', len(received) >= 3, f"got {len(received)}")
 if received:
-    check('webhook shape', received[0]['event'] == 'order.placed'
-          and 'order_id' in received[0]['body']['data'])
+    ev = next((x for x in received if x['event'] == 'order.placed'), received[0])
+    check('webhook shape', ev['event'] == 'order.placed' and 'order_id' in ev['body']['data'])
 wl = q("SELECT COUNT(*) as n FROM webhook_deliveries WHERE status_code=200")[0]['n']
 check('webhook deliveries logged', wl >= 3, f"logged={wl}")
 

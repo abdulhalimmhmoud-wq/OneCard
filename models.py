@@ -797,6 +797,21 @@ def migrate_db():
         conn.execute("ALTER TABLE reseller_profiles ADD COLUMN api_key TEXT")
     if 'webhook_url' not in rcols:
         conn.execute("ALTER TABLE reseller_profiles ADD COLUMN webhook_url TEXT")
+    # v16: per-reseller secret used to HMAC-sign webhook payloads
+    if 'webhook_secret' not in rcols:
+        conn.execute("ALTER TABLE reseller_profiles ADD COLUMN webhook_secret TEXT")
+
+    # 7c-2. v16: turn webhook_deliveries into a durable retry queue
+    wdcols = {r['name'] for r in conn.execute("PRAGMA table_info(webhook_deliveries)")}
+    for col, ddl in (('payload', "ALTER TABLE webhook_deliveries ADD COLUMN payload TEXT"),
+                     ('status', "ALTER TABLE webhook_deliveries ADD COLUMN status TEXT NOT NULL DEFAULT 'delivered'"),
+                     ('attempts', "ALTER TABLE webhook_deliveries ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"),
+                     ('next_attempt_at', "ALTER TABLE webhook_deliveries ADD COLUMN next_attempt_at TEXT"),
+                     ('last_error', "ALTER TABLE webhook_deliveries ADD COLUMN last_error TEXT"),
+                     ('delivered_at', "ALTER TABLE webhook_deliveries ADD COLUMN delivered_at TIMESTAMP")):
+        if col not in wdcols:
+            conn.execute(ddl)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_webhook_due ON webhook_deliveries(status, next_attempt_at)")
 
     # 7d. v9: per-line fulfillment status ('delivered' = codes attached,
     # 'external' = awaiting a provider adapter for that merchant)
@@ -2191,6 +2206,68 @@ def get_consignment_activity():
         d = dict(r)
         d['unbilled'] = round(max(0.0, (d['credit_outstanding'] or 0) - (d['open_billed'] or 0)), 2)
         d['available'] = round(max(0.0, (d['credit_limit'] or 0) - (d['credit_outstanding'] or 0)), 2)
+        out.append(d)
+    return out
+
+
+def get_credit_aging():
+    """Open-statement receivables bucketed by how overdue they are (SAR), for
+    Finance/CCO reporting. Buckets: not_due, 1-30, 31-60, 61-90, 90+ days."""
+    conn = get_db()
+    today = datetime.now(timezone.utc).date()
+    rows = conn.execute("""SELECT s.amount, s.due_at FROM statements s
+                           WHERE s.status IN ('issued','overdue')""").fetchall()
+    conn.close()
+    buckets = {'not_due': 0.0, 'd1_30': 0.0, 'd31_60': 0.0, 'd61_90': 0.0, 'd90p': 0.0}
+    for r in rows:
+        try:
+            overdue_days = (today - date.fromisoformat((r['due_at'] or '')[:10])).days
+        except (ValueError, TypeError):
+            overdue_days = 0
+        amt = r['amount'] or 0
+        if overdue_days <= 0:
+            buckets['not_due'] += amt
+        elif overdue_days <= 30:
+            buckets['d1_30'] += amt
+        elif overdue_days <= 60:
+            buckets['d31_60'] += amt
+        elif overdue_days <= 90:
+            buckets['d61_90'] += amt
+        else:
+            buckets['d90p'] += amt
+    buckets = {k: round(v, 2) for k, v in buckets.items()}
+    buckets['total'] = round(sum(buckets.values()), 2)
+    return buckets
+
+
+def get_credit_portfolio():
+    """Per-reseller credit/consignment snapshot for the Finance CSV export (SAR)."""
+    conn = get_db()
+    today = datetime.now(timezone.utc).date()
+    rows = conn.execute("""SELECT cp.id, cp.company_name, cp.account_type, cp.credit_limit,
+                                  cp.credit_outstanding, cp.credit_frozen, cp.settlement_terms_days,
+                                  cp.billing_cycle,
+              (SELECT COALESCE(SUM(s.amount),0) FROM statements s
+                   WHERE s.reseller_id=cp.id AND s.status IN ('issued','overdue')) as open_billed,
+              (SELECT COALESCE(SUM(s.amount),0) FROM statements s
+                   WHERE s.reseller_id=cp.id AND s.status='overdue') as overdue_amount,
+              (SELECT MIN(s.due_at) FROM statements s
+                   WHERE s.reseller_id=cp.id AND s.status='overdue') as oldest_overdue_due
+                           FROM reseller_profiles cp
+                           WHERE cp.account_type IN ('credit','consignment')
+                           ORDER BY cp.company_name""").fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d['unbilled'] = round(max(0.0, (d['credit_outstanding'] or 0) - (d['open_billed'] or 0)), 2)
+        d['available'] = round(max(0.0, (d['credit_limit'] or 0) - (d['credit_outstanding'] or 0)), 2)
+        d['oldest_overdue_days'] = 0
+        if d['oldest_overdue_due']:
+            try:
+                d['oldest_overdue_days'] = max(0, (today - date.fromisoformat(d['oldest_overdue_due'][:10])).days)
+            except (ValueError, TypeError):
+                d['oldest_overdue_days'] = 0
         out.append(d)
     return out
 
@@ -3820,8 +3897,15 @@ def set_reseller_api(reseller_id, rotate_key=False, webhook_url=None):
         new_key = f"rk_{_sec.token_hex(24)}"
         conn.execute("UPDATE reseller_profiles SET api_key=? WHERE id=?", (new_key, reseller_id))
     if webhook_url is not None:
-        conn.execute("UPDATE reseller_profiles SET webhook_url=? WHERE id=?",
-                     (webhook_url.strip() or None, reseller_id))
+        url = webhook_url.strip() or None
+        conn.execute("UPDATE reseller_profiles SET webhook_url=? WHERE id=?", (url, reseller_id))
+        # v16: mint a signing secret the first time a webhook URL is configured
+        if url:
+            cur = conn.execute("SELECT webhook_secret FROM reseller_profiles WHERE id=?",
+                               (reseller_id,)).fetchone()
+            if not (cur and cur['webhook_secret']):
+                conn.execute("UPDATE reseller_profiles SET webhook_secret=? WHERE id=?",
+                             (f"whsec_{_sec.token_hex(24)}", reseller_id))
     conn.commit()
     conn.close()
     return new_key
@@ -3934,30 +4018,121 @@ def get_all_codes_for_order(order_id):
 
 # ── Webhooks (v9): best-effort, logged ───────────────────────────
 
+# ── Webhooks: durable queue + retries + HMAC signatures (v16) ────
+
+WEBHOOK_MAX_ATTEMPTS = 6
+# backoff after each failed attempt (seconds): 30s, 2m, 10m, 30m, 2h, 6h
+WEBHOOK_BACKOFF = [30, 120, 600, 1800, 7200, 21600]
+_webhook_worker_started = False
+
+
+def _sign_webhook(secret, timestamp, body):
+    """HMAC-SHA256 over "<timestamp>.<body>" — the client recomputes this with
+    their shared secret to prove the call really came from OneCard."""
+    import hmac
+    mac = hmac.new(secret.encode(), f"{timestamp}.{body}".encode(), hashlib.sha256)
+    return mac.hexdigest()
+
+
 def send_webhook(reseller_id, event, payload):
-    """POST an event to the reseller's webhook URL (3s timeout, never raises).
-    INTEGRATION NOTE: production should queue + retry with signatures."""
+    """Public entry point (kept for all existing call sites): enqueue an event
+    for durable, retried, signed delivery. Non-blocking — never touches the
+    network on the request path."""
+    enqueue_webhook(reseller_id, event, payload)
+
+
+def enqueue_webhook(reseller_id, event, payload):
+    import json as _json
     conn = get_db()
     row = conn.execute("SELECT webhook_url FROM reseller_profiles WHERE id=?", (reseller_id,)).fetchone()
     url = row['webhook_url'] if row else None
-    conn.close()
     if not url:
-        return
-    import json as _json
-    import urllib.request as _rq
-    status = None
-    try:
-        req = _rq.Request(url, data=_json.dumps({'event': event, 'data': payload}).encode(),
-                          headers={'Content-Type': 'application/json',
-                                   'X-OneCard-Event': event})
-        status = _rq.urlopen(req, timeout=3).status
-    except Exception:
-        status = 0
-    conn = get_db()
-    conn.execute("""INSERT INTO webhook_deliveries (reseller_id, event, url, status_code)
-                    VALUES (?,?,?,?)""", (reseller_id, event, url, status))
+        conn.close()
+        return None
+    conn.execute("""INSERT INTO webhook_deliveries
+                    (reseller_id, event, url, payload, status, attempts, next_attempt_at)
+                    VALUES (?,?,?,?,'pending',0,?)""",
+                 (reseller_id, event, url, _json.dumps({'event': event, 'data': payload}),
+                  datetime.now(timezone.utc).isoformat()))
+    did = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.commit()
     conn.close()
+    return did
+
+
+def deliver_due_webhooks(limit=50):
+    """Deliver every pending webhook whose next_attempt_at is due. On a non-2xx
+    or network error, retry with exponential backoff up to WEBHOOK_MAX_ATTEMPTS,
+    then mark it 'failed'. Synchronous + idempotent — safe to call from the
+    background worker or directly (tests). Returns (delivered, failed, retried)."""
+    import json as _json
+    import urllib.request as _rq
+    now = datetime.now(timezone.utc)
+    conn = get_db()
+    rows = conn.execute("""SELECT wd.*, cp.webhook_secret FROM webhook_deliveries wd
+                           JOIN reseller_profiles cp ON wd.reseller_id=cp.id
+                           WHERE wd.status='pending' AND (wd.next_attempt_at IS NULL OR wd.next_attempt_at<=?)
+                           ORDER BY wd.id LIMIT ?""",
+                        (now.isoformat(), limit)).fetchall()
+    conn.close()
+    delivered = failed = retried = 0
+    for wd in rows:
+        body = wd['payload'] or _json.dumps({'event': wd['event'], 'data': {}})
+        ts = str(int(now.timestamp()))
+        headers = {'Content-Type': 'application/json', 'X-OneCard-Event': wd['event'],
+                   'X-OneCard-Timestamp': ts, 'X-OneCard-Delivery': str(wd['id'])}
+        if wd['webhook_secret']:
+            headers['X-OneCard-Signature'] = 'sha256=' + _sign_webhook(wd['webhook_secret'], ts, body)
+        status_code, err = 0, None
+        try:
+            req = _rq.Request(wd['url'], data=body.encode(), headers=headers)
+            status_code = _rq.urlopen(req, timeout=5).status
+        except Exception as e:  # noqa: BLE001 - never let a bad endpoint break us
+            err = str(e)[:200]
+            status_code = getattr(e, 'code', 0) or 0
+        ok = 200 <= (status_code or 0) < 300
+        attempts = (wd['attempts'] or 0) + 1
+        conn2 = get_db()
+        if ok:
+            conn2.execute("""UPDATE webhook_deliveries SET status='delivered', status_code=?,
+                             attempts=?, delivered_at=CURRENT_TIMESTAMP, last_error=NULL WHERE id=?""",
+                          (status_code, attempts, wd['id']))
+            delivered += 1
+        elif attempts >= WEBHOOK_MAX_ATTEMPTS:
+            conn2.execute("""UPDATE webhook_deliveries SET status='failed', status_code=?,
+                             attempts=?, last_error=? WHERE id=?""",
+                          (status_code, attempts, err or f'HTTP {status_code}', wd['id']))
+            failed += 1
+        else:
+            delay = WEBHOOK_BACKOFF[min(attempts - 1, len(WEBHOOK_BACKOFF) - 1)]
+            nxt = (now + timedelta(seconds=delay)).isoformat()
+            conn2.execute("""UPDATE webhook_deliveries SET status='pending', status_code=?,
+                             attempts=?, next_attempt_at=?, last_error=? WHERE id=?""",
+                          (status_code, attempts, nxt, err or f'HTTP {status_code}', wd['id']))
+            retried += 1
+        conn2.commit()
+        conn2.close()
+    return delivered, failed, retried
+
+
+def start_webhook_worker(interval=5):
+    """Start a single background daemon that drains the webhook queue. Guarded
+    so it only ever starts once per process."""
+    global _webhook_worker_started
+    if _webhook_worker_started:
+        return
+    _webhook_worker_started = True
+    import threading, time as _time
+
+    def _loop():
+        while True:
+            try:
+                deliver_due_webhooks()
+            except Exception:  # noqa: BLE001 - worker must never die
+                pass
+            _time.sleep(interval)
+
+    threading.Thread(target=_loop, daemon=True, name='webhook-worker').start()
 
 
 # ── Partner Portal (v8.1): the business we issue cards FOR ──────

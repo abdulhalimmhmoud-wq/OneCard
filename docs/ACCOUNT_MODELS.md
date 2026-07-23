@@ -108,5 +108,6 @@ and the owning reseller (same pattern as wallet receipts).
   `/api/v1/account` + `/statements`, account-type error codes,
   `statement.issued`/`overdue` webhooks, Ops consignment activity view.
   *Shipped v15.*
-- **Phase 4** — reporting polish + production webhook hardening (queue + retries +
-  HMAC signatures).
+- **Phase 4** — production webhook hardening (durable queue + exponential-backoff
+  retries + HMAC signatures) and credit reporting (receivables aging + portfolio CSV
+  export). *Shipped v16 — programme complete.*

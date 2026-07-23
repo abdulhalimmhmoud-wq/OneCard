@@ -96,6 +96,12 @@
                                     <input type="url" name="webhook_url" value="{{ r.webhook_url or '' }}" placeholder="https://their-system/webhook" style="font-size:11px;padding:6px 8px;flex:1">
                                     <button class="btn btn-sm btn-ghost" type="submit">💾</button>
                                 </form>
+                                {% if r.webhook_secret %}
+                                <div class="text-muted" style="font-size:10px;margin-top:6px;word-break:break-all">
+                                    Signing secret: <code>{{ r.webhook_secret }}</code><br>
+                                    Client verifies <code>X-OneCard-Signature</code> (HMAC-SHA256 of <code>timestamp.body</code>).
+                                </div>
+                                {% endif %}
                                 <div class="text-muted" style="font-size:10px;margin-top:6px">Contract in API_GUIDE.md — X-API-Key header.</div>
                             </div>
                         </details>

@@ -7,6 +7,9 @@
         <h1 class="page-title">💳 Credit & Settlements</h1>
         <p class="page-subtitle">Verify settlement receipts, track statements and portfolio exposure. All figures in SAR.</p>
     </div>
+    <div class="page-actions">
+        <a href="/finance/credit/export.csv" class="btn btn-ghost">⬇️ Export Portfolio CSV</a>
+    </div>
 </div>
 
 <div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">
@@ -29,6 +32,33 @@
         <div class="stat-icon">🔒</div>
         <div class="stat-value">{{ exposure.frozen }}</div>
         <div class="stat-label">Frozen Accounts</div>
+    </div>
+</div>
+
+<!-- Aging of receivables -->
+<div class="card mb-24">
+    <div class="card-header"><div class="card-title">📅 Receivables Aging (open statements)</div></div>
+    <div style="display:flex;flex-wrap:wrap;gap:12px">
+        <div style="flex:1;min-width:130px;text-align:center;padding:10px;background:var(--bg-2);border-radius:10px">
+            <div class="fw6" style="font-size:18px">SAR {{ aging.not_due|money }}</div>
+            <div class="text-muted" style="font-size:11px">Not yet due</div>
+        </div>
+        <div style="flex:1;min-width:130px;text-align:center;padding:10px;background:var(--bg-2);border-radius:10px">
+            <div class="fw6" style="font-size:18px;color:var(--warning)">SAR {{ aging.d1_30|money }}</div>
+            <div class="text-muted" style="font-size:11px">1–30 days overdue</div>
+        </div>
+        <div style="flex:1;min-width:130px;text-align:center;padding:10px;background:var(--bg-2);border-radius:10px">
+            <div class="fw6" style="font-size:18px;color:var(--warning)">SAR {{ aging.d31_60|money }}</div>
+            <div class="text-muted" style="font-size:11px">31–60 days</div>
+        </div>
+        <div style="flex:1;min-width:130px;text-align:center;padding:10px;background:var(--bg-2);border-radius:10px">
+            <div class="fw6" style="font-size:18px;color:var(--danger)">SAR {{ aging.d61_90|money }}</div>
+            <div class="text-muted" style="font-size:11px">61–90 days</div>
+        </div>
+        <div style="flex:1;min-width:130px;text-align:center;padding:10px;background:var(--bg-2);border-radius:10px">
+            <div class="fw6" style="font-size:18px;color:var(--danger)">SAR {{ aging.d90p|money }}</div>
+            <div class="text-muted" style="font-size:11px">90+ days</div>
+        </div>
     </div>
 </div>
 

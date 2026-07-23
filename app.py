@@ -945,10 +945,34 @@ def finance_review(txn_id):
 def finance_credit():
     return render_template('finance/credit.html', active_tab='finance_credit',
                            exposure=models.get_credit_exposure(),
+                           aging=models.get_credit_aging(),
                            settlements=models.get_pending_settlements(),
                            open_statements=models.get_all_statements('issued')
                                           + models.get_all_statements('overdue'),
                            credit_requests=models.get_pending_credit_requests())
+
+
+@app.route('/finance/credit/export.csv')
+@auth.finance_required
+def finance_credit_export():
+    """Download the credit/consignment portfolio as CSV (SAR)."""
+    import csv, io
+    rows = models.get_credit_portfolio()
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(['Reseller', 'Account Type', 'Credit Limit', 'Outstanding', 'Unbilled',
+                'Open Billed', 'Overdue Amount', 'Oldest Overdue (days)', 'Frozen',
+                'Terms (net days)', 'Billing Cycle'])
+    for r in rows:
+        w.writerow([r['company_name'], r['account_type'], round(r['credit_limit'] or 0),
+                    round(r['credit_outstanding'] or 0), round(r['unbilled']),
+                    round(r['open_billed'] or 0), round(r['overdue_amount'] or 0),
+                    r['oldest_overdue_days'], 'yes' if r['credit_frozen'] else 'no',
+                    r['settlement_terms_days'], r['billing_cycle']])
+    from flask import Response
+    stamp = models.datetime.now(models.timezone.utc).strftime('%Y%m%d')
+    return Response(buf.getvalue(), mimetype='text/csv',
+                    headers={'Content-Disposition': f'attachment; filename=credit_portfolio_{stamp}.csv'})
 
 
 @app.route('/finance/settlements/<int:txn_id>/review', methods=['POST'])
@@ -2438,5 +2462,11 @@ def reseller_analysis():
 if __name__ == '__main__':
     models.init_db()
     models.seed_default_data()
+    # v16: background worker drains the webhook retry queue (skip the debug
+    # reloader's parent process to avoid a duplicate worker; ONECARD_NO_WEBHOOK_WORKER=1
+    # disables it so tests can drive delivery deterministically).
+    if ((not DEBUG_MODE or os.environ.get('WERKZEUG_RUN_MAIN') == 'true')
+            and os.environ.get('ONECARD_NO_WEBHOOK_WORKER') != '1'):
+        models.start_webhook_worker()
     # Debug/reloader only when explicitly requested: set ONECARD_DEBUG=1
     app.run(debug=DEBUG_MODE, port=8000)
