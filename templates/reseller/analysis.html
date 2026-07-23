@@ -31,17 +31,17 @@
     <div class="stat-card">
         <div class="stat-icon">💸</div>
         <div class="stat-value">{{ data.totals.spend|money }}</div>
-        <div class="stat-label">Total Spend (SAR)</div>
+        <div class="stat-label">Total Spend ({{ disp }})</div>
     </div>
     <div class="stat-card">
         <div class="stat-icon">🎁</div>
         <div class="stat-value">{{ data.totals.face|money }}</div>
-        <div class="stat-label">Face Value Received (SAR)</div>
+        <div class="stat-label">Face Value Received ({{ disp }})</div>
     </div>
     <div class="stat-card" style="border:2px solid var(--success)">
         <div class="stat-icon">💰</div>
         <div class="stat-value" style="color:var(--success)">+{{ data.totals.savings|money }}</div>
-        <div class="stat-label">Your Total Gain (SAR)</div>
+        <div class="stat-label">Your Total Gain ({{ disp }})</div>
     </div>
 </div>
 
@@ -66,7 +66,7 @@
         <div style="margin-bottom:12px">
             <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
                 <span class="fw6 truncate" style="max-width:220px">{{ m.merchant }}</span>
-                <span>{{ m.spend|money }} SAR <span class="text-s">(+{{ m.savings|money }})</span></span>
+                <span>{{ m.spend|money }} {{ disp }} <span class="text-s">(+{{ m.savings|money }})</span></span>
             </div>
             <div style="background:var(--bg-2);border-radius:100px;height:8px;overflow:hidden">
                 <div style="height:100%;width:{{ (m.spend / max_spend * 100)|round|int }}%;background:linear-gradient(90deg,var(--accent),#8b5cf6)"></div>
@@ -83,7 +83,7 @@
         <div style="margin-bottom:12px">
             <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
                 <span class="fw6">{{ c.category or 'Other' }}</span>
-                <span>{{ c.spend|money }} SAR · {{ c.qty }} units</span>
+                <span>{{ c.spend|money }} {{ disp }} · {{ c.qty }} units</span>
             </div>
             <div style="background:var(--bg-2);border-radius:100px;height:8px;overflow:hidden">
                 <div style="height:100%;width:{{ (c.spend / max_cat * 100)|round|int }}%;background:linear-gradient(90deg,var(--success),#34d399)"></div>
@@ -104,7 +104,7 @@
             <tr>
                 <td class="fw6">{{ m.ym }}</td>
                 <td>{{ m.orders }}</td>
-                <td>{{ m.spend|money }} SAR</td>
+                <td>{{ m.spend|money }} {{ disp }}</td>
                 <td class="text-s fw6">+{{ m.savings|money }}</td>
             </tr>
             {% endfor %}
@@ -124,7 +124,7 @@
                     <div class="text-muted" style="font-size:10px">{{ p.merchant }}</div>
                 </td>
                 <td>{{ p.qty }}</td>
-                <td>{{ p.spend|money }} SAR</td>
+                <td>{{ p.spend|money }} {{ disp }}</td>
             </tr>
             {% endfor %}
             </tbody>

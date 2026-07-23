@@ -20,7 +20,6 @@
         <div id="catFilter"></div>
         <div id="countryFilter"></div>
         <div id="regionFilter"></div>
-        <div id="currencyFilter"></div>
         <span id="resultCount" class="text-muted" style="font-size:13px"></span>
     </div>
 </div>
@@ -67,18 +66,16 @@ const fMerch = msCreate('merchantFilter', uniq('merchant'), 'All Merchants', fil
 const fCat = msCreate('catFilter', uniq('category'), 'All Categories', filterTable);
 const fCountry = msCreate('countryFilter', uniq('country'), 'All Countries', filterTable);
 const fRegion = msCreate('regionFilter', uniq('region'), 'All Regions', filterTable);
-const fCurr = msCreate('currencyFilter', uniq('currency'), 'All Currencies', filterTable);
+// v11: the catalogue is shown in one currency, so a currency filter is gone.
 
 function filterTable() {
     const search = document.getElementById('searchInput').value.toLowerCase();
     const mSel = fMerch.getSelected(), cSel = fCat.getSelected(),
-          coSel = fCountry.getSelected(), rSel = fRegion.getSelected(),
-          cuSel = fCurr.getSelected();
+          coSel = fCountry.getSelected(), rSel = fRegion.getSelected();
     filtered = allProducts.filter(p => {
         if (search && !p.product_name.toLowerCase().includes(search) && !p.merchant.toLowerCase().includes(search)) return false;
         return msMatch(mSel, p.merchant) && msMatch(cSel, p.category) &&
-               msMatch(coSel, p.country) && msMatch(rSel, p.region) &&
-               msMatch(cuSel, p.currency);
+               msMatch(coSel, p.country) && msMatch(rSel, p.region);
     });
     currentPage = 1;
     renderTable();

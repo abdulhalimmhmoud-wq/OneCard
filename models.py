@@ -592,10 +592,24 @@ def migrate_db():
         'compliance_status': "ALTER TABLE reseller_profiles ADD COLUMN compliance_status TEXT NOT NULL DEFAULT 'ok'",
         'grace_until': "ALTER TABLE reseller_profiles ADD COLUMN grace_until TEXT",
         'contracted_at': "ALTER TABLE reseller_profiles ADD COLUMN contracted_at TIMESTAMP",
+        # v11: the ONE currency this reseller sees the whole catalogue, wallet
+        # and orders in. Derived from their market at registration (Saudi
+        # Arabia -> SAR, otherwise -> USD); SAR is the internal base currency.
+        'display_currency': "ALTER TABLE reseller_profiles ADD COLUMN display_currency TEXT NOT NULL DEFAULT 'SAR'",
     }
+    just_added_display_cur = 'display_currency' not in cols
     for col, sql in add.items():
         if col not in cols:
             conn.execute(sql)
+    # Backfill display_currency for existing resellers from their markets.
+    if just_added_display_cur:
+        conn.commit()
+        for r in conn.execute("SELECT id FROM reseller_profiles").fetchall():
+            countries = [x['country'] for x in conn.execute(
+                "SELECT country FROM reseller_countries WHERE reseller_id=?", (r['id'],))]
+            conn.execute("UPDATE reseller_profiles SET display_currency=? WHERE id=?",
+                         (derive_display_currency(countries), r['id']))
+        conn.commit()
 
     # 3. products: active flag + added date (ops catalogue management)
     pcols = {r['name'] for r in conn.execute("PRAGMA table_info(products)")}
@@ -647,6 +661,16 @@ def migrate_db():
         conn.execute("ALTER TABLE order_items ADD COLUMN fulfillment_status TEXT NOT NULL DEFAULT 'external'")
         conn.execute("""UPDATE order_items SET fulfillment_status='delivered'
                         WHERE product_rowid IN (SELECT id FROM products WHERE is_issued=1)""")
+    conn.commit()
+
+    # 7e. v11: wallet top-ups record the amount as the reseller entered it
+    # (their display currency) alongside the SAR base that hits the wallet,
+    # so Finance sees exactly what the customer transferred.
+    wtcols = {r['name'] for r in conn.execute("PRAGMA table_info(wallet_transactions)")}
+    if 'orig_amount' not in wtcols:
+        conn.execute("ALTER TABLE wallet_transactions ADD COLUMN orig_amount REAL")
+    if 'orig_currency' not in wtcols:
+        conn.execute("ALTER TABLE wallet_transactions ADD COLUMN orig_currency TEXT DEFAULT 'SAR'")
     conn.commit()
 
     # 7b. v8.1: partner portal login link
@@ -846,16 +870,20 @@ def next_lower_tier(current_tier_id):
 # ── Reseller Profiles ─────────────────────────────────────────────
 
 def create_reseller(user_id, company_name, expected_sales, tier_id, registered_by,
-                    notes='', client_type='', countries=None, client_types=None):
-    """client_types: list (v8 multi-select). client_type stays as the primary/legacy value."""
+                    notes='', client_type='', countries=None, client_types=None,
+                    display_currency=None):
+    """client_types: list (v8 multi-select). client_type stays as the primary/legacy value.
+    display_currency (v11): defaults to the one derived from the reseller's markets."""
     types = [t for t in (client_types or ([client_type] if client_type else [])) if t]
     primary = types[0] if types else (client_type or '')
+    disp = display_currency or derive_display_currency(countries or [])
     conn = get_db()
     conn.execute("""INSERT INTO reseller_profiles
                     (user_id, company_name, expected_monthly_sales, assigned_tier_id,
-                     registered_by, notes, client_type)
-                    VALUES (?,?,?,?,?,?,?)""",
-                 (user_id, company_name, expected_sales, tier_id, registered_by, notes, primary))
+                     registered_by, notes, client_type, display_currency)
+                    VALUES (?,?,?,?,?,?,?,?)""",
+                 (user_id, company_name, expected_sales, tier_id, registered_by, notes,
+                  primary, disp))
     reseller_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     for c in (countries or []):
         conn.execute("INSERT INTO reseller_countries (reseller_id, country) VALUES (?,?)", (reseller_id, c))
@@ -888,6 +916,12 @@ def get_reseller_profile(user_id):
     p['overrides'] = {r['merchant']: r['share_pct'] for r in conn.execute(
         "SELECT merchant, share_pct FROM merchant_share_overrides WHERE reseller_id=?", (p['id'],))}
     conn.close()
+    # v11: wallet is stored in SAR (base); expose it in the reseller's
+    # display currency for every customer-facing screen.
+    p.setdefault('display_currency', 'SAR')
+    p['display_currency'] = p['display_currency'] or 'SAR'
+    p['wallet_balance_display'] = round(
+        convert_amount(p.get('wallet_balance', 0), 'SAR', p['display_currency']))
     return p
 
 
@@ -956,12 +990,15 @@ def set_contract_status(reseller_id, status):
     conn.close()
 
 
-def update_reseller_profile(reseller_id, client_type=None, countries=None, expected_sales=None):
+def update_reseller_profile(reseller_id, client_type=None, countries=None, expected_sales=None,
+                            display_currency=None):
     conn = get_db()
     if client_type is not None:
         conn.execute("UPDATE reseller_profiles SET client_type=? WHERE id=?", (client_type, reseller_id))
     if expected_sales is not None:
         conn.execute("UPDATE reseller_profiles SET expected_monthly_sales=? WHERE id=?", (expected_sales, reseller_id))
+    if display_currency in DISPLAY_CURRENCIES:
+        conn.execute("UPDATE reseller_profiles SET display_currency=? WHERE id=?", (display_currency, reseller_id))
     if countries is not None:
         conn.execute("DELETE FROM reseller_countries WHERE reseller_id=?", (reseller_id,))
         for c in countries:
@@ -1009,33 +1046,43 @@ def enrich_products_for_reseller(profile, products=None):
     """Compute reseller pricing for every product.
 
     Applies the tier margin share, then any CCO-approved per-merchant override.
-    All money values are rounded to WHOLE numbers (business rule), floored at cost.
+    Every price is then converted from the product's own currency into the
+    reseller's single DISPLAY currency (v11) using Finance's FX rates, and
+    rounded to WHOLE numbers (business rule), floored at cost. The returned
+    `currency` field is the display currency; `orig_currency` keeps the source.
     """
     if products is None:
         products = get_products()
     tier = profile.get('tier')
     base_share = (tier['margin_share_pct'] / 100.0) if tier else 0.20
     overrides = profile.get('overrides', {})
+    display_cur = profile.get('display_currency') or 'SAR'
+    rates = get_fx_rates()
 
     enriched = []
     for p in products:
         share = overrides.get(p['merchant'], None)
         share = (share / 100.0) if share is not None else base_share
         disc = p['oc_margin'] * share
-        c_price = max(p['default_price'] - disc, p['cost'])
-        # Whole-number pricing (never below cost)
-        c_price = round(c_price)
-        if c_price < p['cost']:
-            c_price = math.ceil(p['cost'])
-        face = round(p['face_value'])
-        disc_r = round(disc)
+        c_price_orig = max(p['default_price'] - disc, p['cost'])   # product currency
+
+        # Convert to the reseller's display currency, then round once.
+        m = convert_amount(1.0, p['currency'], display_cur, rates)   # multiplier
+        cost_disp = p['cost'] * m
+        c_price = round(c_price_orig * m)
+        if c_price < cost_disp:            # never below (converted) cost
+            c_price = math.ceil(cost_disp)
+        face = round(p['face_value'] * m)
+        disc_disp = round(disc * m)
         saved = face - c_price
         pct = (saved / face * 100.0) if face > 0 else 0
         enriched.append({
             **p,
+            'orig_currency': p['currency'],
+            'currency': display_cur,
             'face_value': face,
             'client_price': c_price,
-            'discount': disc_r,
+            'discount': disc_disp,
             'margin_pct': round(pct, 1),
             'has_override': p['merchant'] in overrides,
         })
@@ -1143,6 +1190,42 @@ def to_sar(amount, currency, rates=None):
     return amount * rates.get(currency or 'SAR', 1.0)
 
 
+# ── Display currency (v11) ───────────────────────────────────────
+# Resellers see the whole catalogue/wallet/orders in ONE currency. SAR
+# stays the internal base for every report; the display currency is
+# purely a presentation + wallet-facing layer, converted via the FX
+# rates Finance maintains.
+
+DISPLAY_CURRENCIES = ['SAR', 'USD']
+
+
+def derive_display_currency(countries):
+    """Saudi-based resellers see SAR; everyone else sees USD. Falls back to
+    SAR (the company's home currency) when no market is set."""
+    if not countries:
+        return 'SAR'
+    return 'SAR' if 'Saudi Arabia' in countries else 'USD'
+
+
+def convert_amount(amount, from_cur, to_cur, rates=None):
+    """Convert between any two currencies through the SAR base:
+       amount_sar = amount * rate_to_sar[from]
+       result     = amount_sar / rate_to_sar[to]
+    Returns the raw (unrounded) figure; callers round for display."""
+    if amount is None:
+        return 0.0
+    from_cur = from_cur or 'SAR'
+    to_cur = to_cur or 'SAR'
+    if from_cur == to_cur:
+        return amount
+    rates = rates or get_fx_rates()
+    from_rate = rates.get(from_cur, 1.0)
+    to_rate = rates.get(to_cur, 1.0)
+    if not to_rate:
+        return amount
+    return amount * from_rate / to_rate
+
+
 def get_all_merchants():
     conn = get_db()
     rows = conn.execute("""SELECT merchant, COUNT(*) as product_count,
@@ -1205,12 +1288,17 @@ def mark_notifications_read(user_id):
 
 # ── Wallet ───────────────────────────────────────────────────────
 
-def create_topup_request(reseller_id, amount, bank_reference, receipt_file, note=''):
+def create_topup_request(reseller_id, amount, bank_reference, receipt_file, note='',
+                         orig_amount=None, orig_currency='SAR'):
+    """amount is ALWAYS SAR (the wallet base). orig_amount/orig_currency record
+    what the reseller actually entered in their display currency, for Finance."""
     conn = get_db()
     conn.execute("""INSERT INTO wallet_transactions
-                    (reseller_id, type, amount, status, bank_reference, receipt_file, note)
-                    VALUES (?,?,?,?,?,?,?)""",
-                 (reseller_id, 'topup', amount, 'pending', bank_reference, receipt_file, note))
+                    (reseller_id, type, amount, status, bank_reference, receipt_file, note,
+                     orig_amount, orig_currency)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (reseller_id, 'topup', amount, 'pending', bank_reference, receipt_file, note,
+                  orig_amount if orig_amount is not None else amount, orig_currency or 'SAR'))
     txn_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.commit()
     conn.close()
@@ -1389,11 +1477,13 @@ def create_order(reseller_id, items):
     # commit() makes the whole check-and-deduct sequence atomic; a second
     # concurrent call simply waits (up to the busy_timeout in get_db()).
     conn.execute("BEGIN IMMEDIATE")
-    bal = conn.execute("SELECT wallet_balance FROM reseller_profiles WHERE id=?", (reseller_id,)).fetchone()
+    bal = conn.execute("SELECT wallet_balance, display_currency FROM reseller_profiles WHERE id=?",
+                       (reseller_id,)).fetchone()
     if not bal:
         conn.rollback()
         conn.close()
         return None, "Reseller not found."
+    disp = bal['display_currency'] or 'SAR'
     # v8 Issuing Hub: never sell codes we don't have — validate stock first
     for it in items:
         prow = it.get('product_rowid')
@@ -1409,8 +1499,11 @@ def create_order(reseller_id, items):
     if bal['wallet_balance'] < total_cost:
         conn.rollback()
         conn.close()
-        return None, (f"Insufficient wallet balance. Order total is {total_cost:,.0f} SAR "
-                      f"but wallet has {bal['wallet_balance']:,.0f} SAR.")
+        # Show the shortfall in the reseller's own display currency.
+        total_disp = round(convert_amount(total_cost, 'SAR', disp, rates))
+        wallet_disp = round(convert_amount(bal['wallet_balance'], 'SAR', disp, rates))
+        return None, (f"Insufficient wallet balance. Order total is {total_disp:,.0f} {disp} "
+                      f"but wallet has {wallet_disp:,.0f} {disp}.")
     conn.execute("""INSERT INTO orders (reseller_id, total_cost, total_face, total_savings)
                     VALUES (?,?,?,?)""", (reseller_id, total_cost, total_face,
                                           round(total_face - total_cost, 2)))

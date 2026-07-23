@@ -12,12 +12,12 @@
 <div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr))">
     <div class="stat-card" style="border:2px solid var(--success)">
         <div class="stat-icon">💰</div>
-        <div class="stat-value" style="color:var(--success)">SAR {{ profile.wallet_balance|money }}</div>
+        <div class="stat-value" style="color:var(--success)">{{ profile.wallet_balance_display|money }} {{ disp }}</div>
         <div class="stat-label">Available Balance</div>
     </div>
     <div class="stat-card">
         <div class="stat-icon">⏳</div>
-        <div class="stat-value">SAR {{ pending_total|money }}</div>
+        <div class="stat-value">{{ pending_total|money }} {{ disp }}</div>
         <div class="stat-label">Pending Verification</div>
     </div>
 </div>
@@ -28,8 +28,9 @@
         <div class="card-header"><div class="card-title">🧾 Report a Bank Transfer</div></div>
         <form method="POST" action="/reseller/wallet" enctype="multipart/form-data">
             <div class="form-group">
-                <label class="form-label">Transferred Amount (SAR) *</label>
+                <label class="form-label">Transferred Amount ({{ disp }}) *</label>
                 <input type="number" name="amount" required min="1" step="1" placeholder="e.g. 50000">
+                <div class="form-hint">Enter the amount you transferred in {{ disp }}. Finance verifies and credits your wallet.</div>
             </div>
             <div class="form-group">
                 <label class="form-label">Bank Transfer Reference</label>
@@ -71,7 +72,7 @@
                         {% if t.bank_reference %}<div class="text-muted" style="font-size:10px">ref: {{ t.bank_reference }}</div>{% endif %}
                         {% if t.note %}<div class="text-muted" style="font-size:10px">{{ t.note }}</div>{% endif %}
                     </td>
-                    <td class="fw6 {{ 'text-s' if t.amount > 0 else 'text-d' }}">{{ '+' if t.amount > 0 }}{{ t.amount|money }}</td>
+                    <td class="fw6 {{ 'text-s' if t.amount > 0 else 'text-d' }}">{{ '+' if t.display_amount > 0 }}{{ t.display_amount|money }} {{ disp }}</td>
                     <td>
                         {% if t.status == 'pending' %}<span class="badge badge-warning">⏳ Pending</span>
                         {% elif t.status == 'approved' %}<span class="badge badge-success">✅ Approved</span>

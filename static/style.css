@@ -550,7 +550,7 @@ select { cursor: pointer; }
 ::-webkit-scrollbar-thumb { background: var(--bg-3); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
 
-/* ── Multi-select dropdown (v8) ─────────────────────────── */
+/* ── Multi-select dropdown (v8; portal panel since v11) ─────── */
 .ms-wrap { position: relative; display: inline-block; }
 .ms-btn {
     display: flex; align-items: center; gap: 8px; justify-content: space-between;
@@ -558,25 +558,38 @@ select { cursor: pointer; }
     padding: 10px 14px; font-size: 13px; cursor: pointer;
     background: var(--bg-2); color: var(--text-1);
     border: 1px solid var(--border); border-radius: var(--radius-sm);
+    transition: var(--transition);
 }
-.ms-btn.ms-active { border-color: var(--accent); color: var(--accent); }
+.ms-btn:hover { border-color: var(--border-h); }
+.ms-btn.ms-active { border-color: var(--accent); color: var(--accent); background: rgba(99,102,241,0.08); }
 .ms-btn .ms-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ms-caret { font-size: 10px; opacity: .6; }
+/* Panel is appended to <body>; position:fixed set inline by JS. A solid
+   (non-transparent) background + high z-index guarantee it renders above
+   the results table/grid regardless of any card stacking context. */
 .ms-panel {
-    display: none; position: absolute; top: calc(100% + 6px); left: 0; z-index: 300;
-    width: 260px; padding: 10px;
-    background: var(--bg-1); border: 1px solid var(--border);
-    border-radius: var(--radius-sm); box-shadow: 0 12px 32px rgba(0,0,0,.45);
+    display: none; position: fixed; z-index: 4000;
+    width: max-content; max-width: 320px; min-width: 200px; padding: 10px;
+    background: var(--bg-1); border: 1px solid var(--border-h);
+    border-radius: var(--radius-sm); box-shadow: 0 16px 40px rgba(0,0,0,.55);
+    display: none;
 }
 .ms-panel.open { display: block; }
-.ms-search { width: 100%; padding: 8px 10px; font-size: 12.5px; margin-bottom: 6px; }
+.ms-search {
+    width: 100%; padding: 8px 10px; font-size: 12.5px; margin-bottom: 6px;
+    background: var(--bg-2); border: 1px solid var(--border);
+    border-radius: 6px; color: var(--text-1);
+}
 .ms-actions { display: flex; justify-content: flex-end; margin-bottom: 4px; }
 .ms-clear { font-size: 11px; color: var(--accent); cursor: pointer; }
-.ms-list { max-height: 240px; overflow-y: auto; }
+.ms-clear:hover { text-decoration: underline; }
+.ms-list { max-height: 260px; overflow-y: auto; }
 .ms-item {
     display: flex; align-items: center; gap: 8px;
-    padding: 6px 6px; font-size: 12.5px; cursor: pointer; border-radius: 6px;
+    padding: 7px 8px; font-size: 12.5px; cursor: pointer; border-radius: 6px;
+    color: var(--text-1);
 }
 .ms-item:hover { background: var(--glass); }
-.ms-item input { width: auto; }
+.ms-item input { width: auto; flex-shrink: 0; }
+.ms-item .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ms-empty { padding: 12px; font-size: 12px; color: var(--text-3); text-align: center; }

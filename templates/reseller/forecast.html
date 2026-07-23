@@ -21,7 +21,7 @@
                 </select>
             </div>
             <div class="form-group">
-                <label class="form-label">Planned Monthly Purchase Value (SAR)</label>
+                <label class="form-label">Planned Monthly Purchase Value ({{ disp }})</label>
                 <input type="number" id="fcMerchValue" min="0" step="1000" placeholder="e.g. 50000">
             </div>
             <button class="btn btn-primary" onclick="addMerchantLine()" style="width:100%;justify-content:center">➕ Add Merchant Line</button>
@@ -54,7 +54,7 @@
                 <tr>
                     <td class="text-muted">{{ f.created_at[:10] }}</td>
                     <td>{{ f.item_count }}</td>
-                    <td class="fw6">SAR {{ f.total_value|money }}</td>
+                    <td class="fw6">{{ f.total_value|money }} {{ disp }}</td>
                     <td>
                         {% if f.status == 'submitted' %}<span class="badge badge-warning">Sent</span>
                         {% else %}<span class="badge badge-success">Reviewed</span>{% endif %}
@@ -84,7 +84,7 @@
                 </table>
             </div>
             <div class="table-footer">
-                <span class="fw6">Total Estimated: <span class="text-accent" id="planTotal">0</span> SAR</span>
+                <span class="fw6">Total Estimated: <span class="text-accent" id="planTotal">0</span> {{ disp }}</span>
             </div>
         </div>
 
@@ -107,10 +107,10 @@
 
 {% block scripts %}
 <script>
+// v11: values are entered/computed in the reseller's single display currency;
+// the server converts to the SAR base on submit.
 const products = {{ products_json|safe }};
 const merchants = {{ merchants_json|safe }};
-const fxRates = {{ rates_json|safe }};
-function toSar(amount, currency) { return amount * (fxRates[currency || 'SAR'] || 1); }
 let plan = [];   // {type:'merchant'|'product', merchant, product_id, label, quantity, value}
 let fcPicked = null;
 
@@ -156,7 +156,7 @@ function addProductLine() {
     if (qty <= 0) { alert('Enter a quantity.'); return; }
     plan.push({ type: 'product', merchant: fcPicked.merchant, product_id: fcPicked.id,
                 label: fcPicked.product_name, quantity: qty,
-                value: toSar(qty * fcPicked.client_price, fcPicked.currency) });
+                value: qty * fcPicked.client_price });
     fcPicked = null;
     document.getElementById('fcSearch').value = '';
     renderPlan();

@@ -1,4 +1,26 @@
-# OneCard — Reseller Operations Platform (v10)
+# OneCard — Reseller Operations Platform (v11)
+
+## Single Display Currency per Reseller (v11)
+
+Resellers no longer see a mixed-currency catalogue. Each reseller has ONE **display currency**
+and sees the entire catalogue, wallet and orders in it:
+
+- **Derived from their market at registration** — Saudi Arabia → `SAR`, any other market → `USD`
+  — and the sales manager can override it (registration form + a quick-switch on My Resellers).
+- **All prices converted** from each product's own currency into the display currency using the
+  FX rates Finance maintains (`convert_amount()` in `enrich_products_for_reseller`), rounded to
+  whole numbers and floored at cost. `SAR` remains the internal base for every report.
+- **Wallet** is stored in SAR but shown in the display currency; a top-up is entered in the
+  reseller's currency, converted to SAR on submit, and Finance sees both (`orig_amount` +
+  the SAR credited).
+- **Orders** carry a single currency, so the old cross-currency mixing is gone by construction;
+  the SAR total deducted always equals the converted price the reseller saw.
+- The now-redundant **currency filter was removed** from the reseller catalogue/merchant views
+  (kept on staff catalogues, which still show original currencies).
+- **Dropdown fix**: the multi-select filter panel is now a body-level `position:fixed` portal, so
+  it renders above the results table instead of being clipped behind a card's backdrop-filter
+  stacking context.
+- Coverage: `tests/e2e_currency.py` (19 checks incl. a full USD-reseller journey).
 
 ## Security & Correctness Hardening (v10)
 

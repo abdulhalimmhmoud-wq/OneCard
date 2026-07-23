@@ -468,6 +468,9 @@ def sales_register():
         notes = request.form.get('notes', '')
         client_types = request.form.getlist('client_types')
         countries = request.form.getlist('countries')
+        # Currency the reseller sees everything in. Default derives from their
+        # markets; the form lets the sales manager override it explicitly.
+        display_currency = request.form.get('display_currency') or None
 
         assigned = models.auto_assign_tier(sales)
         tier_id = assigned['id'] if assigned else None
@@ -476,7 +479,8 @@ def sales_register():
         if uid:
             curr = auth.get_current_user()
             models.create_reseller(uid, comp, sales, tier_id, curr['id'], notes,
-                                   client_types=client_types, countries=countries)
+                                   client_types=client_types, countries=countries,
+                                   display_currency=display_currency)
             flash(f"Reseller '{comp}' registered successfully with "
                   f"'{assigned['name'] if assigned else 'None'}' plan.", "success")
             return redirect(url_for('sales_dashboard'))
@@ -488,6 +492,7 @@ def sales_register():
     return render_template('sales/register.html', active_tab='register',
                            tiers_json=tiers_json,
                            client_types=models.CLIENT_TYPES,
+                           display_currencies=models.DISPLAY_CURRENCIES,
                            countries=models.get_all_countries())
 
 
@@ -509,7 +514,9 @@ def sales_update_reseller(rid):
         return redirect(url_for('sales_resellers'))
     client_type = request.form.get('client_type')
     countries = request.form.getlist('countries')
-    models.update_reseller_profile(rid, client_type=client_type, countries=countries)
+    display_currency = request.form.get('display_currency')
+    models.update_reseller_profile(rid, client_type=client_type, countries=countries,
+                                   display_currency=display_currency)
     flash(f"Profile updated for {profile['company_name']}.", "success")
     return redirect(url_for('sales_resellers'))
 
@@ -1761,18 +1768,21 @@ def reseller_forecast():
         except json.JSONDecodeError:
             items = []
         note = request.form.get('note', '')
+        disp = profile['display_currency']
         clean = []
         by_id = {p['id']: p for p in enriched}
         for it in items:
             if it.get('type') == 'merchant' and it.get('merchant') and float(it.get('value') or 0) > 0:
+                # Value comes in the reseller's display currency; store SAR base.
+                est_sar = models.convert_amount(float(it['value']), disp, 'SAR')
                 clean.append({'item_type': 'merchant', 'merchant': it['merchant'],
-                              'est_value': float(it['value'])})
+                              'est_value': round(est_sar, 2)})
             elif it.get('type') == 'product' and it.get('product_id') in by_id:
                 p = by_id[it['product_id']]
                 qty = int(it.get('quantity') or 0)
                 if qty > 0:
-                    # est_value is stored in SAR (v7: single reporting currency)
-                    est_sar = models.to_sar(qty * p['client_price'], p['currency'])
+                    # client_price is already in the display currency -> to SAR
+                    est_sar = models.convert_amount(qty * p['client_price'], disp, 'SAR')
                     clean.append({'item_type': 'product', 'merchant': p['merchant'],
                                   'product_rowid': p['id'], 'product_name': p['product_name'],
                                   'quantity': qty, 'est_value': round(est_sar, 2)})
@@ -1780,15 +1790,16 @@ def reseller_forecast():
             flash("Add at least one merchant or product to your plan.", "error")
         else:
             fid = models.create_forecast(profile['id'], note, clean)
-            total = sum(i['est_value'] for i in clean)
+            total_sar = sum(i['est_value'] for i in clean)
             models.notify(profile['registered_by'],
                           "New purchase forecast received 📋",
                           f"{profile['company_name']} submitted a purchase plan worth "
-                          f"{total:,.0f} SAR ({len(clean)} items).", f"/sales/forecasts/{fid}")
+                          f"{total_sar:,.0f} SAR ({len(clean)} items).", f"/sales/forecasts/{fid}")
             flash("Your purchase plan was submitted to your account manager. "
                   "They will contact you to finalize the contract.", "success")
             return redirect(url_for('reseller_forecast'))
 
+    disp = profile['display_currency']
     merchants_data = {}
     for p in enriched:
         m = merchants_data.setdefault(p['merchant'], {'merchant': p['merchant'], 'count': 0,
@@ -1799,9 +1810,11 @@ def reseller_forecast():
         m['avg_margin'] = round(m['avg_margin'] / m['count'], 1)
 
     my_forecasts = models.get_reseller_forecasts(profile['id'])
+    # forecast values are stored in SAR; show them in the display currency
+    for f in my_forecasts:
+        f['total_value'] = round(models.convert_amount(f['total_value'], 'SAR', disp))
     return render_template('reseller/forecast.html', active_tab='forecast',
-                           profile=profile,
-                           rates_json=jdump(models.get_fx_rates()),
+                           profile=profile, disp=disp,
                            products_json=jdump(enriched),
                            merchants_json=jdump(sorted(merchants_data.values(),
                                                             key=lambda x: x['merchant'])),
@@ -1820,6 +1833,11 @@ def reseller_orders():
     if profile['contract_status'] != 'contracted':
         return render_template('reseller/orders_locked.html', active_tab='orders', profile=profile)
 
+    disp = profile['display_currency']
+
+    def to_disp(v):
+        return round(models.convert_amount(v or 0, 'SAR', disp))
+
     if request.method == 'POST':
         if block_in_preview():
             return redirect(url_for('reseller_orders'))
@@ -1833,6 +1851,7 @@ def reseller_orders():
             p = by_id.get(it.get('product_id'))
             qty = int(it.get('quantity') or 0)
             if p and qty > 0:
+                # enriched prices are already in the display currency
                 order_items.append({'product_rowid': p['id'], 'product_name': p['product_name'],
                                     'merchant': p['merchant'], 'category': p['category'],
                                     'currency': p['currency'], 'quantity': qty,
@@ -1844,11 +1863,13 @@ def reseller_orders():
             if err:
                 flash(err, "error")
             else:
-                total = sum(i['unit_price'] * i['quantity'] for i in order_items)
+                total_disp = sum(i['unit_price'] * i['quantity'] for i in order_items)
+                total_sar = round(models.convert_amount(total_disp, disp, 'SAR'))
+                # Sales sees SAR (internal base); the customer sees their currency.
                 models.notify(profile['registered_by'], "New order placed 🛒",
-                              f"{profile['company_name']} placed order #{oid} worth {total:,.0f} SAR.",
+                              f"{profile['company_name']} placed order #{oid} worth {total_sar:,.0f} SAR.",
                               "/sales/resellers")
-                flash(f"Order #{oid} placed successfully — {total:,.0f} SAR deducted from your wallet.", "success")
+                flash(f"Order #{oid} placed successfully — {total_disp:,.0f} {disp} deducted from your wallet.", "success")
                 return redirect(url_for('reseller_orders'))
 
     forecast_by_merchant = models.get_latest_forecast_merchant_values(profile['id'])
@@ -1856,16 +1877,20 @@ def reseller_orders():
     comparison = []
     for m in sorted(set(list(forecast_by_merchant) + list(actual_by_merchant))):
         comparison.append({'merchant': m,
-                           'forecast': forecast_by_merchant.get(m, 0),
-                           'actual': actual_by_merchant.get(m, 0)})
+                           'forecast': to_disp(forecast_by_merchant.get(m, 0)),
+                           'actual': to_disp(actual_by_merchant.get(m, 0))})
     orders = models.get_orders(profile['id'])
     for o in orders:
+        o['total_cost'] = to_disp(o['total_cost'])
+        o['total_savings'] = to_disp(o['total_savings'])
         o['items'] = models.get_order_items(o['id'])
+        for it in o['items']:
+            it['line_total_sar'] = to_disp(it.get('line_total_sar') or it.get('line_total'))
         o['codes'] = models.get_order_codes(o['id'])   # v8: gift-card codes they bought
 
     return render_template('reseller/orders.html', active_tab='orders',
                            profile=profile, products_json=jdump(enriched),
-                           rates_json=jdump(models.get_fx_rates()),
+                           wallet_display=profile['wallet_balance_display'], disp=disp,
                            orders=orders, comparison=comparison)
 
 
@@ -1878,10 +1903,11 @@ def reseller_wallet():
     if not profile:
         return _no_reseller_profile()
 
+    disp = profile['display_currency']
     if request.method == 'POST':
         if block_in_preview():
             return redirect(url_for('reseller_wallet'))
-        amount = float(request.form.get('amount') or 0)
+        amount = float(request.form.get('amount') or 0)   # in the reseller's display currency
         bank_ref = request.form.get('bank_reference', '').strip()
         note = request.form.get('note', '')
         file = request.files.get('receipt')
@@ -1897,21 +1923,30 @@ def reseller_wallet():
             else:
                 fname = f"r{profile['id']}_{uuid.uuid4().hex[:12]}{sniffed_ext}"
                 file.save(os.path.join(UPLOAD_DIR, fname))
-                txn_id = models.create_topup_request(profile['id'], amount, bank_ref, fname, note)
+                # Wallet base is SAR; convert what the reseller entered.
+                amount_sar = round(models.convert_amount(amount, disp, 'SAR'), 2)
+                txn_id = models.create_topup_request(profile['id'], amount_sar, bank_ref, fname,
+                                                     note, orig_amount=amount, orig_currency=disp)
                 models.notify(models.get_user_ids_by_role('finance'),
                               "New wallet top-up to verify 🧾",
                               f"{profile['company_name']} uploaded a transfer receipt for "
-                              f"{amount:,.0f} SAR (ref: {bank_ref or '—'}).", "/finance")
+                              f"{amount:,.0f} {disp} (ref: {bank_ref or '—'}).", "/finance")
                 flash("Receipt uploaded. The finance team will verify your transfer and "
                       "credit your wallet.", "success")
                 return redirect(url_for('reseller_wallet'))
 
     transactions = models.get_wallet_transactions(profile['id'])
-    pending_total = sum(t['amount'] for t in transactions
+    # Present every stored SAR amount in the reseller's display currency.
+    for t in transactions:
+        if t.get('orig_currency') == disp and t.get('orig_amount') is not None:
+            t['display_amount'] = round(t['orig_amount'])       # exact, no double-convert
+        else:
+            t['display_amount'] = round(models.convert_amount(t['amount'], 'SAR', disp))
+    pending_total = sum(t['display_amount'] for t in transactions
                         if t['type'] == 'topup' and t['status'] == 'pending')
     return render_template('reseller/wallet.html', active_tab='wallet',
                            profile=profile, transactions=transactions,
-                           pending_total=pending_total)
+                           pending_total=pending_total, disp=disp)
 
 
 # ── Reseller: Analysis ───────────────────────────────────────────
@@ -1922,14 +1957,30 @@ def reseller_analysis():
     uid, enriched, profile = _reseller_ctx()
     if not profile:
         return _no_reseller_profile()
+    disp = profile['display_currency']
     data = models.get_reseller_analysis(profile['id'])
+
+    # All analysis figures are stored in SAR — present them in the
+    # reseller's display currency (a % share is unaffected by conversion).
+    def cv(v):
+        return round(models.convert_amount(v or 0, 'SAR', disp))
+    for k in ('spend', 'face', 'savings'):
+        data['totals'][k] = cv(data['totals'].get(k))
+    for row in data['by_merchant']:
+        row['spend'], row['savings'] = cv(row.get('spend')), cv(row.get('savings'))
+    for row in data['by_category']:
+        row['spend'] = cv(row.get('spend'))
+    for row in data['monthly']:
+        row['spend'], row['savings'] = cv(row.get('spend')), cv(row.get('savings'))
+    for row in data['top_products']:
+        row['spend'] = cv(row.get('spend'))
 
     insights = []
     t = data['totals']
     if t['orders'] > 0:
         savings_pct = (t['savings'] / t['face'] * 100) if t['face'] else 0
-        insights.append(f"You purchased {t['face']:,.0f} SAR of face value for {t['spend']:,.0f} SAR — "
-                        f"a total gain of {t['savings']:,.0f} SAR ({savings_pct:.1f}%).")
+        insights.append(f"You purchased {t['face']:,.0f} {disp} of face value for {t['spend']:,.0f} {disp} — "
+                        f"a total gain of {t['savings']:,.0f} {disp} ({savings_pct:.1f}%).")
         if data['by_merchant']:
             top = data['by_merchant'][0]
             share = top['spend'] / t['spend'] * 100 if t['spend'] else 0
@@ -1945,13 +1996,14 @@ def reseller_analysis():
                                 + ", ".join(sorted(missing)) + ".")
     if profile['contract_status'] == 'contracted' and profile['expected_monthly_sales']:
         ym = datetime.now(timezone.utc).strftime('%Y-%m')
-        this_month = models.get_month_total_orders(profile['id'], ym)
-        pct = this_month / profile['expected_monthly_sales'] * 100
-        insights.append(f"This month you've ordered {this_month:,.0f} SAR of your "
-                        f"{profile['expected_monthly_sales']:,.0f} SAR monthly commitment ({pct:.0f}%).")
+        this_month = cv(models.get_month_total_orders(profile['id'], ym))
+        commit_disp = cv(profile['expected_monthly_sales'])
+        pct = (this_month / commit_disp * 100) if commit_disp else 0
+        insights.append(f"This month you've ordered {this_month:,.0f} {disp} of your "
+                        f"{commit_disp:,.0f} {disp} monthly commitment ({pct:.0f}%).")
 
     return render_template('reseller/analysis.html', active_tab='analysis',
-                           profile=profile, data=data, insights=insights)
+                           profile=profile, data=data, insights=insights, disp=disp)
 
 
 # ── Run ──────────────────────────────────────────────────────────

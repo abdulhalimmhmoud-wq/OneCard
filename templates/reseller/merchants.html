@@ -18,7 +18,6 @@
         <div id="merchCat"></div>
         <div id="merchCountry"></div>
         <div id="merchRegion"></div>
-        <div id="merchCurrency"></div>
         <select id="merchSort" style="width:200px;padding:10px 14px;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-1);font-size:13px" onchange="filterMerchants()">
             <option value="count_desc">Products Count (High to Low)</option>
             <option value="count_asc">Products Count (Low to High)</option>
@@ -84,14 +83,14 @@ const uniq = k => [...new Set(products.map(p => p[k]).filter(Boolean))].sort();
 const fCat = msCreate('merchCat', uniq('category'), 'All Categories', filterMerchants);
 const fCountry = msCreate('merchCountry', uniq('country'), 'All Countries', filterMerchants);
 const fRegion = msCreate('merchRegion', uniq('region'), 'All Regions', filterMerchants);
-const fCurr = msCreate('merchCurrency', uniq('currency'), 'All Currencies', filterMerchants);
+// v11: catalogue is shown in a single currency, so no currency filter here.
 
 function currentProductFilter() {
     const cSel = fCat.getSelected(), coSel = fCountry.getSelected(),
-          rSel = fRegion.getSelected(), cuSel = fCurr.getSelected();
+          rSel = fRegion.getSelected();
     return products.filter(p =>
         msMatch(cSel, p.category) && msMatch(coSel, p.country) &&
-        msMatch(rSel, p.region) && msMatch(cuSel, p.currency));
+        msMatch(rSel, p.region));
 }
 
 function filterMerchants() {

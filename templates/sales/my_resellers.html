@@ -23,6 +23,7 @@
                     <th>Plan</th>
                     <th>Contract</th>
                     <th>Wallet</th>
+                    <th>Currency</th>
                     <th>Stage</th>
                     <th>Actions</th>
                 </tr>
@@ -44,6 +45,14 @@
                     {% endif %}
                 </td>
                 <td class="fw6">SAR {{ r.wallet_balance|money }}</td>
+                <td>
+                    <form method="POST" action="/sales/resellers/{{ r.id }}/update" style="display:flex;gap:4px;align-items:center">
+                        <select name="display_currency" onchange="this.form.submit()" style="padding:4px 6px;font-size:12px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;color:var(--text-1)">
+                            <option value="SAR" {{ 'selected' if r.display_currency == 'SAR' }}>SAR</option>
+                            <option value="USD" {{ 'selected' if r.display_currency == 'USD' }}>USD</option>
+                        </select>
+                    </form>
+                </td>
                 <td>
                     {% if r.lifecycle == 'active' %}<span class="badge badge-success">🟢 Active</span>
                     {% elif r.lifecycle == 'at_risk' %}<span class="badge badge-danger" title="Grace until {{ r.grace_until }}">⚠️ At-Risk</span>
@@ -87,7 +96,7 @@
             </tr>
             {% else %}
             <tr>
-                <td colspan="8" style="text-align:center;padding:40px;color:var(--text-3)">
+                <td colspan="9" style="text-align:center;padding:40px;color:var(--text-3)">
                     You have not registered any resellers yet.<br>
                     <a href="/sales/register" class="btn btn-primary btn-sm mt-8">Register a Reseller</a>
                 </td>

@@ -56,6 +56,15 @@
             </div>
             <div class="form-hint">Select every market where the reseller sells. Recommendations prioritize these countries.</div>
         </div>
+
+        <div class="form-group">
+            <label class="form-label">Catalogue Currency</label>
+            <select name="display_currency" id="displayCurrency">
+                <option value="">Auto (from market: Saudi → SAR, else → USD)</option>
+                {% for c in display_currencies %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+            </select>
+            <div class="form-hint">The single currency this reseller sees the whole catalogue, wallet and orders in. FX conversion uses Finance's rates.</div>
+        </div>
     </div>
 
     <!-- Financials & Tier preview -->

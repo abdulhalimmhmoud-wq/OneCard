@@ -75,37 +75,41 @@ for i in range(6):
         body = e.read().decode('utf-8', 'replace')
 check('login locked after repeated failures (429)', last == 429 and 'Too many' in body)
 
-# ── 4. FX: non-SAR order converts to SAR ──
+# ── 4. FX: orders record a SAR-consistent line + wallet deduction ──
+# v11 note: each reseller sees the whole catalogue in ONE display currency,
+# so an order's lines carry that currency (khalid is SAR here) rather than
+# the product's original currency. Cross-currency FX is covered end to end
+# in tests/e2e_currency.py (a USD reseller). Here we just assert the wallet
+# math stays internally consistent.
 rates = {r['currency']: r['rate_to_sar'] for r in q("SELECT * FROM currency_rates")}
 check('FX rates seeded', len(rates) >= 8 and rates.get('SAR') == 1.0, f"{len(rates)} currencies")
 
-kwd = q("""SELECT id, product_name, cost, default_price FROM products
-           WHERE currency='KWD' AND is_active=1 AND default_price > 1 LIMIT 1""")
-if kwd:
-    pid = kwd[0]['id']
-    # ensure demo wallet can afford it
-    prof = q("""SELECT cp.id, cp.wallet_balance FROM reseller_profiles cp
+prod = q("""SELECT id FROM products WHERE is_active=1 AND COALESCE(is_issued,0)=0
+            AND default_price BETWEEN 5 AND 40 LIMIT 1""")
+if prod:
+    pid = prod[0]['id']
+    prof = q("""SELECT cp.id, cp.wallet_balance, cp.display_currency FROM reseller_profiles cp
                 JOIN users u ON cp.user_id=u.id WHERE u.email='khalid@alnoor-digital.com'""")[0]
     items = json.dumps([{'product_id': pid, 'quantity': 2}])
     s, b = post(res, '/reseller/orders', {'items_json': items})
     placed = 'placed successfully' in b
-    check('KWD order placed', placed or 'Insufficient' in b,
+    check('order placed', placed or 'Insufficient' in b,
           'insufficient balance (acceptable)' if 'Insufficient' in b else '')
     if placed:
         oi = q("""SELECT oi.* FROM order_items oi JOIN orders o ON oi.order_id=o.id
                   WHERE o.reseller_id=? ORDER BY oi.id DESC LIMIT 1""", prof['id'])[0]
-        expected_rate = rates.get('KWD', 1)
-        check('order line stores FX rate', abs(oi['fx_rate'] - expected_rate) < 1e-6,
-              f"rate={oi['fx_rate']}")
-        check('line_total_sar = line_total * rate',
-              abs(oi['line_total_sar'] - oi['line_total'] * expected_rate) < 0.05)
+        check('order line currency is the reseller display currency',
+              oi['currency'] == prof['display_currency'], f"line={oi['currency']}")
+        check('line_total_sar = line_total * fx_rate (internally consistent)',
+              abs(oi['line_total_sar'] - oi['line_total'] * oi['fx_rate']) < 0.05,
+              f"sar={oi['line_total_sar']} line={oi['line_total']} fx={oi['fx_rate']}")
         o = q("SELECT total_cost FROM orders WHERE id=?", oi['order_id'])[0]
         wallet_after = q("SELECT wallet_balance FROM reseller_profiles WHERE id=?", prof['id'])[0]
-        check('wallet deducted in SAR (not raw KWD)',
+        check('wallet deducted equals the order SAR total',
               abs((prof['wallet_balance'] - wallet_after['wallet_balance']) - o['total_cost']) < 0.05,
               f"deducted={prof['wallet_balance'] - wallet_after['wallet_balance']:.2f} SAR")
 else:
-    check('KWD product exists for FX test', False)
+    check('a normal product exists for the order test', False)
 
 # backfill sanity: all order items have line_total_sar
 missing = q("SELECT COUNT(*) as n FROM order_items WHERE line_total_sar IS NULL")[0]['n']

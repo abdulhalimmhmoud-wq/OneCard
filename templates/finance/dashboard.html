@@ -46,7 +46,10 @@
         </div>
         <div style="text-align:center">
             <div style="font-size:11px;color:var(--text-3)">Claimed Transfer</div>
-            <div style="font-size:28px;font-weight:800;color:var(--success)">SAR {{ t.amount|money }}</div>
+            <div style="font-size:28px;font-weight:800;color:var(--success)">{{ t.orig_amount|money }} {{ t.orig_currency or 'SAR' }}</div>
+            {% if (t.orig_currency or 'SAR') != 'SAR' %}
+            <div class="text-muted" style="font-size:12px">= SAR {{ t.amount|money }} credited (Finance FX)</div>
+            {% endif %}
             {% if t.receipt_file %}
             <a href="/receipts/{{ t.id }}" target="_blank" class="btn btn-sm btn-ghost mt-8">🧾 View Receipt</a>
             {% endif %}

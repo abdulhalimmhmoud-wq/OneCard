@@ -12,7 +12,7 @@
             <span style="font-size:20px">👛</span>
             <div>
                 <div style="font-size:11px;color:var(--text-3)">Wallet Balance</div>
-                <div class="fw6" style="font-size:18px;color:var(--success)">SAR {{ profile.wallet_balance|money }}</div>
+                <div class="fw6" style="font-size:18px;color:var(--success)">{{ wallet_display|money }} {{ disp }}</div>
             </div>
             <a href="/reseller/wallet" class="btn btn-sm btn-ghost">Top up →</a>
         </div>
@@ -57,7 +57,7 @@
                 </table>
             </div>
             <div class="table-footer" style="display:flex;justify-content:space-between;align-items:center">
-                <span class="fw6">Order Total: <span class="text-accent" id="cartTotal">0</span> SAR</span>
+                <span class="fw6">Order Total: <span class="text-accent" id="cartTotal">0</span> {{ disp }}</span>
                 <span class="text-muted" style="font-size:12px" id="cartBalanceCheck"></span>
             </div>
         </div>
@@ -84,8 +84,8 @@
                     {% set pct = (c.actual / c.forecast * 100) if c.forecast > 0 else 100 %}
                     <tr>
                         <td class="fw6">{{ c.merchant }}</td>
-                        <td>SAR {{ c.forecast|money }}</td>
-                        <td class="fw6 text-accent">SAR {{ c.actual|money }}</td>
+                        <td>{{ c.forecast|money }} {{ disp }}</td>
+                        <td class="fw6 text-accent">{{ c.actual|money }} {{ disp }}</td>
                         <td style="min-width:130px">
                             <div style="background:var(--bg-2);border-radius:100px;height:8px;overflow:hidden">
                                 <div style="height:100%;width:{{ [pct, 100]|min }}%;background:{{ 'var(--success)' if pct >= 100 else ('var(--warning)' if pct >= 50 else 'var(--danger)') }}"></div>
@@ -112,7 +112,7 @@
                         <td class="fw6">#{{ o.id }}</td>
                         <td class="text-muted">{{ o.created_at[:16] }}</td>
                         <td>{{ o.item_count }}</td>
-                        <td class="fw6">SAR {{ o.total_cost|money }}</td>
+                        <td class="fw6">{{ o.total_cost|money }} {{ disp }}</td>
                         <td class="fw6 text-s">+{{ o.total_savings|money }}</td>
                     </tr>
                     <tr id="oi{{ o.id }}" style="display:none">
@@ -120,7 +120,7 @@
                             {% for it in o['items'] %}
                             <div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)">
                                 <span class="truncate" style="max-width:280px">{{ it.product_name }} <span class="text-muted">× {{ it.quantity }}</span></span>
-                                <span class="fw6">{{ (it.line_total_sar if it.line_total_sar is not none else it.line_total)|money }} SAR</span>
+                                <span class="fw6">{{ it.line_total_sar|money }} {{ disp }}</span>
                             </div>
                             {% if o['codes'].get(it.id) %}
                             <details style="margin:4px 0 8px 12px">
@@ -152,15 +152,13 @@
 
 {% block scripts %}
 <script>
+// v11: catalogue, wallet and cart are all in the reseller's single display
+// currency — no per-line FX conversion in the browser anymore.
 const products = {{ products_json|safe }};
-const walletBalance = {{ profile.wallet_balance }};
-const fxRates = {{ rates_json|safe }};   // wallet & totals are SAR; lines convert at these rates
-let cart = [];   // {product_id, label, merchant, qty, unit_price, currency}
+const walletBalance = {{ wallet_display }};   // display currency
+const DISP = {{ disp|tojson }};
+let cart = [];   // {product_id, label, merchant, qty, unit_price}
 let odPicked = null;
-
-function toSar(amount, currency) {
-    return amount * (fxRates[currency || 'SAR'] || 1);
-}
 
 function searchProducts() {
     const q = document.getElementById('odSearch').value.toLowerCase();
@@ -186,7 +184,7 @@ function addToCart() {
     const existing = cart.find(c => c.product_id === odPicked.id);
     if (existing) existing.qty += qty;
     else cart.push({ product_id: odPicked.id, label: odPicked.product_name, merchant: odPicked.merchant,
-                     qty: qty, unit_price: odPicked.client_price, currency: odPicked.currency });
+                     qty: qty, unit_price: odPicked.client_price });
     odPicked = null;
     document.getElementById('odSearch').value = '';
     renderCart();
@@ -195,7 +193,7 @@ function addToCart() {
 function removeCartItem(i) { cart.splice(i, 1); renderCart(); }
 function clearCart() { cart = []; renderCart(); }
 
-function cartTotal() { return cart.reduce((s, c) => s + toSar(c.unit_price * c.qty, c.currency), 0); }
+function cartTotal() { return cart.reduce((s, c) => s + c.unit_price * c.qty, 0); }
 
 function renderCart() {
     document.getElementById('cartCount').textContent = cart.length;
@@ -206,29 +204,24 @@ function renderCart() {
         document.getElementById('cartBalanceCheck').textContent = '';
         return;
     }
-    body.innerHTML = cart.map((c, i) => {
-        const lineSar = toSar(c.unit_price * c.qty, c.currency);
-        const fx = (c.currency && c.currency !== 'SAR')
-            ? `<div class="text-muted" style="font-size:10px">${fmt(c.unit_price * c.qty)} ${esc(c.currency)}</div>` : '';
-        return `
+    body.innerHTML = cart.map((c, i) => `
         <tr>
             <td>
                 <div class="fw6 truncate" style="max-width:200px" title="${esc(c.label)}">${esc(c.label)}</div>
                 <div class="text-muted" style="font-size:11px">${esc(c.merchant)}</div>
             </td>
             <td class="fw6">${fmt(c.qty)}</td>
-            <td>${fmt(c.unit_price)} ${esc(c.currency)}</td>
-            <td class="fw6 text-accent">${fmt(lineSar)} SAR${fx}</td>
+            <td>${fmt(c.unit_price)} ${esc(DISP)}</td>
+            <td class="fw6 text-accent">${fmt(c.unit_price * c.qty)} ${esc(DISP)}</td>
             <td><button class="btn btn-sm btn-ghost" onclick="removeCartItem(${i})">✕</button></td>
-        </tr>`;
-    }).join('');
+        </tr>`).join('');
     const total = cartTotal();
     document.getElementById('cartTotal').textContent = fmt(total);
     const check = document.getElementById('cartBalanceCheck');
     if (total > walletBalance) {
-        check.innerHTML = `<span class="text-d">⚠️ Exceeds wallet balance (${fmt(walletBalance)} SAR) — top up first</span>`;
+        check.innerHTML = `<span class="text-d">⚠️ Exceeds wallet balance (${fmt(walletBalance)} ${esc(DISP)}) — top up first</span>`;
     } else {
-        check.innerHTML = `<span class="text-s">✓ Balance after order: ${fmt(walletBalance - total)} SAR</span>`;
+        check.innerHTML = `<span class="text-s">✓ Balance after order: ${fmt(walletBalance - total)} ${esc(DISP)}</span>`;
     }
 }
 
@@ -239,7 +232,7 @@ function submitOrder() {
         return false;
     }
     document.getElementById('odItemsJson').value = JSON.stringify(cart.map(c => ({ product_id: c.product_id, quantity: c.qty })));
-    return confirm(`Place order for ${fmt(cartTotal())} SAR? The amount is deducted from your wallet.`);
+    return confirm(`Place order for ${fmt(cartTotal())} ${DISP}? The amount is deducted from your wallet.`);
 }
 
 document.addEventListener('click', e => { if (!e.target.closest('.search-box')) document.getElementById('odSuggestions').classList.remove('show'); });
