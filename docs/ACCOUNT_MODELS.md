@@ -96,7 +96,9 @@ and the owning reseller (same pattern as wallet receipts).
 - **Phase 2** — credit engine: statements, settlement + receipts, overdue freeze,
   additional-credit requests (CCO + Finance two-sign-off, temporary/permanent),
   exposure dashboards. *Shipped v14.*
-- **Phase 3** — consignment engine: period statements, API card-by-card without
-  prepaid, Ops/CCO liability dashboards.
-- **Phase 4** — reports, webhooks (`statement.issued`/`overdue` already emit),
-  `/api/v1/account` + `/statement`, polish, API guide update.
+- **Phase 3** — consignment engine: API card-by-card without prepaid,
+  `/api/v1/account` + `/statements`, account-type error codes,
+  `statement.issued`/`overdue` webhooks, Ops consignment activity view.
+  *Shipped v15.*
+- **Phase 4** — reporting polish + production webhook hardening (queue + retries +
+  HMAC signatures).

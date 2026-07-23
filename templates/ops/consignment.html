@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Consignment & Credit Activity — Operations — OneCard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">📦 Consignment & Credit Activity</h1>
+        <p class="page-subtitle">These clients draw in real time (often via API) rather than ordering stock up front. Watch their draw-down to anticipate restock. All amounts in SAR.</p>
+    </div>
+</div>
+
+<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">
+    <div class="stat-card">
+        <div class="stat-icon">👥</div>
+        <div class="stat-value">{{ exposure.accounts }}</div>
+        <div class="stat-label">Credit / Consignment Accounts</div>
+    </div>
+    <div class="stat-card" style="border:2px solid var(--accent)">
+        <div class="stat-icon">🧾</div>
+        <div class="stat-value" style="color:var(--accent)">SAR {{ exposure.total_outstanding|money }}</div>
+        <div class="stat-label">Outstanding Draw</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">💳</div>
+        <div class="stat-value">SAR {{ exposure.total_limit|money }}</div>
+        <div class="stat-label">Approved Limits</div>
+    </div>
+    <div class="stat-card" style="{{ 'border:2px solid var(--danger)' if exposure.frozen }}">
+        <div class="stat-icon">🔒</div>
+        <div class="stat-value">{{ exposure.frozen }}</div>
+        <div class="stat-label">Frozen (overdue)</div>
+    </div>
+</div>
+
+<div class="table-card">
+    <div class="table-header"><div class="table-title">📊 Live Draw-down (last 30 days)</div></div>
+    <div class="table-scroll">
+        <table>
+            <thead>
+                <tr>
+                    <th>Reseller</th>
+                    <th>Type</th>
+                    <th>Channel</th>
+                    <th>Drawn 30d</th>
+                    <th>Draws 30d</th>
+                    <th>Outstanding</th>
+                    <th>Unbilled</th>
+                    <th>Available</th>
+                    <th>Last Draw</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for a in activity %}
+            <tr>
+                <td class="fw6">{{ a.company_name }}</td>
+                <td><span class="badge" style="background:{{ account_labels.get(a.account_type, ['', '#64748b'])[1] }}20;color:{{ account_labels.get(a.account_type, ['', '#64748b'])[1] }}">{{ account_labels.get(a.account_type, [a.account_type])[0] }}</span></td>
+                <td>{% if a.has_api %}<span class="badge badge-info">🔌 API</span>{% else %}<span class="text-muted" style="font-size:11px">portal</span>{% endif %}</td>
+                <td class="fw6">{{ a.drawn_30d|money }}</td>
+                <td>{{ a.draws_30d }}</td>
+                <td class="fw6 text-accent">{{ a.credit_outstanding|money }}</td>
+                <td>{{ a.unbilled|money }}</td>
+                <td class="fw6 {{ 'text-d' if a.available <= 0 }}">{{ a.available|money }}</td>
+                <td class="text-muted" style="font-size:12px">{{ a.last_order_at[:16] if a.last_order_at else '—' }}</td>
+                <td>{% if a.credit_frozen %}<span class="badge badge-danger">🔒 Frozen</span>{% else %}<span class="badge badge-success">Active</span>{% endif %}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="10" style="text-align:center;padding:40px;color:var(--text-3)">
+                No credit or consignment accounts yet.
+            </td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

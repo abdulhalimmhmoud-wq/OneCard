@@ -1023,6 +1023,18 @@ def ops_forecasts():
                            demand=demand, forecasts=forecasts)
 
 
+@app.route('/ops/consignment')
+@auth.ops_required
+def ops_consignment():
+    """Credit/consignment accounts draw in real time (often via API) instead of
+    ordering stock up front — Operations watches their live draw-down here to
+    anticipate restock. All amounts SAR."""
+    activity = models.get_consignment_activity()
+    return render_template('ops/consignment.html', active_tab='ops_consignment',
+                           activity=activity, exposure=models.get_credit_exposure(),
+                           account_labels=models.ACCOUNT_TYPE_LABELS)
+
+
 @app.route('/ops/products')
 @auth.ops_required
 def ops_products():
@@ -1330,6 +1342,48 @@ def api_wallet():
                                     for t in txns]}
 
 
+@app.route('/api/v1/account')
+def api_account():
+    """Account model + live spending headroom (SAR base). For credit/consignment
+    clients (e.g. banks pulling card-by-card) this is how much they can still
+    draw before settling — the API mirror of available_to_spend()."""
+    profile = require_api_reseller()
+    if not profile:
+        return api_error('unauthorized', 'Missing or invalid API key.', 401)
+    at = profile['account_type']
+    resp = {'ok': True, 'currency': 'SAR', 'account_type': at,
+            'contract_status': profile['contract_status'],
+            'available_to_spend': profile['available_to_spend']}
+    if at == 'prepaid':
+        resp['wallet_balance'] = round(profile['wallet_balance'], 2)
+    else:
+        resp.update({
+            'credit_limit': round(profile['credit_limit'], 2),
+            'credit_outstanding': round(profile['credit_outstanding'], 2),
+            'unbilled': models.unbilled_amount(profile['id']),
+            'frozen': bool(profile['credit_frozen']),
+            'settlement_terms_days': profile['settlement_terms_days'],
+            'billing_cycle': profile['billing_cycle'],
+        })
+    return resp
+
+
+@app.route('/api/v1/statements')
+def api_statements():
+    """Statements (invoices) for a credit/consignment client, plus the current
+    un-billed drawn amount."""
+    profile = require_api_reseller()
+    if not profile:
+        return api_error('unauthorized', 'Missing or invalid API key.', 401)
+    statements = models.get_statements(profile['id'])
+    return {'ok': True, 'currency': 'SAR',
+            'unbilled': models.unbilled_amount(profile['id']),
+            'statements': [{'statement_id': s['id'], 'amount': s['amount'],
+                            'status': s['status'], 'period_start': s['period_start'],
+                            'period_end': s['period_end'], 'due_at': s['due_at'],
+                            'paid_at': s['paid_at']} for s in statements]}
+
+
 def _api_order_payload(order):
     items = models.get_order_items(order['id'])
     codes = models.get_all_codes_for_order(order['id'])
@@ -1401,8 +1455,11 @@ def api_orders():
 
     oid, err = models.create_order(profile['id'], order_items)
     if err:
-        code = ('insufficient_balance' if 'wallet' in err.lower()
+        el = err.lower()
+        code = ('insufficient_balance' if 'wallet' in el
                 else 'insufficient_stock' if 'codes left' in err
+                else 'account_on_hold' if 'hold' in el
+                else 'credit_limit_reached' if 'available right now' in el
                 else 'order_rejected')
         return api_error(code, err, 409)
     if idem:

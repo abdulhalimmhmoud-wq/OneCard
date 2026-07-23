@@ -1,4 +1,26 @@
-# OneCard — Reseller Operations Platform (v14)
+# OneCard — Reseller Operations Platform (v15)
+
+## Consignment via API & Account Endpoints — Phase 3 (v15)
+
+Consignment clients (e.g. a bank whose customers buy card-by-card) can now pull in
+real time through the Integration API, no prepaid balance required:
+
+- **Card-by-card over the API** — `POST /api/v1/orders` runs through the same
+  `available_to_spend` gate, so a credit/consignment client draws against their limit
+  and settles later on a statement. Order rejections now return account-type-aware
+  codes: `credit_limit_reached`, `account_on_hold` (frozen by an overdue statement),
+  alongside the existing `insufficient_balance` / `insufficient_stock`.
+- **`GET /api/v1/account`** — live spending headroom + account model (type, limit,
+  outstanding, unbilled, frozen, terms).
+- **`GET /api/v1/statements`** — the client's invoices + current unbilled amount.
+- **Webhooks** — `statement.issued` and `statement.overdue` now fire to the client's
+  webhook alongside `order.placed`.
+- **Operations view** — a new **Consignment Activity** page shows every credit/
+  consignment account's live 30-day draw-down, outstanding, unbilled, available and
+  channel (API vs portal), so Ops can anticipate restock for real-time pullers.
+
+Full contract in [API_GUIDE.md](API_GUIDE.md). Coverage: `tests/e2e_v15.py`
+(11 checks). *Remaining (Phase 4): reporting polish + production webhook hardening.*
 
 ## Credit Settlement Engine & Credit Requests — Phase 2 (v14)
 

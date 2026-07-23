@@ -2023,6 +2023,9 @@ def run_statement_cycle(force=False):
                    "⚠️ Statement overdue — account on hold",
                    f"{r['company_name']} has an overdue statement. Ordering is frozen until it is settled.",
                    "/finance/credit")
+            for od in overdue:
+                send_webhook(r['id'], 'statement.overdue',
+                             {'statement_id': od['id'], 'amount_sar': od['amount']})
             actions.append(f"OVERDUE-FREEZE: {r['company_name']}")
         else:
             conn3.close()
@@ -2161,6 +2164,35 @@ def get_credit_exposure():
     d['overdue_amount'] = overdue['amt']
     d['overdue_count'] = overdue['n']
     return d
+
+
+def get_consignment_activity():
+    """Credit/consignment accounts with their live draw-down, for Operations to
+    anticipate restock (these clients pull in real time, often via API, rather
+    than ordering stock up front). All amounts SAR."""
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT cp.id, cp.company_name, cp.account_type, cp.credit_limit,
+               cp.credit_outstanding, cp.credit_frozen, cp.billing_cycle,
+               (cp.api_key IS NOT NULL) as has_api,
+               (SELECT COUNT(*) FROM orders o WHERE o.reseller_id=cp.id
+                    AND o.created_at >= date('now','-30 day')) as draws_30d,
+               (SELECT COALESCE(SUM(o.total_cost),0) FROM orders o WHERE o.reseller_id=cp.id
+                    AND o.created_at >= date('now','-30 day')) as drawn_30d,
+               (SELECT MAX(o.created_at) FROM orders o WHERE o.reseller_id=cp.id) as last_order_at,
+               (SELECT COALESCE(SUM(s.amount),0) FROM statements s
+                    WHERE s.reseller_id=cp.id AND s.status IN ('issued','overdue')) as open_billed
+        FROM reseller_profiles cp
+        WHERE cp.account_type IN ('credit','consignment')
+        ORDER BY drawn_30d DESC""").fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d['unbilled'] = round(max(0.0, (d['credit_outstanding'] or 0) - (d['open_billed'] or 0)), 2)
+        d['available'] = round(max(0.0, (d['credit_limit'] or 0) - (d['credit_outstanding'] or 0)), 2)
+        out.append(d)
+    return out
 
 
 # ── Forecasts ────────────────────────────────────────────────────
