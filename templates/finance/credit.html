@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}Credit & Settlements — Finance — OneCard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">💳 Credit & Settlements</h1>
+        <p class="page-subtitle">Verify settlement receipts, track statements and portfolio exposure. All figures in SAR.</p>
+    </div>
+</div>
+
+<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">
+    <div class="stat-card">
+        <div class="stat-icon">💳</div>
+        <div class="stat-value">SAR {{ exposure.total_limit|money }}</div>
+        <div class="stat-label">Approved Limits</div>
+    </div>
+    <div class="stat-card" style="border:2px solid var(--accent)">
+        <div class="stat-icon">🧾</div>
+        <div class="stat-value" style="color:var(--accent)">SAR {{ exposure.total_outstanding|money }}</div>
+        <div class="stat-label">Outstanding (owed)</div>
+    </div>
+    <div class="stat-card" style="{{ 'border:2px solid var(--danger)' if exposure.overdue_amount }}">
+        <div class="stat-icon">⏰</div>
+        <div class="stat-value">SAR {{ exposure.overdue_amount|money }}</div>
+        <div class="stat-label">Overdue ({{ exposure.overdue_count }})</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🔒</div>
+        <div class="stat-value">{{ exposure.frozen }}</div>
+        <div class="stat-label">Frozen Accounts</div>
+    </div>
+</div>
+
+<!-- Settlement approvals -->
+<div class="table-card mb-24">
+    <div class="table-header"><div class="table-title">🧾 Settlement Receipts to Verify</div></div>
+    <div class="table-scroll">
+        <table>
+            <thead><tr><th>Reseller</th><th>Statement</th><th>Amount</th><th>Receipt</th><th>Action</th></tr></thead>
+            <tbody>
+            {% for t in settlements %}
+            <tr>
+                <td class="fw6">{{ t.company_name }}
+                    <div class="text-muted" style="font-size:10px">{{ t.reseller_email }} · {{ t.created_at[:16] }}</div>
+                </td>
+                <td>#{{ t.statement_id or '—' }}{% if t.due_at %}<div class="text-muted" style="font-size:10px">due {{ t.due_at }}</div>{% endif %}</td>
+                <td class="fw6">{{ t.orig_amount|money }} {{ t.orig_currency }}
+                    {% if t.orig_currency != 'SAR' %}<div class="text-muted" style="font-size:10px">= SAR {{ t.amount|money }}</div>{% endif %}
+                </td>
+                <td>{% if t.receipt_file %}<a href="/receipts/{{ t.id }}" target="_blank" class="btn btn-sm btn-ghost">🧾 View</a>{% endif %}</td>
+                <td>
+                    <form method="POST" action="/finance/settlements/{{ t.id }}/review" style="display:flex;gap:6px">
+                        <button name="decision" value="approve" class="btn btn-sm btn-primary" onclick="return confirm('Verify settlement of SAR {{ t.amount|money }}? Statement #{{ t.statement_id }} will be cleared.')">✅ Verify</button>
+                        <button name="decision" value="reject" class="btn btn-sm btn-danger" onclick="return confirm('Reject this settlement?')">❌</button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" style="text-align:center;padding:30px;color:var(--text-3)">No settlements awaiting verification</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="grid-2" style="align-items:start">
+    <!-- Open statements -->
+    <div class="table-card">
+        <div class="table-header"><div class="table-title">📄 Open Statements</div></div>
+        <div class="table-scroll" style="max-height:420px;overflow-y:auto">
+            <table>
+                <thead><tr><th>Reseller</th><th>Amount</th><th>Due</th><th>Status</th></tr></thead>
+                <tbody>
+                {% for s in open_statements %}
+                <tr>
+                    <td class="fw6">{{ s.company_name }}</td>
+                    <td class="fw6">SAR {{ s.amount|money }}</td>
+                    <td class="text-muted" style="font-size:12px">{{ s.due_at }}</td>
+                    <td>{% if s.status == 'overdue' %}<span class="badge badge-danger">Overdue</span>{% else %}<span class="badge badge-warning">Issued</span>{% endif %}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4" style="text-align:center;padding:24px;color:var(--text-3)">No open statements</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Credit requests (Finance sign-off) -->
+    <div class="table-card">
+        <div class="table-header"><div class="table-title">💳 Credit Increase Requests</div></div>
+        <div class="table-scroll" style="max-height:420px;overflow-y:auto">
+            <table>
+                <thead><tr><th>Reseller</th><th>Increase</th><th>Sign-off</th><th></th></tr></thead>
+                <tbody>
+                {% for c in credit_requests %}
+                <tr>
+                    <td class="fw6">{{ c.company_name }}
+                        <div class="text-muted" style="font-size:10px">by {{ c.requested_by_name or '—' }}{% if c.reason %} · {{ c.reason }}{% endif %}</div>
+                    </td>
+                    <td class="fw6">+SAR {{ c.amount|money }}
+                        <div class="text-muted" style="font-size:10px">{{ 'temporary → ' + c.expires_on if c.kind == 'temporary' else 'permanent' }}</div>
+                    </td>
+                    <td style="font-size:11px">
+                        {{ '✅' if c.cco_by else '⏳' }} CCO<br>{{ '✅' if c.finance_by else '⏳' }} Finance
+                    </td>
+                    <td>
+                        <form method="POST" action="/credit-requests/{{ c.id }}/decide" style="display:flex;gap:4px">
+                            <button name="decision" value="approve" class="btn btn-sm btn-primary" {{ 'disabled' if c.finance_by }}>Approve</button>
+                            <button name="decision" value="reject" class="btn btn-sm btn-danger">✕</button>
+                        </form>
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4" style="text-align:center;padding:24px;color:var(--text-3)">No pending requests</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

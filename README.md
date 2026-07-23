@@ -1,4 +1,32 @@
-# OneCard — Reseller Operations Platform (v13)
+# OneCard — Reseller Operations Platform (v14)
+
+## Credit Settlement Engine & Credit Requests — Phase 2 (v14)
+
+Credit and consignment accounts now have a full settlement lifecycle on top of
+the v13 draw mechanics:
+
+- **Statements** — drawn-but-unbilled amount is billed as a `statements` row with
+  a due date (issue date + `settlement_terms_days`). Finance can issue one on
+  demand, and a daily sweep (`run_statement_cycle`) auto-issues per billing cycle
+  (monthly/weekly). `unbilled = outstanding − open statements`.
+- **Settlement** — the reseller uploads a bank-transfer receipt against a statement
+  (new **Statements** panel on the Billing page); Finance verifies it on the new
+  **Credit & Settlements** hub, which reduces `credit_outstanding`, marks the
+  statement paid and restores available credit.
+- **Overdue → freeze** — a statement past its due date flips to `overdue`, freezes
+  the line (`available_to_spend → 0`) and escalates to reseller + Finance + CCO.
+  Settling it unfreezes automatically. (Real card auto-charge stays a documented
+  hook — no PSP.)
+- **Additional-credit requests** — Sales requests a limit increase (**permanent** or
+  **temporary** with an expiry) from the reseller's row; it needs **both CCO and
+  Finance** to sign off before it applies. A temporary bump auto-reverts to the
+  permanent base when it expires. Team is alerted on request and on limit-reached.
+- **Exposure** — Finance and CCO get portfolio KPIs (approved limits, outstanding,
+  overdue, frozen accounts).
+
+Coverage: `tests/e2e_v14.py` (28 checks). *Next: Phase 3 — consignment period
+statements + API card-by-card without prepaid; Phase 4 — dashboards, `/api/v1/account`
++ `/statement`, webhooks.*
 
 ## Account Models & Contract Signing — Phase 1 (v13)
 

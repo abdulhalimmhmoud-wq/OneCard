@@ -677,6 +677,31 @@ def sales_reactivate_reseller(rid):
     return redirect(url_for('sales_resellers'))
 
 
+@app.route('/sales/resellers/<int:rid>/credit-request', methods=['POST'])
+@auth.sales_required
+def sales_credit_request(rid):
+    """Sales asks CCO + Finance to raise a credit/consignment limit."""
+    curr = auth.get_current_user()
+    profile = models.get_reseller_profile_by_id(rid)
+    if not profile or (curr['role'] not in ('admin', 'cco') and profile['registered_by'] != curr['id']):
+        flash("Access denied.", "error")
+        return redirect(url_for('sales_resellers'))
+    if (profile['account_type'] or 'prepaid') == 'prepaid':
+        flash("Credit increases apply to credit/consignment accounts only.", "error")
+        return redirect(url_for('sales_resellers'))
+    amount_disp = float(request.form.get('amount') or 0)
+    if amount_disp <= 0:
+        flash("Enter a valid increase amount.", "error")
+        return redirect(url_for('sales_resellers'))
+    amount_sar = round(models.convert_amount(amount_disp, profile['display_currency'], 'SAR'), 2)
+    kind = 'temporary' if request.form.get('kind') == 'temporary' else 'permanent'
+    expires_on = request.form.get('expires_on') or None
+    models.create_credit_request(rid, curr['id'], amount_sar, kind, expires_on,
+                                 request.form.get('reason', ''))
+    flash(f"Credit increase requested for {profile['company_name']} — sent to CCO and Finance.", "success")
+    return redirect(url_for('sales_resellers'))
+
+
 @app.route('/sales/resellers/<int:rid>/api', methods=['POST'])
 @auth.sales_required
 def sales_reseller_api(rid):
@@ -864,6 +889,15 @@ def cco_contracts():
                            account_labels=models.ACCOUNT_TYPE_LABELS)
 
 
+@app.route('/cco/credit')
+@auth.cco_required
+def cco_credit():
+    """CCO view of additional-credit requests + portfolio exposure."""
+    return render_template('cco/credit.html', active_tab='cco_credit',
+                           exposure=models.get_credit_exposure(),
+                           credit_requests=models.get_pending_credit_requests())
+
+
 # ── Finance Routes ───────────────────────────────────────────────
 
 @app.route('/finance')
@@ -902,6 +936,69 @@ def finance_review(txn_id):
                       "/reseller/wallet")
         flash("Top-up rejected.", "info")
     return redirect(url_for('finance_dashboard'))
+
+
+# ── Finance: credit & settlement (v14) ───────────────────────────
+
+@app.route('/finance/credit')
+@auth.finance_required
+def finance_credit():
+    return render_template('finance/credit.html', active_tab='finance_credit',
+                           exposure=models.get_credit_exposure(),
+                           settlements=models.get_pending_settlements(),
+                           open_statements=models.get_all_statements('issued')
+                                          + models.get_all_statements('overdue'),
+                           credit_requests=models.get_pending_credit_requests())
+
+
+@app.route('/finance/settlements/<int:txn_id>/review', methods=['POST'])
+@auth.finance_required
+def finance_settlement_review(txn_id):
+    curr = auth.get_current_user()
+    approve = request.form.get('decision') == 'approve'
+    note = request.form.get('note', '')
+    txn = models.get_topup(txn_id)   # generic wallet_transactions fetch
+    if not txn or not models.review_settlement(txn_id, approve, curr['id'], note):
+        flash("Settlement not found or already reviewed.", "error")
+        return redirect(url_for('finance_credit'))
+    verdict = "verified" if approve else "rejected"
+    models.notify(txn['reseller_user_id'],
+                  f"Statement settlement {verdict}",
+                  f"Your settlement of {txn['amount']:,.0f} SAR was {verdict}."
+                  + (f" Note: {note}" if note else ""), "/reseller/wallet")
+    flash(f"Settlement {verdict} for {txn['company_name']}.", "success")
+    return redirect(url_for('finance_credit'))
+
+
+@app.route('/finance/statements/<int:rid>/issue', methods=['POST'])
+@auth.finance_required
+def finance_issue_statement(rid):
+    curr = auth.get_current_user()
+    sid = models.issue_statement(rid, actor_id=curr['id'])
+    flash("Statement issued." if sid else "Nothing new to bill for this reseller.", "info")
+    return redirect(request.referrer or url_for('finance_credit'))
+
+
+@app.route('/credit-requests/<int:req_id>/decide', methods=['POST'])
+@auth.login_required
+def decide_credit_request(req_id):
+    """CCO and Finance each sign off on an additional-credit request; the bump
+    applies once both approve."""
+    curr = auth.get_current_user()
+    if curr['role'] not in ('cco', 'finance', 'admin'):
+        abort(403)
+    approve = request.form.get('decision') == 'approve'
+    note = request.form.get('note', '')
+    status, cr = models.decide_credit_request(req_id, curr['role'], approve, curr['id'], note)
+    if not cr:
+        flash("Request not found or already decided.", "error")
+    elif status == 'approved':
+        flash("Credit increase approved and applied.", "success")
+    elif status == 'rejected':
+        flash("Credit request rejected.", "info")
+    else:
+        flash("Your approval was recorded — awaiting the other sign-off.", "success")
+    return redirect(request.referrer or url_for('finance_credit'))
 
 
 # ── Operations Routes (v5) ───────────────────────────────────────
@@ -2126,9 +2223,58 @@ def reseller_wallet():
             t['display_amount'] = round(models.convert_amount(t['amount'], 'SAR', disp))
     pending_total = sum(t['display_amount'] for t in transactions
                         if t['type'] == 'topup' and t['status'] == 'pending')
+    # v14: credit/consignment resellers settle statements (not top-ups).
+    statements = []
+    if profile['account_type'] != 'prepaid':
+        statements = models.get_statements(profile['id'])
+        pending_settle_ids = {t['statement_id'] for t in transactions
+                              if t['type'] == 'settlement' and t['status'] == 'pending'}
+        for s in statements:
+            s['amount_display'] = round(models.convert_amount(s['amount'], 'SAR', disp))
+            s['settlement_pending'] = s['id'] in pending_settle_ids
     return render_template('reseller/wallet.html', active_tab='wallet',
                            profile=profile, transactions=transactions,
-                           pending_total=pending_total, disp=disp)
+                           pending_total=pending_total, disp=disp, statements=statements)
+
+
+@app.route('/reseller/statements/<int:sid>/settle', methods=['POST'])
+@auth.login_required
+def reseller_settle_statement(sid):
+    uid, _, profile = _reseller_ctx()
+    if not profile:
+        return _no_reseller_profile()
+    if block_in_preview():
+        return redirect(url_for('reseller_wallet'))
+    st = models.get_statement(sid)
+    if not st or st['reseller_id'] != profile['id']:
+        flash("Statement not found.", "error")
+        return redirect(url_for('reseller_wallet'))
+    if st['status'] not in ('issued', 'overdue'):
+        flash("This statement is already settled.", "info")
+        return redirect(url_for('reseller_wallet'))
+    disp = profile['display_currency']
+    bank_ref = request.form.get('bank_reference', '').strip()
+    file = request.files.get('receipt')
+    if not file or not file.filename:
+        flash("Please attach the bank transfer receipt.", "error")
+        return redirect(url_for('reseller_wallet'))
+    ext = _sniff_receipt_ext(file)
+    if not ext:
+        flash("Receipt must be a genuine image (PNG/JPG/WEBP) or PDF file.", "error")
+        return redirect(url_for('reseller_wallet'))
+    fname = f"s{profile['id']}_{uuid.uuid4().hex[:12]}{ext}"
+    file.save(os.path.join(UPLOAD_DIR, fname))
+    # Settlement covers the full statement; store the SAR amount + what they paid.
+    orig_amount = round(models.convert_amount(st['amount'], 'SAR', disp))
+    models.create_settlement_request(profile['id'], sid, st['amount'], bank_ref, fname,
+                                     note=f'Settle statement #{sid}',
+                                     orig_amount=orig_amount, orig_currency=disp)
+    models.notify(models.get_user_ids_by_role('finance'),
+                  "Settlement receipt to verify 🧾",
+                  f"{profile['company_name']} uploaded a settlement for statement #{sid} "
+                  f"({st['amount']:,.0f} SAR).", "/finance/credit")
+    flash("Settlement receipt uploaded. Finance will verify it and clear the statement.", "success")
+    return redirect(url_for('reseller_wallet'))
 
 
 # ── Reseller: Contract (review & sign) ───────────────────────────

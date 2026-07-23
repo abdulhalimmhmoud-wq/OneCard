@@ -150,6 +150,25 @@
                             </div>
                         </details>
 
+                        {% if (r.account_type or 'prepaid') != 'prepaid' %}
+                        <details style="position:relative">
+                            <summary class="btn btn-sm btn-ghost" style="list-style:none;cursor:pointer">💳 Credit+</summary>
+                            <div style="position:absolute;right:0;top:110%;z-index:200;background:var(--bg-1);border:1px solid var(--border);border-radius:10px;padding:12px;width:280px;box-shadow:0 12px 32px rgba(0,0,0,.5)">
+                                <div class="text-muted" style="font-size:11px;margin-bottom:6px">Current limit: {{ r.credit_limit|money }} SAR. Request an increase (CCO + Finance approve).</div>
+                                <form method="POST" action="/sales/resellers/{{ r.id }}/credit-request">
+                                    <input type="number" name="amount" required placeholder="Increase amount ({{ r.display_currency }})" style="width:100%;font-size:12px;padding:5px;margin-bottom:6px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;color:var(--text-1)">
+                                    <select name="kind" onchange="var d=this.closest('form').querySelector('.cr-exp');d.style.display=this.value==='temporary'?'block':'none'" style="width:100%;font-size:12px;padding:5px;margin-bottom:6px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;color:var(--text-1)">
+                                        <option value="permanent">Permanent</option>
+                                        <option value="temporary">Temporary (season)</option>
+                                    </select>
+                                    <input type="date" name="expires_on" class="cr-exp" style="display:none;width:100%;font-size:12px;padding:5px;margin-bottom:6px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;color:var(--text-1)">
+                                    <input type="text" name="reason" placeholder="Reason (optional)" style="width:100%;font-size:12px;padding:5px;margin-bottom:8px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;color:var(--text-1)">
+                                    <button class="btn btn-sm btn-primary" style="width:100%" type="submit">📨 Request Increase</button>
+                                </form>
+                            </div>
+                        </details>
+                        {% endif %}
+
                         {% if r.contract_status == 'contracted' %}
                         <form method="POST" action="/resellers/{{ r.id }}/contract" onsubmit="return confirm('Set {{ r.company_name }} back to prospect? Ordering will be disabled.')">
                             <input type="hidden" name="status" value="prospect">

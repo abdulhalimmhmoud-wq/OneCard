@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Credit Requests — CCO — OneCard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">💳 Credit Requests & Exposure</h1>
+        <p class="page-subtitle">Approve additional-credit requests. Both CCO and Finance must sign off before a limit rises. All figures in SAR.</p>
+    </div>
+</div>
+
+<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">
+    <div class="stat-card">
+        <div class="stat-icon">💳</div>
+        <div class="stat-value">SAR {{ exposure.total_limit|money }}</div>
+        <div class="stat-label">Total Approved Limits</div>
+    </div>
+    <div class="stat-card" style="border:2px solid var(--accent)">
+        <div class="stat-icon">🧾</div>
+        <div class="stat-value" style="color:var(--accent)">SAR {{ exposure.total_outstanding|money }}</div>
+        <div class="stat-label">Outstanding Exposure</div>
+    </div>
+    <div class="stat-card" style="{{ 'border:2px solid var(--danger)' if exposure.overdue_amount }}">
+        <div class="stat-icon">⏰</div>
+        <div class="stat-value">SAR {{ exposure.overdue_amount|money }}</div>
+        <div class="stat-label">Overdue ({{ exposure.overdue_count }})</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">👥</div>
+        <div class="stat-value">{{ exposure.accounts }}</div>
+        <div class="stat-label">Credit / Consignment Accounts</div>
+    </div>
+</div>
+
+<div class="table-card">
+    <div class="table-header"><div class="table-title">💳 Pending Credit Increase Requests</div></div>
+    <div class="table-scroll">
+        <table>
+            <thead><tr><th>Reseller</th><th>Current Limit</th><th>Increase</th><th>Type</th><th>Sign-off</th><th>Decision</th></tr></thead>
+            <tbody>
+            {% for c in credit_requests %}
+            <tr>
+                <td class="fw6">{{ c.company_name }}
+                    <div class="text-muted" style="font-size:10px">by {{ c.requested_by_name or '—' }}{% if c.reason %} · {{ c.reason }}{% endif %}</div>
+                </td>
+                <td class="fw6">SAR {{ c.credit_limit|money }}</td>
+                <td class="fw6 text-accent">+SAR {{ c.amount|money }}</td>
+                <td>
+                    {% if c.kind == 'temporary' %}<span class="badge badge-info">Temporary</span>
+                        <div class="text-muted" style="font-size:10px">until {{ c.expires_on }}</div>
+                    {% else %}<span class="badge badge-success">Permanent</span>{% endif %}
+                </td>
+                <td style="font-size:11px">{{ '✅' if c.cco_by else '⏳' }} CCO · {{ '✅' if c.finance_by else '⏳' }} Finance</td>
+                <td>
+                    <form method="POST" action="/credit-requests/{{ c.id }}/decide" style="display:flex;gap:6px">
+                        <button name="decision" value="approve" class="btn btn-sm btn-primary" {{ 'disabled' if c.cco_by }}>✅ Approve</button>
+                        <button name="decision" value="reject" class="btn btn-sm btn-danger" onclick="return confirm('Reject this credit request?')">❌ Reject</button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text-3)">No pending credit requests</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

@@ -61,8 +61,53 @@
 <div class="card mb-24">
     <b>How settlement works:</b> your draws accumulate as <b>Outstanding</b>. Each
     {{ profile.billing_cycle }} cycle we issue a statement due within
-    {{ profile.settlement_terms_days }} days; once you settle it, your available limit is restored.
-    <span class="text-muted">(Statement + settlement uploads arrive in the next release.)</span>
+    {{ profile.settlement_terms_days }} days; upload a transfer receipt to settle it and your
+    available limit is restored.
+</div>
+
+<div class="table-card mb-24">
+    <div class="table-header"><div class="table-title">🧾 Statements</div></div>
+    <div class="table-scroll">
+        <table>
+            <thead><tr><th>#</th><th>Period</th><th>Amount</th><th>Due</th><th>Status</th><th>Settle</th></tr></thead>
+            <tbody>
+            {% for s in statements %}
+            <tr>
+                <td class="fw6">#{{ s.id }}</td>
+                <td class="text-muted" style="font-size:12px">{{ s.period_start }} → {{ s.period_end }}</td>
+                <td class="fw6">{{ s.amount_display|money }} {{ disp }}</td>
+                <td class="text-muted" style="font-size:12px">{{ s.due_at }}</td>
+                <td>
+                    {% if s.status == 'paid' %}<span class="badge badge-success">✅ Paid</span>
+                    {% elif s.status == 'overdue' %}<span class="badge badge-danger">⏰ Overdue</span>
+                    {% else %}<span class="badge badge-warning">Issued</span>{% endif %}
+                </td>
+                <td>
+                    {% if s.status in ('issued', 'overdue') %}
+                        {% if s.settlement_pending %}
+                        <span class="badge badge-info">⏳ Verifying</span>
+                        {% else %}
+                        <details style="position:relative">
+                            <summary class="btn btn-sm btn-primary" style="list-style:none;cursor:pointer">Settle</summary>
+                            <div style="position:absolute;right:0;top:110%;z-index:200;background:var(--bg-1);border:1px solid var(--border);border-radius:10px;padding:12px;width:260px;box-shadow:0 12px 32px rgba(0,0,0,.5)">
+                                <form method="POST" action="/reseller/statements/{{ s.id }}/settle" enctype="multipart/form-data">
+                                    <div class="text-muted" style="font-size:11px;margin-bottom:6px">Transfer {{ s.amount_display|money }} {{ disp }} and upload the receipt.</div>
+                                    <input type="text" name="bank_reference" placeholder="Bank reference" style="width:100%;font-size:12px;padding:5px;margin-bottom:6px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;color:var(--text-1)">
+                                    <input type="file" name="receipt" required accept=".png,.jpg,.jpeg,.webp,.pdf" style="width:100%;font-size:11px;margin-bottom:8px;color:var(--text-2)">
+                                    <button class="btn btn-sm btn-primary" style="width:100%" type="submit">📤 Upload settlement</button>
+                                </form>
+                            </div>
+                        </details>
+                        {% endif %}
+                    {% else %}—{% endif %}
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-3)">No statements yet. Your draws will be billed each {{ profile.billing_cycle }} cycle.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
 </div>
 {% endif %}
 

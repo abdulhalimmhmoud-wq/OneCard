@@ -232,6 +232,40 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_contracts_reseller ON contracts(reseller_id);
         CREATE INDEX IF NOT EXISTS idx_contract_events ON contract_events(contract_id);
 
+        -- ── v14: Statements (credit/consignment settlement) ──
+        CREATE TABLE IF NOT EXISTS statements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reseller_id INTEGER NOT NULL REFERENCES reseller_profiles(id) ON DELETE CASCADE,
+            amount REAL NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'issued',   -- issued | paid | overdue | void
+            period_start TEXT,
+            period_end TEXT,
+            due_at TEXT,
+            issued_by INTEGER REFERENCES users(id),
+            issued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            paid_at TIMESTAMP,
+            note TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_statements_reseller ON statements(reseller_id, status);
+
+        -- v14: additional-credit requests (Sales -> CCO + Finance approve)
+        CREATE TABLE IF NOT EXISTS credit_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reseller_id INTEGER NOT NULL REFERENCES reseller_profiles(id) ON DELETE CASCADE,
+            requested_by INTEGER REFERENCES users(id),
+            amount REAL NOT NULL DEFAULT 0,
+            kind TEXT NOT NULL DEFAULT 'permanent',  -- permanent | temporary
+            expires_on TEXT,
+            reason TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',   -- pending | approved | rejected
+            cco_by INTEGER REFERENCES users(id),
+            finance_by INTEGER REFERENCES users(id),
+            decided_at TIMESTAMP,
+            note TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_credit_requests ON credit_requests(reseller_id, status);
+
         CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             product_id TEXT,
@@ -647,6 +681,11 @@ def migrate_db():
         'settlement_terms_days': "ALTER TABLE reseller_profiles ADD COLUMN settlement_terms_days INTEGER NOT NULL DEFAULT 30",
         'billing_cycle': "ALTER TABLE reseller_profiles ADD COLUMN billing_cycle TEXT NOT NULL DEFAULT 'monthly'",
         'credit_frozen': "ALTER TABLE reseller_profiles ADD COLUMN credit_frozen INTEGER NOT NULL DEFAULT 0",
+        # v14: base limit (the permanent limit) so a TEMPORARY bump can revert to
+        # it when it expires; last_statement_at drives the auto statement cycle.
+        'credit_limit_base': "ALTER TABLE reseller_profiles ADD COLUMN credit_limit_base REAL NOT NULL DEFAULT 0",
+        'credit_temp_until': "ALTER TABLE reseller_profiles ADD COLUMN credit_temp_until TEXT",
+        'last_statement_at': "ALTER TABLE reseller_profiles ADD COLUMN last_statement_at TEXT",
     }
     just_added_display_cur = 'display_currency' not in cols
     just_added_suspend = 'auto_suspend_at' not in cols
@@ -776,6 +815,9 @@ def migrate_db():
         conn.execute("ALTER TABLE wallet_transactions ADD COLUMN orig_amount REAL")
     if 'orig_currency' not in wtcols:
         conn.execute("ALTER TABLE wallet_transactions ADD COLUMN orig_currency TEXT DEFAULT 'SAR'")
+    # v14: link a settlement transaction to the statement it pays
+    if 'statement_id' not in wtcols:
+        conn.execute("ALTER TABLE wallet_transactions ADD COLUMN statement_id INTEGER")
     conn.commit()
 
     # 7b. v8.1: partner portal login link
@@ -1764,6 +1806,361 @@ def review_topup(txn_id, approve, reviewer_id, note=''):
     conn.commit()
     conn.close()
     return True
+
+
+# ── Statements & settlement (v14) ────────────────────────────────
+
+def _open_statements_total(conn, reseller_id):
+    """Sum of statements already billed but not yet paid (issued + overdue)."""
+    return conn.execute("""SELECT COALESCE(SUM(amount),0) FROM statements
+                           WHERE reseller_id=? AND status IN ('issued','overdue')""",
+                        (reseller_id,)).fetchone()[0]
+
+
+def unbilled_amount(reseller_id):
+    """Drawn-but-not-yet-billed amount = outstanding − already-open statements.
+    This is what a new statement will bill."""
+    conn = get_db()
+    row = conn.execute("SELECT credit_outstanding FROM reseller_profiles WHERE id=?",
+                       (reseller_id,)).fetchone()
+    if not row:
+        conn.close()
+        return 0.0
+    unbilled = (row['credit_outstanding'] or 0) - _open_statements_total(conn, reseller_id)
+    conn.close()
+    return round(max(0.0, unbilled), 2)
+
+
+def issue_statement(reseller_id, actor_id=None, auto=False):
+    """Bill the currently un-billed drawn amount as a new statement.
+    due date = today + settlement_terms_days. Returns statement id or None."""
+    conn = get_db()
+    prof = conn.execute("""SELECT cp.*, u.id as uid FROM reseller_profiles cp
+                           JOIN users u ON cp.user_id=u.id WHERE cp.id=?""", (reseller_id,)).fetchone()
+    if not prof or (prof['account_type'] or 'prepaid') == 'prepaid':
+        conn.close()
+        return None
+    unbilled = (prof['credit_outstanding'] or 0) - _open_statements_total(conn, reseller_id)
+    unbilled = round(max(0.0, unbilled), 2)
+    if unbilled <= 0.009:
+        # nothing new to bill, but still advance the cycle marker
+        conn.execute("UPDATE reseller_profiles SET last_statement_at=? WHERE id=?",
+                     (datetime.now(timezone.utc).date().isoformat(), reseller_id))
+        conn.commit()
+        conn.close()
+        return None
+    today = datetime.now(timezone.utc).date()
+    due = (today + timedelta(days=int(prof['settlement_terms_days'] or 30))).isoformat()
+    period_start = prof['last_statement_at'] or (prof['contracted_at'] or '')[:10] or today.isoformat()
+    conn.execute("""INSERT INTO statements
+                    (reseller_id, amount, status, period_start, period_end, due_at, issued_by)
+                    VALUES (?,?,?,?,?,?,?)""",
+                 (reseller_id, unbilled, 'issued', period_start, today.isoformat(), due, actor_id))
+    sid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute("UPDATE reseller_profiles SET last_statement_at=? WHERE id=?",
+                 (today.isoformat(), reseller_id))
+    conn.commit()
+    conn.close()
+    disp = prof['display_currency'] or 'SAR'
+    amt_disp = round(convert_amount(unbilled, 'SAR', disp))
+    notify([prof['uid']], "New statement issued 🧾",
+           f"A statement for {amt_disp:,.0f} {disp} was issued, due {due}. "
+           f"Settle it from your Billing page.", "/reseller/wallet")
+    notify(get_user_ids_by_role('finance'), "Statement issued",
+           f"{prof['company_name']}: {unbilled:,.0f} SAR statement issued (due {due}).", "/finance/credit")
+    send_webhook(reseller_id, 'statement.issued',
+                 {'statement_id': sid, 'amount_sar': unbilled, 'due_at': due})
+    return sid
+
+
+def get_statements(reseller_id):
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM statements WHERE reseller_id=? ORDER BY id DESC",
+                        (reseller_id,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_statement(sid):
+    conn = get_db()
+    row = conn.execute("""SELECT s.*, cp.company_name, cp.user_id as reseller_user_id,
+                                 cp.display_currency, cp.registered_by
+                          FROM statements s JOIN reseller_profiles cp ON s.reseller_id=cp.id
+                          WHERE s.id=?""", (sid,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_all_statements(status=None):
+    conn = get_db()
+    q = """SELECT s.*, cp.company_name, cp.account_type, u.email as reseller_email
+           FROM statements s JOIN reseller_profiles cp ON s.reseller_id=cp.id
+           JOIN users u ON cp.user_id=u.id"""
+    params = []
+    if status:
+        q += " WHERE s.status=?"
+        params.append(status)
+    q += " ORDER BY s.due_at, s.id DESC"
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def create_settlement_request(reseller_id, statement_id, amount, bank_reference, receipt_file,
+                              note='', orig_amount=None, orig_currency='SAR'):
+    """Reseller uploads a bank-transfer receipt to settle a statement. amount is
+    SAR. Finance approves via review_settlement (reduces outstanding)."""
+    conn = get_db()
+    conn.execute("""INSERT INTO wallet_transactions
+                    (reseller_id, type, amount, status, bank_reference, receipt_file, note,
+                     orig_amount, orig_currency, statement_id)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                 (reseller_id, 'settlement', amount, 'pending', bank_reference, receipt_file, note,
+                  orig_amount if orig_amount is not None else amount, orig_currency or 'SAR',
+                  statement_id))
+    txn_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit()
+    conn.close()
+    return txn_id
+
+
+def get_pending_settlements():
+    conn = get_db()
+    rows = conn.execute("""SELECT wt.*, cp.company_name, cp.credit_outstanding, cp.account_type,
+                                  u.email as reseller_email, s.due_at, s.amount as statement_amount
+                           FROM wallet_transactions wt
+                           JOIN reseller_profiles cp ON wt.reseller_id=cp.id
+                           JOIN users u ON cp.user_id=u.id
+                           LEFT JOIN statements s ON wt.statement_id=s.id
+                           WHERE wt.type='settlement' AND wt.status='pending'
+                           ORDER BY wt.created_at""").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def review_settlement(txn_id, approve, reviewer_id, note=''):
+    """Finance approves/rejects a settlement. On approval: reduce outstanding,
+    mark the linked statement paid, and unfreeze the line if nothing else is
+    overdue. Race-safe via BEGIN IMMEDIATE (mirrors review_topup)."""
+    conn = get_db()
+    conn.execute("BEGIN IMMEDIATE")
+    txn = conn.execute("""SELECT * FROM wallet_transactions
+                          WHERE id=? AND type='settlement' AND status='pending'""", (txn_id,)).fetchone()
+    if not txn:
+        conn.rollback()
+        conn.close()
+        return False
+    status = 'approved' if approve else 'rejected'
+    conn.execute("""UPDATE wallet_transactions SET status=?, reviewed_by=?,
+                    reviewed_at=CURRENT_TIMESTAMP, note=COALESCE(NULLIF(?,''), note) WHERE id=?""",
+                 (status, reviewer_id, note, txn_id))
+    rid = txn['reseller_id']
+    if approve:
+        conn.execute("""UPDATE reseller_profiles
+                        SET credit_outstanding = MAX(0, credit_outstanding - ?) WHERE id=?""",
+                     (txn['amount'], rid))
+        if txn['statement_id']:
+            conn.execute("""UPDATE statements SET status='paid', paid_at=CURRENT_TIMESTAMP
+                            WHERE id=? AND status IN ('issued','overdue')""", (txn['statement_id'],))
+        # unfreeze once no statement remains overdue
+        still_overdue = conn.execute("""SELECT COUNT(*) FROM statements
+                                        WHERE reseller_id=? AND status='overdue'""", (rid,)).fetchone()[0]
+        if not still_overdue:
+            conn.execute("UPDATE reseller_profiles SET credit_frozen=0 WHERE id=?", (rid,))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def _cycle_days(billing_cycle):
+    return 7 if billing_cycle == 'weekly' else 30   # 'custom' treated as monthly for now
+
+
+def run_statement_cycle(force=False):
+    """Daily housekeeping for credit/consignment lines:
+       • auto-issue a statement when the billing cycle has elapsed and there is
+         un-billed drawn amount,
+       • flip past-due unpaid statements to 'overdue' and freeze the line,
+       • revert an expired TEMPORARY credit bump to the base limit.
+    Returns a list of action strings."""
+    conn = get_db()
+    today = datetime.now(timezone.utc).date()
+    resellers = conn.execute("""SELECT id, company_name, account_type, billing_cycle,
+                                       last_statement_at, contracted_at, credit_temp_until,
+                                       credit_limit, credit_limit_base, registered_by, user_id
+                                FROM reseller_profiles
+                                WHERE account_type IN ('credit','consignment')""").fetchall()
+    conn.close()
+    actions = []
+    admin_cco = get_user_ids_by_role('cco')
+    for r in resellers:
+        # 1. revert an expired temporary credit bump
+        if r['credit_temp_until'] and r['credit_temp_until'] < today.isoformat():
+            base = r['credit_limit_base'] or 0
+            conn2 = get_db()
+            conn2.execute("""UPDATE reseller_profiles SET credit_limit=?, credit_temp_until=NULL
+                             WHERE id=?""", (base, r['id']))
+            conn2.commit()
+            conn2.close()
+            notify([r['registered_by']] + admin_cco, "Temporary credit expired ⏲️",
+                   f"{r['company_name']}'s temporary credit reverted to {base:,.0f} SAR.",
+                   "/sales/resellers")
+            actions.append(f"TEMP-REVERT: {r['company_name']}")
+
+        # 2. mark overdue + freeze
+        conn3 = get_db()
+        overdue = conn3.execute("""SELECT id, amount FROM statements
+                                   WHERE reseller_id=? AND status='issued' AND due_at < ?""",
+                                (r['id'], today.isoformat())).fetchall()
+        if overdue:
+            conn3.execute("""UPDATE statements SET status='overdue'
+                             WHERE reseller_id=? AND status='issued' AND due_at < ?""",
+                          (r['id'], today.isoformat()))
+            conn3.execute("UPDATE reseller_profiles SET credit_frozen=1 WHERE id=?", (r['id'],))
+            conn3.commit()
+            conn3.close()
+            notify([r['user_id'], r['registered_by']] + get_user_ids_by_role('finance', 'cco'),
+                   "⚠️ Statement overdue — account on hold",
+                   f"{r['company_name']} has an overdue statement. Ordering is frozen until it is settled.",
+                   "/finance/credit")
+            actions.append(f"OVERDUE-FREEZE: {r['company_name']}")
+        else:
+            conn3.close()
+
+        # 3. auto-issue when the cycle has elapsed
+        base_date = r['last_statement_at'] or (r['contracted_at'] or '')[:10]
+        due_for_cycle = True
+        if base_date:
+            try:
+                due_for_cycle = (today - date.fromisoformat(base_date[:10])).days >= _cycle_days(r['billing_cycle'])
+            except (ValueError, TypeError):
+                due_for_cycle = True
+        if force or due_for_cycle:
+            if issue_statement(r['id'], actor_id=None, auto=True):
+                actions.append(f"STATEMENT: {r['company_name']}")
+    return actions
+
+
+# ── Additional-credit requests (v14) ─────────────────────────────
+
+def create_credit_request(reseller_id, requested_by, amount, kind='permanent',
+                          expires_on=None, reason=''):
+    """Sales asks CCO + Finance to raise a reseller's credit limit — either
+    'permanent' or 'temporary' (with an expiry date)."""
+    conn = get_db()
+    conn.execute("""INSERT INTO credit_requests
+                    (reseller_id, requested_by, amount, kind, expires_on, reason)
+                    VALUES (?,?,?,?,?,?)""",
+                 (reseller_id, requested_by, amount, kind,
+                  expires_on if kind == 'temporary' else None, reason))
+    crid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    r = conn.execute("SELECT company_name FROM reseller_profiles WHERE id=?", (reseller_id,)).fetchone()
+    conn.commit()
+    conn.close()
+    kind_txt = (f"temporary until {expires_on}" if kind == 'temporary' else "permanent")
+    notify(get_user_ids_by_role('cco', 'finance'), "Credit increase requested 💳",
+           f"{r['company_name'] if r else '?'}: +{amount:,.0f} SAR ({kind_txt}). "
+           f"Needs CCO + Finance approval.", "/cco/credit")
+    return crid
+
+
+def get_pending_credit_requests():
+    conn = get_db()
+    rows = conn.execute("""SELECT cr.*, cp.company_name, cp.credit_limit, cp.account_type,
+                                  su.name as requested_by_name
+                           FROM credit_requests cr
+                           JOIN reseller_profiles cp ON cr.reseller_id=cp.id
+                           LEFT JOIN users su ON cr.requested_by=su.id
+                           WHERE cr.status='pending' ORDER BY cr.created_at""").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def decide_credit_request(request_id, approver_role, approve, actor_id, note=''):
+    """CCO and Finance each sign off. The bump applies only once BOTH approve;
+    either rejection rejects the request. Returns (status, request_dict)."""
+    conn = get_db()
+    conn.execute("BEGIN IMMEDIATE")
+    cr = conn.execute("SELECT * FROM credit_requests WHERE id=? AND status='pending'",
+                      (request_id,)).fetchone()
+    if not cr:
+        conn.rollback()
+        conn.close()
+        return None, None
+    if not approve:
+        conn.execute("""UPDATE credit_requests SET status='rejected', decided_at=CURRENT_TIMESTAMP,
+                        note=COALESCE(NULLIF(?,''), note) WHERE id=?""", (note, request_id))
+        conn.commit()
+        result = dict(cr)
+        conn.close()
+        _notify_credit_decision(result, 'rejected', note)
+        return 'rejected', result
+    col = 'cco_by' if approver_role in ('cco', 'admin') else 'finance_by'
+    conn.execute(f"UPDATE credit_requests SET {col}=? WHERE id=?", (actor_id, request_id))
+    cr = conn.execute("SELECT * FROM credit_requests WHERE id=?", (request_id,)).fetchone()
+    status = 'pending'
+    if cr['cco_by'] and cr['finance_by']:
+        # both signed off -> apply the bump
+        conn.execute("""UPDATE credit_requests SET status='approved', decided_at=CURRENT_TIMESTAMP,
+                        note=COALESCE(NULLIF(?,''), note) WHERE id=?""", (note, request_id))
+        prof = conn.execute("SELECT credit_limit, credit_limit_base, credit_temp_until FROM reseller_profiles WHERE id=?",
+                            (cr['reseller_id'],)).fetchone()
+        if cr['kind'] == 'temporary':
+            # snapshot the permanent base once, then raise the live limit
+            base = prof['credit_limit_base'] or prof['credit_limit'] or 0
+            if not prof['credit_temp_until']:
+                base = prof['credit_limit'] or 0
+            new_limit = (prof['credit_limit'] or 0) + cr['amount']
+            conn.execute("""UPDATE reseller_profiles SET credit_limit=?, credit_limit_base=?,
+                            credit_temp_until=? WHERE id=?""",
+                         (new_limit, base, cr['expires_on'], cr['reseller_id']))
+        else:
+            new_limit = (prof['credit_limit'] or 0) + cr['amount']
+            conn.execute("""UPDATE reseller_profiles SET credit_limit=?, credit_limit_base=?
+                            WHERE id=?""", (new_limit, new_limit, cr['reseller_id']))
+        status = 'approved'
+    conn.commit()
+    result = dict(cr)
+    conn.close()
+    if status == 'approved':
+        _notify_credit_decision(result, 'approved', note)
+    return status, result
+
+
+def _notify_credit_decision(cr, outcome, note=''):
+    conn = get_db()
+    r = conn.execute("""SELECT cp.company_name, cp.user_id FROM reseller_profiles cp
+                        WHERE cp.id=?""", (cr['reseller_id'],)).fetchone()
+    conn.close()
+    if not r:
+        return
+    kind_txt = (f"temporary until {cr['expires_on']}" if cr['kind'] == 'temporary' else "permanent")
+    recipients = [cr['requested_by']] + get_user_ids_by_role('cco', 'finance')
+    notify(recipients, f"Credit request {outcome}",
+           f"{r['company_name']}: +{cr['amount']:,.0f} SAR ({kind_txt}) was {outcome}."
+           + (f" Note: {note}" if note else ""), "/sales/resellers")
+    if outcome == 'approved':
+        notify([r['user_id']], "Credit limit increased 🎉",
+               f"Your credit limit was increased by {cr['amount']:,.0f} SAR ({kind_txt}).",
+               "/reseller/wallet")
+
+
+def get_credit_exposure():
+    """Portfolio credit/consignment exposure for Finance/CCO dashboards (SAR)."""
+    conn = get_db()
+    row = conn.execute("""SELECT
+            COALESCE(SUM(credit_limit),0) as total_limit,
+            COALESCE(SUM(credit_outstanding),0) as total_outstanding,
+            COUNT(*) as accounts,
+            COALESCE(SUM(CASE WHEN credit_frozen=1 THEN 1 ELSE 0 END),0) as frozen
+        FROM reseller_profiles WHERE account_type IN ('credit','consignment')""").fetchone()
+    overdue = conn.execute("""SELECT COALESCE(SUM(amount),0) as amt, COUNT(*) as n
+                              FROM statements WHERE status='overdue'""").fetchone()
+    conn.close()
+    d = dict(row)
+    d['overdue_amount'] = overdue['amt']
+    d['overdue_count'] = overdue['n']
+    return d
 
 
 # ── Forecasts ────────────────────────────────────────────────────
@@ -3668,6 +4065,7 @@ def run_tier_compliance(force=False):
     run_sla_nudges()
     expire_new_flags()
     run_prospect_suspension()
+    run_statement_cycle()
     try:
         backup_database()
     except OSError:

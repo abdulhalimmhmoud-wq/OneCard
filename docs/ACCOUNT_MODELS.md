@@ -92,9 +92,11 @@ and the owning reseller (same pattern as wallet receipts).
 ## 5. Phases
 
 - **Phase 1** — contracts workflow + account_type foundation + `available_to_spend`
-  gate for all three types (draws work). *This release (v13).*
-- **Phase 2** — credit engine: statements, settlement + receipts, aging, staged
-  replenishment audit, additional-credit requests, overdue freeze.
+  gate for all three types (draws work). *Shipped v13.*
+- **Phase 2** — credit engine: statements, settlement + receipts, overdue freeze,
+  additional-credit requests (CCO + Finance two-sign-off, temporary/permanent),
+  exposure dashboards. *Shipped v14.*
 - **Phase 3** — consignment engine: period statements, API card-by-card without
   prepaid, Ops/CCO liability dashboards.
-- **Phase 4** — reports, webhooks, polish, full E2E, API guide update.
+- **Phase 4** — reports, webhooks (`statement.issued`/`overdue` already emit),
+  `/api/v1/account` + `/statement`, polish, API guide update.
