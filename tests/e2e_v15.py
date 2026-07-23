@@ -1,6 +1,10 @@
-"""E2E test for v15 (Phase 3): consignment via the API — card-by-card draws
-without a prepaid balance, the /account + /statements endpoints, account-type
-error codes, and the Ops consignment activity view."""
+"""E2E test for v15 (Phase 3): credit AND consignment via the API — card-by-card
+draws without a prepaid balance, the /account + /statements endpoints,
+account-type error codes, and the Ops consignment activity view.
+
+Locks the requirement that being API-connected + pulling product-by-product is
+independent of the account model: a CREDIT client integrates over the API exactly
+like a CONSIGNMENT one."""
 import urllib.request, urllib.parse, urllib.error, http.cookiejar as cj
 import re as _re
 import json, sqlite3, os, sys, uuid
@@ -128,21 +132,54 @@ check('ops consignment page renders', s == 200 and 'Consignment & Credit Activit
 check('ops page lists the consignment account + API channel',
       'V15 Bank Consign' in b and 'API' in b)
 
+# ── 7. a CREDIT (staged) client pulls card-by-card via the API too ──
+em2 = f"v15c_{uuid.uuid4().hex[:8]}@test.com"
+post(sales, '/sales/register', {'company_name': 'V15 Credit API', 'contact_name': 'C',
+     'contact_email': em2, 'password': 'Test123!', 'expected_sales': '90000',
+     'client_types': 'Retail Chain', 'countries': 'Saudi Arabia'})
+rid2 = q("SELECT cp.id FROM reseller_profiles cp JOIN users u ON cp.user_id=u.id WHERE u.email=?", em2)[0]['id']
+execu("""UPDATE reseller_profiles SET account_type='credit', credit_limit=50000, credit_limit_base=50000,
+         credit_disbursement='staged', credit_tranche=5000, contract_status='contracted',
+         credit_outstanding=0, settlement_terms_days=30, billing_cycle='monthly' WHERE id=?""", rid2)
+key2 = models.set_reseller_api(rid2, rotate_key=True)
+s, acctc = api_get(key2, '/api/v1/account')
+check('credit client /account works over the API',
+      s == 200 and acctc.get('account_type') == 'credit' and 'credit_limit' in acctc)
+check('staged credit exposes a tranche, not the full limit',
+      acctc.get('available_to_spend') == 5000, f"available={acctc.get('available_to_spend')}")
+s, rc = api_post(key2, '/api/v1/orders',
+                 {'idempotency_key': f'v15c-{uuid.uuid4().hex[:8]}', 'items': [{'id': cheap['id'], 'quantity': 2}]})
+check('credit client can pull card-by-card via API (no prepaid balance)',
+      s == 201 and rc.get('ok'), f"status={s} err={rc.get('error')}")
+outc = q("SELECT credit_outstanding FROM reseller_profiles WHERE id=?", rid2)[0]['credit_outstanding']
+check('credit API draw accrued to outstanding (credit_draw)', abs(outc - drawn) < 1.0)
+check('credit API draw logged as credit_draw',
+      q("SELECT type FROM wallet_transactions WHERE reseller_id=? ORDER BY id DESC LIMIT 1", rid2)[0]['type'] == 'credit_draw')
+s, actc2 = api_get(key2, '/api/v1/account')
+check('staged tranche replenishes after a small draw', actc2['available_to_spend'] == 5000)
+s, b = get(ops, '/ops/consignment')
+check('ops activity view also covers the API-connected credit account',
+      'V15 Credit API' in b)
+
 # ── cleanup ──
-uid = q("SELECT id FROM users WHERE email=?", em)[0]['id']
-for pr in q("SELECT id FROM reseller_profiles WHERE user_id=?", uid):
-    r = pr['id']
-    execu("DELETE FROM statements WHERE reseller_id=?", r)
-    execu("DELETE FROM credit_requests WHERE reseller_id=?", r)
-    execu("DELETE FROM api_idempotency WHERE reseller_id=?", r)
-    execu("DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE reseller_id=?)", r)
-    execu("DELETE FROM orders WHERE reseller_id=?", r)
-    execu("DELETE FROM wallet_transactions WHERE reseller_id=?", r)
-    execu("DELETE FROM reseller_countries WHERE reseller_id=?", r)
-    execu("DELETE FROM reseller_client_types WHERE reseller_id=?", r)
-    execu("DELETE FROM reseller_profiles WHERE id=?", r)
-execu("DELETE FROM notifications WHERE user_id=?", uid)
-execu("DELETE FROM users WHERE id=?", uid)
+for email in (em, em2):
+    urows = q("SELECT id FROM users WHERE email=?", email)
+    if not urows:
+        continue
+    uid = urows[0]['id']
+    for pr in q("SELECT id FROM reseller_profiles WHERE user_id=?", uid):
+        r = pr['id']
+        execu("DELETE FROM statements WHERE reseller_id=?", r)
+        execu("DELETE FROM credit_requests WHERE reseller_id=?", r)
+        execu("DELETE FROM api_idempotency WHERE reseller_id=?", r)
+        execu("DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE reseller_id=?)", r)
+        execu("DELETE FROM orders WHERE reseller_id=?", r)
+        execu("DELETE FROM wallet_transactions WHERE reseller_id=?", r)
+        execu("DELETE FROM reseller_countries WHERE reseller_id=?", r)
+        execu("DELETE FROM reseller_client_types WHERE reseller_id=?", r)
+        execu("DELETE FROM reseller_profiles WHERE id=?", r)
+    execu("DELETE FROM notifications WHERE user_id=?", uid)
+    execu("DELETE FROM users WHERE id=?", uid)
 execu("DELETE FROM notifications WHERE title LIKE 'Statement issued%' AND body LIKE 'V15 %'")
 execu("DELETE FROM notifications WHERE title LIKE 'New statement issued%'")
 

@@ -20,6 +20,14 @@ Every money movement is written to `wallet_transactions` (types: `topup`,
 `order`, `credit_draw`, `consignment_draw`, `settlement`, `adjustment`) — one
 audit trail for all three models.
 
+> **Channel is orthogonal to account model.** Whether a client orders through the
+> portal or pulls **product-by-product** over the Integration API is independent of
+> whether they are `prepaid`, `credit` or `consignment`. In particular a **credit**
+> client can be API-connected and draw card-by-card just like a `consignment` one —
+> `POST /api/v1/orders` runs through the same `available_to_spend` gate for every
+> type. The account model only decides *how the money settles*, not *how orders
+> arrive*.
+
 ### Credit release (configurable per client)
 
 - `credit_disbursement = 'full'` → the whole limit is available at once.

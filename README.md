@@ -2,8 +2,10 @@
 
 ## Consignment via API & Account Endpoints — Phase 3 (v15)
 
-Consignment clients (e.g. a bank whose customers buy card-by-card) can now pull in
-real time through the Integration API, no prepaid balance required:
+Both **credit and consignment** clients can be API-connected and pull
+**product-by-product** in real time (e.g. a bank whose customers each buy a single
+card on demand) — the account model and the integration channel are independent.
+Either can now draw through the Integration API with no prepaid balance required:
 
 - **Card-by-card over the API** — `POST /api/v1/orders` runs through the same
   `available_to_spend` gate, so a credit/consignment client draws against their limit

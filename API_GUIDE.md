@@ -83,8 +83,12 @@ Query parameters (all optional):
 
 ### 2.4 `GET /api/v1/account` — account model & spending headroom
 How much you can still spend right now, in SAR (the internal base). This is the
-API mirror of the platform's ordering gate — key for **consignment** clients (e.g.
-a bank pulling card-by-card) who draw against a limit and settle later.
+API mirror of the platform's ordering gate — key for **credit and consignment**
+clients who draw against a limit and settle later. Being API-connected and pulling
+**product-by-product** in real time is independent of the account model: a `credit`
+client can integrate over the API exactly like a `consignment` one (e.g. a bank whose
+customers each buy a single card on demand). The only difference is how the limit is
+exposed (`credit` may be metered to a tranche; `consignment` exposes full headroom).
 
 ```json
 {"ok": true, "currency": "SAR", "account_type": "consignment",
