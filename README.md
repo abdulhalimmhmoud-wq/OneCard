@@ -1,4 +1,36 @@
-# OneCard — Reseller Operations Platform (v11)
+# OneCard — Reseller Operations Platform (v12)
+
+## Forecast Visibility for Operations + Prospect Auto-Suspension (v12)
+
+**Forecasts now reach Operations for stock planning.** When a reseller submits a
+purchase forecast it still goes to their sales manager, and in addition:
+
+- Operations is notified and gets a dedicated **Demand Forecasts** page
+  (`/ops/forecasts`) that aggregates upcoming demand across the whole book —
+  headline totals, **demand by merchant**, and **top forecasted products** (units +
+  estimated value), plus the list of individual forecasts. All figures are in SAR
+  (the internal base), so Ops can plan stock and sourcing ahead.
+- `get_forecast_demand_summary(days=90)` and `get_all_forecasts()` back the view.
+
+**New resellers are auto-suspended if they don't convert in 15 days.** A reseller who
+neither signs a contract nor places an order within `PROSPECT_SUSPEND_DAYS` (15) of
+registration is automatically suspended:
+
+- `auto_suspend_at` is stamped at registration (= created + 15 days). A daily
+  housekeeping sweep (`run_prospect_suspension`, piggybacked on the once-a-day gate)
+  suspends any prospect past the deadline with no contract and no orders.
+- **Suspended = cannot log in** — the login route rejects them and a `before_request`
+  guard signs out anyone suspended mid-session, with a "contact your account manager"
+  message.
+- **Still visible to Sales** — they show a `Suspended` lifecycle chip on *My Resellers*
+  with a **Reactivate** button; reactivating clears the suspension and grants a fresh
+  15-day window (`set_reseller_suspended`).
+- Sales + admin/CCO are notified on each auto-suspension. Contracted/active resellers
+  and anyone who has purchased are exempt. Sales preview is unaffected (the session
+  user there is the sales manager, not the previewed reseller).
+- Existing resellers were backfilled with a fresh window from the upgrade date, so the
+  migration never mass-suspends old prospects on the first sweep.
+- Coverage: `tests/e2e_v12.py` (28 checks across both features).
 
 ## Single Display Currency per Reseller (v11)
 

@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}Purchase Forecasts — Operations — OneCard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">📦 Forecasted Demand</h1>
+        <p class="page-subtitle">What resellers plan to buy next — plan stock and sourcing ahead. All values in SAR (last {{ demand.days }} days).</p>
+    </div>
+</div>
+
+<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">
+    <div class="stat-card">
+        <div class="stat-icon">💰</div>
+        <div class="stat-value">SAR {{ demand.totals.est_value|money }}</div>
+        <div class="stat-label">Total Forecasted Value</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">📋</div>
+        <div class="stat-value">{{ demand.totals.forecasts }}</div>
+        <div class="stat-label">Forecasts Submitted</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">👥</div>
+        <div class="stat-value">{{ demand.totals.resellers }}</div>
+        <div class="stat-label">Resellers Planning</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🏬</div>
+        <div class="stat-value">{{ demand.by_merchant|length }}</div>
+        <div class="stat-label">Merchants in Demand</div>
+    </div>
+</div>
+
+<div class="grid-2">
+    <!-- Demand by merchant -->
+    <div class="table-card">
+        <div class="table-header"><div class="table-title">🏬 Demand by Merchant</div></div>
+        <div class="table-scroll" style="max-height:460px;overflow-y:auto">
+            <table>
+                <thead><tr><th>Merchant</th><th>Forecasts</th><th>Units</th><th>Est. Value</th></tr></thead>
+                <tbody>
+                {% for m in demand.by_merchant %}
+                <tr>
+                    <td class="fw6">{{ m.merchant }}</td>
+                    <td>{{ m.forecasts }}</td>
+                    <td>{{ m.qty|money }}</td>
+                    <td class="fw6 text-accent">SAR {{ m.est_value|money }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4" style="text-align:center;padding:30px;color:var(--text-3)">No forecast demand yet</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Demand by product -->
+    <div class="table-card">
+        <div class="table-header"><div class="table-title">🎯 Top Forecasted Products</div></div>
+        <div class="table-scroll" style="max-height:460px;overflow-y:auto">
+            <table>
+                <thead><tr><th>Product</th><th>Units</th><th>Resellers</th><th>Est. Value</th></tr></thead>
+                <tbody>
+                {% for p in demand.by_product %}
+                <tr>
+                    <td class="fw6 truncate" style="max-width:220px" title="{{ p.product_name }}">{{ p.product_name }}
+                        <div class="text-muted" style="font-size:10px">{{ p.merchant }}</div>
+                    </td>
+                    <td class="fw6">{{ p.qty|money }}</td>
+                    <td>{{ p.resellers }}</td>
+                    <td class="fw6 text-accent">SAR {{ p.est_value|money }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4" style="text-align:center;padding:30px;color:var(--text-3)">No product-level forecasts yet</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Individual forecasts -->
+<div class="table-card mt-24">
+    <div class="table-header"><div class="table-title">📋 Recent Forecasts</div></div>
+    <div class="table-scroll">
+        <table>
+            <thead>
+                <tr>
+                    <th>Reseller</th>
+                    <th>Contract</th>
+                    <th>Items</th>
+                    <th>Estimated Value</th>
+                    <th>Submitted</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for f in forecasts %}
+            <tr>
+                <td class="fw6">{{ f.company_name }}
+                    <div class="text-muted" style="font-size:11px">{{ f.contact_name }}</div>
+                </td>
+                <td>
+                    {% if f.contract_status == 'contracted' %}<span class="badge badge-success">Signed</span>
+                    {% else %}<span class="badge badge-warning">Prospect</span>{% endif %}
+                </td>
+                <td>{{ f.item_count }}</td>
+                <td class="fw6 text-accent">SAR {{ f.total_value|money }}</td>
+                <td class="text-muted">{{ f.created_at[:16] }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" style="text-align:center;padding:40px;color:var(--text-3)">
+                No purchase forecasts submitted yet.<br>
+                <span style="font-size:12px">Resellers submit purchase plans from their portal → Purchase Plan page.</span>
+            </td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

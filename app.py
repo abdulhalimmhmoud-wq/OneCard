@@ -160,6 +160,20 @@ def csrf_protect():
             abort(403, description='CSRF token missing or invalid. Refresh the page and try again.')
 
 
+@app.before_request
+def enforce_suspension():
+    """A reseller suspended mid-session is signed out on their next request.
+    Sales preview is unaffected: there the session user is the sales manager,
+    while the previewed reseller is only in preview_user_id."""
+    if request.endpoint in (None, 'static', 'login', 'logout'):
+        return
+    uid = session.get('user_id')
+    if uid and models.is_user_suspended(uid):
+        session.clear()
+        flash("Your account is inactive. Please contact your account manager.", "error")
+        return redirect(url_for('login'))
+
+
 _last_compliance_tick = 0.0
 COMPLIANCE_TICK_INTERVAL = 300   # seconds
 
@@ -256,6 +270,10 @@ def login():
         user = auth.login_user(email, password)
         if user:
             _attempt_log.pop(f"login:{rl_key}", None)
+            if user['role'] == 'reseller' and models.is_user_suspended(user['id']):
+                flash("Your account is inactive. Please contact your account manager "
+                      "to reactivate it.", "error")
+                return render_template('login.html')
             session['user_id'] = user['id']
             session.permanent = True
             flash(f"Welcome back, {user['name']}!", "success")
@@ -521,6 +539,25 @@ def sales_update_reseller(rid):
     return redirect(url_for('sales_resellers'))
 
 
+@app.route('/sales/resellers/<int:rid>/reactivate', methods=['POST'])
+@auth.sales_required
+def sales_reactivate_reseller(rid):
+    """Sales manager re-enables a suspended reseller, granting them a fresh
+    conversion window before the auto-suspension sweep applies again."""
+    curr = auth.get_current_user()
+    profile = models.get_reseller_profile_by_id(rid)
+    if not profile or (curr['role'] not in ('admin', 'cco') and profile['registered_by'] != curr['id']):
+        flash("Access denied.", "error")
+        return redirect(url_for('sales_resellers'))
+    uid = models.set_reseller_suspended(rid, False, actor_id=curr['id'])
+    if uid:
+        models.notify(uid, "Account reactivated ✅",
+                      "Your account manager reactivated your account. You can log in again.",
+                      "/login")
+    flash(f"{profile['company_name']} reactivated — they can log in again.", "success")
+    return redirect(url_for('sales_resellers'))
+
+
 @app.route('/sales/resellers/<int:rid>/api', methods=['POST'])
 @auth.sales_required
 def sales_reseller_api(rid):
@@ -747,6 +784,17 @@ def ops_dashboard():
     recent = models.get_price_log(limit=12)
     return render_template('ops/dashboard.html', active_tab='ops_dashboard',
                            stats=stats, recent=recent)
+
+
+@app.route('/ops/forecasts')
+@auth.ops_required
+def ops_forecasts():
+    """Resellers' purchase forecasts, so Operations can plan stock ahead.
+    Values are shown in SAR (the internal base currency)."""
+    demand = models.get_forecast_demand_summary(days=90)
+    forecasts = models.get_all_forecasts(limit=100)
+    return render_template('ops/forecasts.html', active_tab='ops_forecasts',
+                           demand=demand, forecasts=forecasts)
 
 
 @app.route('/ops/products')
@@ -1795,6 +1843,11 @@ def reseller_forecast():
                           "New purchase forecast received 📋",
                           f"{profile['company_name']} submitted a purchase plan worth "
                           f"{total_sar:,.0f} SAR ({len(clean)} items).", f"/sales/forecasts/{fid}")
+            # Operations also needs the forecast so they can plan stock ahead.
+            models.notify(models.get_user_ids_by_role('ops'),
+                          "Forecast for stock planning 📦",
+                          f"{profile['company_name']} forecasts {total_sar:,.0f} SAR "
+                          f"({len(clean)} items) for the coming period.", "/ops/forecasts")
             flash("Your purchase plan was submitted to your account manager. "
                   "They will contact you to finalize the contract.", "success")
             return redirect(url_for('reseller_forecast'))

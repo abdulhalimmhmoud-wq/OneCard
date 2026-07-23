@@ -54,13 +54,19 @@
                     </form>
                 </td>
                 <td>
-                    {% if r.lifecycle == 'active' %}<span class="badge badge-success">🟢 Active</span>
+                    {% if r.lifecycle == 'suspended' %}<span class="badge" style="background:#6b728020;color:#9ca3af" title="Suspended on {{ r.suspended_at[:10] if r.suspended_at }}">⏸️ Suspended</span>
+                    {% elif r.lifecycle == 'active' %}<span class="badge badge-success">🟢 Active</span>
                     {% elif r.lifecycle == 'at_risk' %}<span class="badge badge-danger" title="Grace until {{ r.grace_until }}">⚠️ At-Risk</span>
                     {% elif r.lifecycle == 'contracted' %}<span class="badge badge-info">✍️ Not active yet</span>
-                    {% else %}<span class="badge badge-warning">Prospect</span>{% endif %}
+                    {% else %}<span class="badge badge-warning" title="Auto-suspends on {{ r.auto_suspend_at }} if no contract/order">Prospect</span>{% endif %}
                 </td>
                 <td>
                     <div style="display:flex;gap:6px;flex-wrap:wrap">
+                        {% if r.is_suspended %}
+                        <form method="POST" action="/sales/resellers/{{ r.id }}/reactivate" onsubmit="return confirm('Reactivate {{ r.company_name }}? They will be able to log in again and get a fresh conversion window.')">
+                            <button class="btn btn-sm btn-primary" type="submit">▶️ Reactivate</button>
+                        </form>
+                        {% endif %}
                         <a href="/sales/preview/{{ r.user_id }}" class="btn btn-sm btn-ghost">👁️ Preview</a>
                         <details style="position:relative">
                             <summary class="btn btn-sm btn-ghost" style="list-style:none;cursor:pointer">🔌 API {{ '🟢' if r.api_key else '' }}</summary>

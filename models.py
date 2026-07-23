@@ -596,8 +596,15 @@ def migrate_db():
         # and orders in. Derived from their market at registration (Saudi
         # Arabia -> SAR, otherwise -> USD); SAR is the internal base currency.
         'display_currency': "ALTER TABLE reseller_profiles ADD COLUMN display_currency TEXT NOT NULL DEFAULT 'SAR'",
+        # v12: auto-suspend prospects who neither sign a contract nor buy within
+        # PROSPECT_SUSPEND_DAYS. Suspended accounts cannot log in but remain
+        # visible to their sales manager, who can reactivate them.
+        'is_suspended': "ALTER TABLE reseller_profiles ADD COLUMN is_suspended INTEGER NOT NULL DEFAULT 0",
+        'suspended_at': "ALTER TABLE reseller_profiles ADD COLUMN suspended_at TIMESTAMP",
+        'auto_suspend_at': "ALTER TABLE reseller_profiles ADD COLUMN auto_suspend_at TEXT",
     }
     just_added_display_cur = 'display_currency' not in cols
+    just_added_suspend = 'auto_suspend_at' not in cols
     for col, sql in add.items():
         if col not in cols:
             conn.execute(sql)
@@ -609,6 +616,14 @@ def migrate_db():
                 "SELECT country FROM reseller_countries WHERE reseller_id=?", (r['id'],))]
             conn.execute("UPDATE reseller_profiles SET display_currency=? WHERE id=?",
                          (derive_display_currency(countries), r['id']))
+        conn.commit()
+    # Backfill the auto-suspend deadline for existing resellers. Give them a
+    # fresh PROSPECT_SUSPEND_DAYS window from the upgrade date rather than their
+    # original registration, so the migration never mass-suspends old prospects
+    # on the first sweep (contracted/active ones are exempt at sweep time anyway).
+    if just_added_suspend:
+        conn.commit()
+        conn.execute("UPDATE reseller_profiles SET auto_suspend_at=?", (_suspend_deadline(),))
         conn.commit()
 
     # 3. products: active flag + added date (ops catalogue management)
@@ -880,10 +895,10 @@ def create_reseller(user_id, company_name, expected_sales, tier_id, registered_b
     conn = get_db()
     conn.execute("""INSERT INTO reseller_profiles
                     (user_id, company_name, expected_monthly_sales, assigned_tier_id,
-                     registered_by, notes, client_type, display_currency)
-                    VALUES (?,?,?,?,?,?,?,?)""",
+                     registered_by, notes, client_type, display_currency, auto_suspend_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
                  (user_id, company_name, expected_sales, tier_id, registered_by, notes,
-                  primary, disp))
+                  primary, disp, _suspend_deadline()))
     reseller_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     for c in (countries or []):
         conn.execute("INSERT INTO reseller_countries (reseller_id, country) VALUES (?,?)", (reseller_id, c))
@@ -960,7 +975,9 @@ def get_all_resellers(registered_by=None):
 
 
 def _lifecycle_stage(r):
-    """Prospect → Contracted → Active → At-Risk (lifecycle chip shown everywhere)."""
+    """Suspended → Prospect → Contracted → Active → At-Risk (chip shown everywhere)."""
+    if r.get('is_suspended'):
+        return 'suspended'
     if r.get('compliance_status') == 'warning':
         return 'at_risk'
     if r.get('contract_status') != 'contracted':
@@ -975,6 +992,7 @@ LIFECYCLE_LABELS = {
     'contracted': ('Contracted — not active', '#3b82f6'),
     'active':     ('Active', '#10b981'),
     'at_risk':    ('At-Risk', '#ef4444'),
+    'suspended':  ('Suspended', '#6b7280'),
 }
 
 
@@ -988,6 +1006,78 @@ def set_contract_status(reseller_id, status):
         conn.execute("UPDATE reseller_profiles SET contract_status=? WHERE id=?", (status, reseller_id))
     conn.commit()
     conn.close()
+
+
+# ── Prospect auto-suspension (v12) ───────────────────────────────
+
+def is_user_suspended(user_id):
+    """True if this user is a reseller whose account has been suspended.
+    Cheap enough to call per-request in the login guard (indexed on user_id)."""
+    conn = get_db()
+    row = conn.execute("SELECT is_suspended FROM reseller_profiles WHERE user_id=?",
+                       (user_id,)).fetchone()
+    conn.close()
+    return bool(row and row['is_suspended'])
+
+
+def set_reseller_suspended(reseller_id, suspended, reason='', actor_id=None):
+    """Manually suspend or reactivate a reseller. Reactivating grants a fresh
+    PROSPECT_SUSPEND_DAYS window so a still-unconverted prospect isn't
+    re-suspended on the very next sweep. Returns the reseller's user_id."""
+    conn = get_db()
+    row = conn.execute("SELECT user_id, company_name FROM reseller_profiles WHERE id=?",
+                       (reseller_id,)).fetchone()
+    if not row:
+        conn.close()
+        return None
+    if suspended:
+        conn.execute("""UPDATE reseller_profiles
+                        SET is_suspended=1, suspended_at=CURRENT_TIMESTAMP WHERE id=?""",
+                     (reseller_id,))
+    else:
+        conn.execute("""UPDATE reseller_profiles
+                        SET is_suspended=0, suspended_at=NULL, auto_suspend_at=? WHERE id=?""",
+                     (_suspend_deadline(), reseller_id))
+    conn.commit()
+    conn.close()
+    return row['user_id']
+
+
+def run_prospect_suspension():
+    """Auto-suspend every reseller who has neither signed a contract nor placed
+    an order by their auto_suspend_at deadline. Suspended accounts can't log in
+    but stay visible to their sales manager for reactivation.
+    Returns a list of action strings. Notifies sales + admin/cco per account."""
+    conn = get_db()
+    today = datetime.now(timezone.utc).date().isoformat()
+    rows = conn.execute("""
+        SELECT cp.id, cp.user_id, cp.company_name, cp.registered_by, cp.auto_suspend_at,
+               (SELECT COUNT(*) FROM orders o WHERE o.reseller_id=cp.id) as orders_count
+        FROM reseller_profiles cp
+        WHERE cp.is_suspended=0
+          AND cp.contract_status != 'contracted'
+          AND cp.auto_suspend_at IS NOT NULL
+          AND cp.auto_suspend_at < ?""", (today,)).fetchall()
+    conn.close()
+
+    actions = []
+    admin_cco = get_user_ids_by_role('admin', 'cco')
+    for r in rows:
+        if r['orders_count'] > 0:
+            continue  # bought something → keep active even if unsigned
+        conn2 = get_db()
+        conn2.execute("""UPDATE reseller_profiles
+                         SET is_suspended=1, suspended_at=CURRENT_TIMESTAMP WHERE id=?""",
+                      (r['id'],))
+        conn2.commit()
+        conn2.close()
+        notify([r['registered_by']] + admin_cco,
+               "Account auto-suspended ⏸️",
+               f"{r['company_name']} did not sign a contract or purchase within "
+               f"{PROSPECT_SUSPEND_DAYS} days and was auto-suspended. Reactivate them "
+               f"from My Resellers if they are still in play.", "/sales/resellers")
+        actions.append(f"SUSPENDED: {r['company_name']}")
+    return actions
 
 
 def update_reseller_profile(reseller_id, client_type=None, countries=None, expected_sales=None,
@@ -1207,6 +1297,24 @@ def derive_display_currency(countries):
     return 'SAR' if 'Saudi Arabia' in countries else 'USD'
 
 
+# v12: how long a newly registered reseller has to sign a contract OR place an
+# order before their account is auto-suspended (still visible to Sales).
+PROSPECT_SUSPEND_DAYS = 15
+
+
+def _suspend_deadline(created_at=None):
+    """ISO date (YYYY-MM-DD) by which a prospect must convert or be suspended:
+    PROSPECT_SUSPEND_DAYS after registration (or after a manual reactivation)."""
+    base = None
+    if created_at:
+        try:
+            base = datetime.fromisoformat(str(created_at)[:19]).date()
+        except (ValueError, TypeError):
+            base = None
+    base = base or datetime.now(timezone.utc).date()
+    return (base + timedelta(days=PROSPECT_SUSPEND_DAYS)).isoformat()
+
+
 def convert_amount(amount, from_cur, to_cur, rates=None):
     """Convert between any two currencies through the SAR base:
        amount_sar = amount * rate_to_sar[from]
@@ -1404,6 +1512,66 @@ def get_forecasts_for_sales(sales_user_id=None):
     rows = conn.execute(q, params).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_all_forecasts(limit=None):
+    """Every reseller's forecast (no sales-owner filter) — used by Operations
+    to see upcoming purchase intent across the whole book."""
+    conn = get_db()
+    q = """SELECT f.*, cp.company_name, cp.contract_status, u.name as contact_name,
+                  (SELECT COUNT(*) FROM forecast_items fi WHERE fi.forecast_id = f.id) as item_count,
+                  (SELECT COALESCE(SUM(est_value),0) FROM forecast_items fi WHERE fi.forecast_id = f.id) as total_value
+           FROM forecasts f
+           JOIN reseller_profiles cp ON f.reseller_id = cp.id
+           JOIN users u ON cp.user_id = u.id
+           ORDER BY f.created_at DESC"""
+    if limit:
+        q += f" LIMIT {int(limit)}"
+    rows = conn.execute(q).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_forecast_demand_summary(days=90):
+    """Aggregate forecast demand (in SAR base) over the last `days` so Operations
+    can plan stock. Returns dict: by_merchant [{merchant, forecasts, est_value}],
+    by_product [{product_name, merchant, qty, est_value}], and headline totals."""
+    conn = get_db()
+    since = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
+    by_merchant = conn.execute("""
+        SELECT fi.merchant,
+               COUNT(DISTINCT f.id) as forecasts,
+               COALESCE(SUM(fi.est_value),0) as est_value,
+               COALESCE(SUM(CASE WHEN fi.item_type='product' THEN fi.quantity ELSE 0 END),0) as qty
+        FROM forecast_items fi
+        JOIN forecasts f ON fi.forecast_id = f.id
+        WHERE date(f.created_at) >= ?
+        GROUP BY fi.merchant
+        ORDER BY est_value DESC""", (since,)).fetchall()
+    by_product = conn.execute("""
+        SELECT fi.product_name, fi.merchant,
+               COALESCE(SUM(fi.quantity),0) as qty,
+               COALESCE(SUM(fi.est_value),0) as est_value,
+               COUNT(DISTINCT f.reseller_id) as resellers
+        FROM forecast_items fi
+        JOIN forecasts f ON fi.forecast_id = f.id
+        WHERE date(f.created_at) >= ? AND fi.item_type='product'
+        GROUP BY fi.product_name, fi.merchant
+        ORDER BY est_value DESC""", (since,)).fetchall()
+    totals = conn.execute("""
+        SELECT COUNT(DISTINCT f.id) as forecasts,
+               COUNT(DISTINCT f.reseller_id) as resellers,
+               COALESCE(SUM(fi.est_value),0) as est_value
+        FROM forecast_items fi
+        JOIN forecasts f ON fi.forecast_id = f.id
+        WHERE date(f.created_at) >= ?""", (since,)).fetchone()
+    conn.close()
+    return {
+        'by_merchant': [dict(r) for r in by_merchant],
+        'by_product': [dict(r) for r in by_product],
+        'totals': dict(totals),
+        'days': days,
+    }
 
 
 def get_forecast_detail(fid):
@@ -3168,6 +3336,7 @@ def run_tier_compliance(force=False):
     # Daily housekeeping piggybacks on the same once-a-day gate
     run_sla_nudges()
     expire_new_flags()
+    run_prospect_suspension()
     try:
         backup_database()
     except OSError:
