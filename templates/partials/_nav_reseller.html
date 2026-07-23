@@ -6,8 +6,9 @@
 <a href="/reseller/recommended" class="nav-item {{ 'active' if active_tab == 'recommended' }}"><span class="icon">⭐</span>Recommended</a>
 <div class="nav-section">My Business</div>
 <a href="/reseller/forecast" class="nav-item {{ 'active' if active_tab == 'forecast' }}"><span class="icon">📋</span>Purchase Plan</a>
+<a href="/reseller/contract" class="nav-item {{ 'active' if active_tab == 'contract' }}"><span class="icon">📝</span>My Contract</a>
 <a href="/reseller/orders" class="nav-item {{ 'active' if active_tab == 'orders' }}"><span class="icon">🛒</span>Orders</a>
-<a href="/reseller/wallet" class="nav-item {{ 'active' if active_tab == 'wallet' }}"><span class="icon">👛</span>Wallet</a>
+<a href="/reseller/wallet" class="nav-item {{ 'active' if active_tab == 'wallet' }}"><span class="icon">👛</span>{{ 'Billing' if (profile is defined and profile and (profile.account_type or 'prepaid') != 'prepaid') else 'Wallet' }}</a>
 <a href="/reseller/analysis" class="nav-item {{ 'active' if active_tab == 'analysis' }}"><span class="icon">📈</span>Analysis</a>
 <div class="nav-section">Account</div>
 <a href="/notifications" class="nav-item {{ 'active' if active_tab == 'notifications' }}"><span class="icon">🔔</span>Notifications

@@ -39,6 +39,10 @@ onecard.db
 !tests/
 !tests/**
 
+# Allow design/spec docs
+!docs/
+!docs/**
+
 # Never commit local secrets, backups or uploaded files (all already
 # excluded by the default-deny above; listed here for clarity)
 instance_secret.key

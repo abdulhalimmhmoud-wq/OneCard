@@ -1,4 +1,39 @@
-# OneCard — Reseller Operations Platform (v12)
+# OneCard — Reseller Operations Platform (v13)
+
+## Account Models & Contract Signing — Phase 1 (v13)
+
+Resellers are no longer implicitly prepaid. Each has a first-class **`account_type`**
+and ordering runs through one gate, `available_to_spend(profile)`:
+
+| Type | Available to spend | An order… | Settlement |
+|------|--------------------|-----------|------------|
+| **`prepaid`** (cash) | wallet balance | debits the wallet | transfer + receipt → Finance credits (today's flow) |
+| **`credit`** | full: `limit − outstanding` · staged: `min(tranche, limit − outstanding)` | raises `credit_outstanding` | settle per billing cycle |
+| **`consignment`** | `limit − outstanding` | accrues to the open statement | pay the period statement (usually API-driven, card-by-card) |
+
+Staged credit meters exposure: only a **tranche** is available at once and it
+replenishes continuously as the client draws, capped at the cycle limit — exactly
+`min(tranche, limit − outstanding)`. A frozen (overdue) line can spend nothing.
+Every draw is written to the `wallet_transactions` ledger (`credit_draw` /
+`consignment_draw`). `SAR` stays the internal base.
+
+**Contract signing workflow** (`contracts` + append-only `contract_events` audit):
+
+1. **Sales** uploads a draft contract and proposes the terms (account type, credit
+   limit, tranche, net-days, cycle) → the reseller is notified.
+2. **Reseller** downloads it from their new **My Contract** page, signs offline, and
+   uploads the signed copy.
+3. **Activation** applies the terms and unlocks ordering. **Governance:** the sales
+   owner can activate prepaid or credit/consignment lines **≤ `AUTO_APPROVE_CAP`**
+   (100,000 SAR); anything above needs **CCO** (Contract Approvals queue), and Finance
+   is notified on every new credit line. The team is alerted when a client hits their
+   limit.
+
+Contract files are stored privately (`uploads/contracts/`) and served only to the
+owning reseller, their sales manager, CCO, Finance and admin. Full design and the
+phase roadmap live in [docs/ACCOUNT_MODELS.md](docs/ACCOUNT_MODELS.md). Coverage:
+`tests/e2e_v13.py` (31 checks). *Next phases: statements & settlement, additional-credit
+requests, consignment period statements, API `/account` + `/statement`, dashboards.*
 
 ## Forecast Visibility for Operations + Prospect Auto-Suspension (v12)
 

@@ -1,14 +1,23 @@
 {% extends "base.html" %}
-{% block title %}Wallet — {{ profile.company_name }}{% endblock %}
+{% block title %}{{ 'Wallet' if profile.account_type == 'prepaid' else 'Billing' }} — {{ profile.company_name }}{% endblock %}
 
 {% block content %}
 <div class="page-header">
     <div>
+        {% if profile.account_type == 'prepaid' %}
         <h1 class="page-title">👛 My Wallet</h1>
         <p class="page-subtitle">Transfer to OneCard's bank account, upload the receipt, and the finance team credits your wallet after verification</p>
+        {% elif profile.account_type == 'credit' %}
+        <h1 class="page-title">💳 My Credit Line</h1>
+        <p class="page-subtitle">Draw against your approved limit and settle each billing cycle</p>
+        {% else %}
+        <h1 class="page-title">📦 My Consignment Account</h1>
+        <p class="page-subtitle">Draw card-by-card; settle the statement each period</p>
+        {% endif %}
     </div>
 </div>
 
+{% if profile.account_type == 'prepaid' %}
 <div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr))">
     <div class="stat-card" style="border:2px solid var(--success)">
         <div class="stat-icon">💰</div>
@@ -21,8 +30,44 @@
         <div class="stat-label">Pending Verification</div>
     </div>
 </div>
+{% else %}
+<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr))">
+    <div class="stat-card" style="border:2px solid var(--accent)">
+        <div class="stat-icon">✅</div>
+        <div class="stat-value" style="color:var(--accent)">{{ profile.available_display|money }} {{ disp }}</div>
+        <div class="stat-label">Available to Draw{{ ' (per tranche)' if profile.credit_disbursement == 'staged' }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🧾</div>
+        <div class="stat-value">{{ profile.credit_outstanding_display|money }} {{ disp }}</div>
+        <div class="stat-label">Outstanding (to settle)</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">📊</div>
+        <div class="stat-value">{{ profile.credit_limit_display|money }} {{ disp }}</div>
+        <div class="stat-label">Approved Limit</div>
+    </div>
+    <div class="stat-card" style="{{ 'border:2px solid var(--danger)' if profile.credit_frozen }}">
+        <div class="stat-icon">{{ '🔒' if profile.credit_frozen else '🔓' }}</div>
+        <div class="stat-value">{{ 'On hold' if profile.credit_frozen else 'Active' }}</div>
+        <div class="stat-label">Net {{ profile.settlement_terms_days }} days · {{ profile.billing_cycle }}</div>
+    </div>
+</div>
+{% if profile.credit_frozen %}
+<div class="card mb-24" style="border-left:3px solid var(--danger)">
+    <b>Ordering is on hold</b> pending settlement of an overdue statement. Please contact your account manager.
+</div>
+{% endif %}
+<div class="card mb-24">
+    <b>How settlement works:</b> your draws accumulate as <b>Outstanding</b>. Each
+    {{ profile.billing_cycle }} cycle we issue a statement due within
+    {{ profile.settlement_terms_days }} days; once you settle it, your available limit is restored.
+    <span class="text-muted">(Statement + settlement uploads arrive in the next release.)</span>
+</div>
+{% endif %}
 
 <div class="grid-2" style="align-items:start">
+    {% if profile.account_type == 'prepaid' %}
     <!-- Top-up form -->
     <div class="card">
         <div class="card-header"><div class="card-title">🧾 Report a Bank Transfer</div></div>
@@ -54,10 +99,11 @@
             </div>
         </form>
     </div>
+    {% endif %}
 
     <!-- Transaction history -->
-    <div class="table-card">
-        <div class="table-header"><div class="table-title">📜 Wallet Activity</div></div>
+    <div class="table-card" style="{{ 'grid-column:1/-1' if profile.account_type != 'prepaid' }}">
+        <div class="table-header"><div class="table-title">📜 {{ 'Wallet' if profile.account_type == 'prepaid' else 'Account' }} Activity</div></div>
         <div class="table-scroll" style="max-height:560px;overflow-y:auto">
             <table>
                 <thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Status</th></tr></thead>
@@ -68,6 +114,9 @@
                     <td>
                         {% if t.type == 'topup' %}<span class="badge badge-info">⬆️ Top-up</span>
                         {% elif t.type == 'order' %}<span class="badge badge-accent">🛒 Order</span>
+                        {% elif t.type == 'credit_draw' %}<span class="badge badge-accent">💳 Credit draw</span>
+                        {% elif t.type == 'consignment_draw' %}<span class="badge badge-accent">📦 Draw</span>
+                        {% elif t.type == 'settlement' %}<span class="badge badge-success">✅ Settlement</span>
                         {% else %}<span class="badge badge-ghost">Adjustment</span>{% endif %}
                         {% if t.bank_reference %}<div class="text-muted" style="font-size:10px">ref: {{ t.bank_reference }}</div>{% endif %}
                         {% if t.note %}<div class="text-muted" style="font-size:10px">{{ t.note }}</div>{% endif %}

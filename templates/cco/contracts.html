@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Contract Approvals — CCO — OneCard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">✍️ Contract Approvals</h1>
+        <p class="page-subtitle">Signed contracts awaiting activation. Credit / consignment lines above {{ cap|money }} SAR need your sign-off.</p>
+    </div>
+</div>
+
+<div class="table-card">
+    <div class="table-scroll">
+        <table>
+            <thead>
+                <tr>
+                    <th>Reseller</th>
+                    <th>Arrangement</th>
+                    <th>Credit Limit</th>
+                    <th>Terms</th>
+                    <th>Sales</th>
+                    <th>Signed</th>
+                    <th>Documents</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for c in queue %}
+            <tr>
+                <td class="fw6">{{ c.company_name }}</td>
+                <td>
+                    <span class="badge" style="background:{{ account_labels.get(c.account_type, [c.account_type, '#64748b'])[1] }}20;color:{{ account_labels.get(c.account_type, [c.account_type, '#64748b'])[1] }}">
+                        {{ account_labels.get(c.account_type, [c.account_type])[0] }}
+                    </span>
+                    {% if c.needs_cco %}<div><span class="badge badge-warning" style="font-size:9px;margin-top:4px">CCO approval</span></div>{% endif %}
+                </td>
+                <td class="fw6">{{ c.credit_limit|money if c.account_type != 'prepaid' else '—' }}{{ ' SAR' if c.account_type != 'prepaid' }}
+                    {% if c.account_type == 'credit' and c.credit_disbursement == 'staged' %}
+                    <div class="text-muted" style="font-size:10px">tranche {{ c.credit_tranche|money }}</div>{% endif %}
+                </td>
+                <td class="text-muted" style="font-size:12px">
+                    {% if c.account_type != 'prepaid' %}Net {{ c.settlement_terms_days }}d · {{ c.billing_cycle }}{% else %}—{% endif %}
+                </td>
+                <td class="text-muted" style="font-size:12px">{{ c.sales_name or '—' }}</td>
+                <td class="text-muted" style="font-size:12px">{{ c.signed_at[:16] if c.signed_at }}</td>
+                <td style="font-size:12px">
+                    {% if c.file_draft %}<a href="/contracts/{{ c.id }}/file/draft" target="_blank" style="color:var(--accent)">draft</a>{% endif %}
+                    {% if c.file_signed %} · <a href="/contracts/{{ c.id }}/file/signed" target="_blank" style="color:var(--success)">signed</a>{% endif %}
+                </td>
+                <td>
+                    <form method="POST" action="/contracts/{{ c.id }}/activate"
+                          onsubmit="return confirm('Activate {{ c.company_name }} on a {{ account_labels.get(c.account_type, [c.account_type])[0] }} arrangement? This unlocks ordering.')">
+                        <button class="btn btn-sm btn-primary" type="submit">✅ Activate</button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="8" style="text-align:center;padding:40px;color:var(--text-3)">
+                No contracts awaiting activation.
+            </td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

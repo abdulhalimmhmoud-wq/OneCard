@@ -22,6 +22,7 @@
                     <th>Expected Monthly</th>
                     <th>Plan</th>
                     <th>Contract</th>
+                    <th>Account</th>
                     <th>Wallet</th>
                     <th>Currency</th>
                     <th>Stage</th>
@@ -40,8 +41,20 @@
                 <td>
                     {% if r.contract_status == 'contracted' %}
                         <span class="badge badge-success">✍️ Signed</span>
+                    {% elif r.contract and r.contract.status == 'signed_uploaded' %}
+                        <span class="badge badge-info">📄 Signed — activate</span>
+                    {% elif r.contract and r.contract.status == 'sent' %}
+                        <span class="badge badge-warning">📤 Sent to sign</span>
                     {% else %}
                         <span class="badge badge-warning">Prospect</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <span class="badge" style="background:{{ account_labels.get(r.account_type or 'prepaid', ['', '#64748b'])[1] }}20;color:{{ account_labels.get(r.account_type or 'prepaid', ['', '#64748b'])[1] }}">
+                        {{ account_labels.get(r.account_type or 'prepaid', ['Prepaid'])[0] }}
+                    </span>
+                    {% if (r.account_type or 'prepaid') != 'prepaid' %}
+                    <div class="text-muted" style="font-size:10px">limit {{ r.credit_limit|money }} · out {{ r.credit_outstanding|money }}</div>
                     {% endif %}
                 </td>
                 <td class="fw6">SAR {{ r.wallet_balance|money }}</td>
@@ -86,15 +99,66 @@
                                 <div class="text-muted" style="font-size:10px;margin-top:6px">Contract in API_GUIDE.md — X-API-Key header.</div>
                             </div>
                         </details>
-                        {% if r.contract_status != 'contracted' %}
-                        <form method="POST" action="/resellers/{{ r.id }}/contract" onsubmit="return confirm('Mark contract as SIGNED for {{ r.company_name }}? This enables ordering.')">
-                            <input type="hidden" name="status" value="contracted">
-                            <button class="btn btn-sm btn-primary" type="submit">✍️ Sign Contract</button>
-                        </form>
-                        {% else %}
+
+                        <!-- Contract: upload draft + set payment terms -->
+                        <details style="position:relative">
+                            <summary class="btn btn-sm btn-ghost" style="list-style:none;cursor:pointer">📝 Contract</summary>
+                            <div style="position:absolute;right:0;top:110%;z-index:200;background:var(--bg-1);border:1px solid var(--border);border-radius:10px;padding:12px;width:320px;box-shadow:0 12px 32px rgba(0,0,0,.5)">
+                                {% if r.contract and r.contract.status == 'signed_uploaded' %}
+                                <div style="margin-bottom:10px">
+                                    <a href="/contracts/{{ r.contract.id }}/file/signed" target="_blank" style="font-size:11px;color:var(--success)">view signed copy</a>
+                                    {% if r.account_type_needs_cco %}
+                                    <div class="text-muted" style="font-size:11px;margin-top:6px">⏳ Limit above {{ auto_cap|money }} SAR — awaiting CCO activation.</div>
+                                    {% else %}
+                                    <form method="POST" action="/contracts/{{ r.contract.id }}/activate"
+                                          onsubmit="return confirm('Activate {{ r.company_name }}? This unlocks ordering.')">
+                                        <button class="btn btn-sm btn-primary" style="width:100%">✅ Activate Contract</button>
+                                    </form>
+                                    {% endif %}
+                                    <hr style="border-color:var(--border);margin:10px 0">
+                                </div>
+                                {% elif r.contract and r.contract.status == 'sent' %}
+                                <div class="text-muted" style="font-size:11px;margin-bottom:8px">📤 Sent {{ r.contract.sent_at[:10] if r.contract.sent_at }} — waiting for the reseller to sign.</div>
+                                {% endif %}
+                                <form method="POST" action="/sales/resellers/{{ r.id }}/contract/upload" enctype="multipart/form-data">
+                                    <label class="form-label" style="font-size:11px">Payment model</label>
+                                    <select name="account_type" onchange="ctToggle(this)" style="width:100%;font-size:12px;padding:5px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;color:var(--text-1);margin-bottom:6px">
+                                        {% for at in account_types %}
+                                        <option value="{{ at }}" {{ 'selected' if (r.account_type or 'prepaid') == at }}>{{ account_labels[at][0] }}</option>
+                                        {% endfor %}
+                                    </select>
+                                    <div class="ct-credit" style="display:none">
+                                        <input type="number" name="credit_limit" placeholder="Credit limit ({{ r.display_currency }})" value="{{ r.credit_limit|round|int if r.credit_limit }}" style="width:100%;font-size:12px;padding:5px;margin-bottom:6px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;color:var(--text-1)">
+                                        <select name="credit_disbursement" onchange="ctToggle(this)" style="width:100%;font-size:12px;padding:5px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;color:var(--text-1);margin-bottom:6px">
+                                            <option value="full">Full limit upfront</option>
+                                            <option value="staged" {{ 'selected' if r.credit_disbursement == 'staged' }}>Staged tranche</option>
+                                        </select>
+                                        <input type="number" name="credit_tranche" class="ct-tranche" placeholder="Tranche size ({{ r.display_currency }})" value="{{ r.credit_tranche|round|int if r.credit_tranche }}" style="width:100%;font-size:12px;padding:5px;margin-bottom:6px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;color:var(--text-1);display:none">
+                                        <div style="display:flex;gap:6px;margin-bottom:6px">
+                                            <input type="number" name="settlement_terms_days" placeholder="Net days" value="{{ r.settlement_terms_days or 30 }}" style="width:50%;font-size:12px;padding:5px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;color:var(--text-1)">
+                                            <select name="billing_cycle" style="width:50%;font-size:12px;padding:5px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;color:var(--text-1)">
+                                                <option value="monthly">monthly</option>
+                                                <option value="weekly">weekly</option>
+                                                <option value="custom">custom</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <label class="form-label" style="font-size:11px">Contract file (PDF/Word/image)</label>
+                                    <input type="file" name="draft" required accept=".pdf,.doc,.docx,.png,.jpg,.jpeg" style="width:100%;font-size:11px;margin-bottom:8px;color:var(--text-2)">
+                                    <button class="btn btn-sm btn-primary" style="width:100%" type="submit">📤 Send Contract to Sign</button>
+                                </form>
+                            </div>
+                        </details>
+
+                        {% if r.contract_status == 'contracted' %}
                         <form method="POST" action="/resellers/{{ r.id }}/contract" onsubmit="return confirm('Set {{ r.company_name }} back to prospect? Ordering will be disabled.')">
                             <input type="hidden" name="status" value="prospect">
                             <button class="btn btn-sm btn-ghost" type="submit">↩︎ Revoke</button>
+                        </form>
+                        {% elif not r.contract %}
+                        <form method="POST" action="/resellers/{{ r.id }}/contract" onsubmit="return confirm('Quick-sign {{ r.company_name }} as prepaid (no formal contract file)? This enables ordering.')">
+                            <input type="hidden" name="status" value="contracted">
+                            <button class="btn btn-sm btn-ghost" type="submit">✍️ Quick-sign</button>
                         </form>
                         {% endif %}
                     </div>
@@ -102,7 +166,7 @@
             </tr>
             {% else %}
             <tr>
-                <td colspan="9" style="text-align:center;padding:40px;color:var(--text-3)">
+                <td colspan="10" style="text-align:center;padding:40px;color:var(--text-3)">
                     You have not registered any resellers yet.<br>
                     <a href="/sales/register" class="btn btn-primary btn-sm mt-8">Register a Reseller</a>
                 </td>
@@ -112,4 +176,21 @@
         </table>
     </div>
 </div>
+
+<script>
+// Show/hide the credit fields inside a contract dropdown based on the payment
+// model + disbursement selects. Scoped to the dropdown the change happened in.
+function ctToggle(el) {
+    var box = el.closest('form');
+    if (!box) return;
+    var type = box.querySelector('select[name="account_type"]').value;
+    var credit = box.querySelector('.ct-credit');
+    credit.style.display = (type === 'prepaid') ? 'none' : 'block';
+    var disb = box.querySelector('select[name="credit_disbursement"]');
+    var tranche = box.querySelector('.ct-tranche');
+    // Tranche only matters for a staged CREDIT line.
+    tranche.style.display = (type === 'credit' && disb && disb.value === 'staged') ? 'block' : 'none';
+}
+document.querySelectorAll('select[name="account_type"]').forEach(function (s) { ctToggle(s); });
+</script>
 {% endblock %}

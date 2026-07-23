@@ -56,8 +56,24 @@ DEBUG_MODE = os.environ.get('ONECARD_DEBUG', '0') == '1'
 
 UPLOAD_DIR = os.path.join(BASE_DIR, 'uploads', 'receipts')
 PRICEFILE_DIR = os.path.join(BASE_DIR, 'uploads', 'pricefiles')
+CONTRACT_DIR = os.path.join(BASE_DIR, 'uploads', 'contracts')
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(PRICEFILE_DIR, exist_ok=True)
+os.makedirs(CONTRACT_DIR, exist_ok=True)
+ALLOWED_CONTRACT_EXT = {'.pdf', '.doc', '.docx', '.png', '.jpg', '.jpeg'}
+
+
+def _save_contract_file(file, reseller_id):
+    """Persist an uploaded contract document; returns the stored filename or None
+    if the extension isn't an allowed document/image type."""
+    if not file or not file.filename:
+        return None
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in ALLOWED_CONTRACT_EXT:
+        return None
+    fname = f"c{reseller_id}_{uuid.uuid4().hex[:12]}{ext}"
+    file.save(os.path.join(CONTRACT_DIR, fname))
+    return fname
 # Receipt uploads are validated by content (see _sniff_receipt_ext), not
 # extension — they're reachable by any reseller. Price files stay
 # extension-checked; only staff (Ops) can reach that upload.
@@ -313,6 +329,26 @@ def view_receipt(txn_id):
     return send_from_directory(UPLOAD_DIR, txn['receipt_file'])
 
 
+@app.route('/contracts/<int:cid>/file/<which>')
+@auth.login_required
+def contract_file(cid, which):
+    """Serve a contract's draft/signed document. Private: the owning reseller,
+    the sales manager who owns them, or CCO/Finance/admin."""
+    contract, _ = models.get_contract(cid)
+    if not contract:
+        abort(404)
+    fname = contract['file_draft'] if which == 'draft' else contract['file_signed']
+    if not fname:
+        abort(404)
+    curr = auth.get_current_user()
+    allowed = (curr['role'] in ('cco', 'admin', 'finance')
+               or curr['id'] == contract['reseller_user_id']
+               or (curr['role'] == 'sales' and curr['id'] == contract['registered_by']))
+    if not allowed:
+        abort(403)
+    return send_from_directory(CONTRACT_DIR, fname)
+
+
 # ── Admin Routes (BD Manager) ────────────────────────────────────
 
 @app.route('/admin')
@@ -458,6 +494,82 @@ def sign_contract(rid):
     return redirect(request.referrer or url_for('index'))
 
 
+@app.route('/sales/resellers/<int:rid>/contract/upload', methods=['POST'])
+@auth.sales_required
+def sales_contract_upload(rid):
+    """Sales uploads a draft contract and proposes the commercial terms
+    (account type + credit line). The reseller then signs and re-uploads."""
+    curr = auth.get_current_user()
+    profile = models.get_reseller_profile_by_id(rid)
+    if not profile or (curr['role'] not in ('admin', 'cco') and profile['registered_by'] != curr['id']):
+        flash("Access denied.", "error")
+        return redirect(url_for('sales_resellers'))
+    fname = _save_contract_file(request.files.get('draft'), rid)
+    if not fname:
+        flash("Attach the contract as PDF, Word or an image.", "error")
+        return redirect(url_for('sales_resellers'))
+    account_type = request.form.get('account_type', 'prepaid')
+    if account_type not in models.ACCOUNT_TYPES:
+        account_type = 'prepaid'
+    to_sar = lambda v: round(models.convert_amount(float(v or 0), profile['display_currency'], 'SAR'), 2)
+    credit_limit = to_sar(request.form.get('credit_limit')) if account_type != 'prepaid' else 0
+    credit_tranche = to_sar(request.form.get('credit_tranche')) if account_type == 'credit' else 0
+    disbursement = request.form.get('credit_disbursement', 'full')
+    if disbursement not in models.CREDIT_DISBURSEMENTS:
+        disbursement = 'full'
+    try:
+        terms_days = int(request.form.get('settlement_terms_days') or 30)
+    except ValueError:
+        terms_days = 30
+    billing_cycle = request.form.get('billing_cycle', 'monthly')
+    if billing_cycle not in models.BILLING_CYCLES:
+        billing_cycle = 'monthly'
+    cid = models.create_contract(rid, curr['id'], fname, account_type, credit_limit,
+                                 disbursement, credit_tranche, terms_days, billing_cycle,
+                                 request.form.get('note', ''))
+    models.notify(profile['user_id'], "Your contract is ready to sign ✍️",
+                  "Your account manager sent a contract to review and sign. Open it in your "
+                  "portal, sign it, and upload the signed copy.", "/reseller/contract")
+    flash(f"Contract sent to {profile['company_name']} for signing.", "success")
+    return redirect(request.referrer or url_for('sales_resellers'))
+
+
+@app.route('/contracts/<int:cid>/activate', methods=['POST'])
+@auth.login_required
+def activate_contract(cid):
+    """Activate a signed contract, applying its terms. Governance: CCO/admin may
+    always activate; the sales owner may activate only when CCO sign-off isn't
+    required (prepaid, or a credit/consignment limit at or below the cap)."""
+    curr = auth.get_current_user()
+    contract, _ = models.get_contract(cid)
+    if not contract:
+        flash("Contract not found.", "error")
+        return redirect(url_for('index'))
+    needs_cco = models.contract_needs_cco(contract)
+    is_super = curr['role'] in ('cco', 'admin')
+    is_owner_sales = curr['role'] == 'sales' and curr['id'] == contract['registered_by']
+    if not (is_super or (is_owner_sales and not needs_cco)):
+        flash("This credit line needs CCO approval to activate." if needs_cco
+              else "Access denied.", "error")
+        return redirect(request.referrer or url_for('index'))
+    ok, err = models.activate_contract(cid, curr['id'])
+    if not ok:
+        flash(err, "error")
+        return redirect(request.referrer or url_for('index'))
+    label = models.ACCOUNT_TYPE_LABELS.get(contract['account_type'], (contract['account_type'],))[0]
+    models.notify(contract['reseller_user_id'], "Contract activated 🎉",
+                  f"Your contract is active on a {label} arrangement. You can now place orders.",
+                  "/reseller/orders")
+    # Finance always gets visibility on a newly provisioned credit/consignment line.
+    if contract['account_type'] != 'prepaid':
+        models.notify(models.get_user_ids_by_role('finance', 'cco'),
+                      "New credit line activated 💳",
+                      f"{contract['company_name']} activated as {label} with a "
+                      f"{contract['credit_limit']:,.0f} SAR limit.", "/finance")
+    flash(f"Contract activated for {contract['company_name']}.", "success")
+    return redirect(request.referrer or url_for('sales_resellers'))
+
+
 # ── Sales Manager Routes ─────────────────────────────────────────
 
 @app.route('/sales')
@@ -519,7 +631,14 @@ def sales_register():
 def sales_resellers():
     curr = auth.get_current_user()
     resellers = models.get_all_resellers(registered_by=curr['id'])
-    return render_template('sales/my_resellers.html', active_tab='resellers', resellers=resellers)
+    for r in resellers:
+        r['contract'] = models.get_latest_contract(r['id'])
+        r['account_type_needs_cco'] = (models.contract_needs_cco(r['contract'])
+                                       if r['contract'] else False)
+    return render_template('sales/my_resellers.html', active_tab='resellers', resellers=resellers,
+                           account_types=models.ACCOUNT_TYPES,
+                           account_labels=models.ACCOUNT_TYPE_LABELS,
+                           auto_cap=models.AUTO_APPROVE_CAP)
 
 
 @app.route('/sales/resellers/<int:rid>/update', methods=['POST'])
@@ -733,6 +852,16 @@ def cco_decide(rid):
     else:
         flash("Request rejected.", "info")
     return redirect(url_for('cco_dashboard'))
+
+
+@app.route('/cco/contracts')
+@auth.cco_required
+def cco_contracts():
+    """Signed contracts awaiting activation — the credit-line approval queue."""
+    queue = models.contracts_awaiting_activation()
+    return render_template('cco/contracts.html', active_tab='cco_contracts',
+                           queue=queue, cap=models.AUTO_APPROVE_CAP,
+                           account_labels=models.ACCOUNT_TYPE_LABELS)
 
 
 # ── Finance Routes ───────────────────────────────────────────────
@@ -2000,6 +2129,48 @@ def reseller_wallet():
     return render_template('reseller/wallet.html', active_tab='wallet',
                            profile=profile, transactions=transactions,
                            pending_total=pending_total, disp=disp)
+
+
+# ── Reseller: Contract (review & sign) ───────────────────────────
+
+@app.route('/reseller/contract')
+@auth.login_required
+def reseller_contract():
+    uid, _, profile = _reseller_ctx()
+    if not profile:
+        return _no_reseller_profile()
+    contracts = models.get_reseller_contracts(profile['id'])
+    latest, events = (models.get_contract(contracts[0]['id']) if contracts else (None, []))
+    return render_template('reseller/contract.html', active_tab='contract',
+                           profile=profile, contracts=contracts,
+                           latest=latest, events=events,
+                           account_labels=models.ACCOUNT_TYPE_LABELS)
+
+
+@app.route('/reseller/contract/<int:cid>/sign', methods=['POST'])
+@auth.login_required
+def reseller_contract_sign(cid):
+    uid, _, profile = _reseller_ctx()
+    if not profile:
+        return _no_reseller_profile()
+    if block_in_preview():
+        return redirect(url_for('reseller_contract'))
+    contract, _ = models.get_contract(cid)
+    if not contract or contract['reseller_id'] != profile['id']:
+        flash("Contract not found.", "error")
+        return redirect(url_for('reseller_contract'))
+    fname = _save_contract_file(request.files.get('signed'), profile['id'])
+    if not fname:
+        flash("Attach the signed contract as PDF, Word or an image.", "error")
+        return redirect(url_for('reseller_contract'))
+    models.reseller_upload_signed(cid, fname, uid)
+    # Sales owner + CCO see the signed copy is ready to activate.
+    recipients = [contract['registered_by']] + models.get_user_ids_by_role('cco')
+    models.notify(recipients, "Signed contract received ✅",
+                  f"{profile['company_name']} uploaded their signed contract — ready to activate.",
+                  "/cco/contracts")
+    flash("Signed contract uploaded. Your account manager will activate your account.", "success")
+    return redirect(url_for('reseller_contract'))
 
 
 # ── Reseller: Analysis ───────────────────────────────────────────

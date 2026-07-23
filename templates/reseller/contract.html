@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}My Contract — {{ profile.company_name }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">📝 My Contract</h1>
+        <p class="page-subtitle">Review the contract your account manager sent, sign it, and upload the signed copy</p>
+    </div>
+</div>
+
+{% if not latest %}
+<div class="card" style="text-align:center;padding:50px">
+    <div style="font-size:40px;margin-bottom:12px">📭</div>
+    <div class="fw6">No contract yet</div>
+    <div class="text-muted" style="font-size:13px;margin-top:4px">
+        Your account manager will send you a contract to review and sign. You'll be notified here.
+    </div>
+</div>
+{% else %}
+<div class="grid-2" style="align-items:start">
+    <!-- Current contract -->
+    <div class="card">
+        <div class="card-header"><div class="card-title">Current Contract</div>
+            {% if latest.status == 'active' %}<span class="badge badge-success">Active</span>
+            {% elif latest.status == 'signed_uploaded' %}<span class="badge badge-info">Signed — awaiting activation</span>
+            {% elif latest.status == 'sent' %}<span class="badge badge-warning">Awaiting your signature</span>
+            {% else %}<span class="badge badge-ghost">{{ latest.status }}</span>{% endif %}
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:8px;font-size:14px;margin-bottom:16px">
+            <div style="display:flex;justify-content:space-between">
+                <span class="text-muted">Arrangement</span>
+                <b>{{ account_labels.get(latest.account_type, [latest.account_type])[0] }}</b>
+            </div>
+            {% if latest.account_type != 'prepaid' %}
+            <div style="display:flex;justify-content:space-between">
+                <span class="text-muted">Credit limit</span><b>{{ latest.credit_limit|money }} SAR</b>
+            </div>
+            <div style="display:flex;justify-content:space-between">
+                <span class="text-muted">Settlement</span><b>Net {{ latest.settlement_terms_days }} days · {{ latest.billing_cycle }}</b>
+            </div>
+            {% endif %}
+            <div style="display:flex;justify-content:space-between">
+                <span class="text-muted">Sent</span><span>{{ latest.sent_at[:16] if latest.sent_at }}</span>
+            </div>
+        </div>
+
+        {% if latest.file_draft %}
+        <a href="/contracts/{{ latest.id }}/file/draft" target="_blank" class="btn btn-ghost" style="width:100%;justify-content:center;margin-bottom:16px">📄 Download contract to sign</a>
+        {% endif %}
+
+        {% if latest.status in ('sent', 'signed_uploaded') %}
+        <form method="POST" action="/reseller/contract/{{ latest.id }}/sign" enctype="multipart/form-data">
+            <div class="form-group">
+                <label class="form-label">Upload signed copy *</label>
+                <input type="file" name="signed" required accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
+                       style="padding:10px;background:var(--bg-2);border:1px dashed var(--border);border-radius:var(--radius-sm);width:100%;color:var(--text-2)">
+                <div class="form-hint">PDF, Word or a clear photo of the signed contract</div>
+            </div>
+            <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center">
+                {{ '📤 Re-upload signed copy' if latest.status == 'signed_uploaded' else '✍️ Upload signed contract' }}
+            </button>
+        </form>
+        {% if latest.file_signed %}
+        <a href="/contracts/{{ latest.id }}/file/signed" target="_blank" style="font-size:12px;color:var(--accent);display:block;text-align:center;margin-top:10px">view my uploaded signed copy</a>
+        {% endif %}
+        {% elif latest.status == 'active' %}
+        <div class="card" style="background:var(--bg-2);text-align:center">
+            ✅ Your contract is active. You can place orders from your
+            <a href="/reseller/orders">Orders</a> page.
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Timeline -->
+    <div class="table-card">
+        <div class="table-header"><div class="table-title">🧾 Contract History</div></div>
+        <div class="table-scroll" style="max-height:420px;overflow-y:auto">
+            <table>
+                <thead><tr><th>When</th><th>Event</th></tr></thead>
+                <tbody>
+                {% for e in events %}
+                <tr>
+                    <td class="text-muted" style="font-size:12px">{{ e.created_at[:16] }}</td>
+                    <td>{{ e.event.replace('_', ' ')|title }}
+                        {% if e.note %}<div class="text-muted" style="font-size:11px">{{ e.note }}</div>{% endif %}
+                        {% if e.actor_name %}<div class="text-muted" style="font-size:10px">by {{ e.actor_name }}</div>{% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="2" style="text-align:center;padding:30px;color:var(--text-3)">No events yet</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

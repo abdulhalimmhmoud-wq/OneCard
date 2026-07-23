@@ -199,6 +199,39 @@ def init_db():
             merchant TEXT NOT NULL
         );
 
+        -- ── v13: Contracts (upload draft → client signs → activate) ──
+        CREATE TABLE IF NOT EXISTS contracts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reseller_id INTEGER NOT NULL REFERENCES reseller_profiles(id) ON DELETE CASCADE,
+            uploaded_by INTEGER REFERENCES users(id),
+            file_draft TEXT,
+            file_signed TEXT,
+            status TEXT NOT NULL DEFAULT 'sent',
+                -- sent | signed_uploaded | pending_cco | active | void
+            account_type TEXT NOT NULL DEFAULT 'prepaid',
+            credit_limit REAL NOT NULL DEFAULT 0,
+            credit_disbursement TEXT NOT NULL DEFAULT 'full',
+            credit_tranche REAL NOT NULL DEFAULT 0,
+            settlement_terms_days INTEGER NOT NULL DEFAULT 30,
+            billing_cycle TEXT NOT NULL DEFAULT 'monthly',
+            note TEXT,
+            sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            signed_at TIMESTAMP,
+            activated_at TIMESTAMP,
+            activated_by INTEGER REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS contract_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contract_id INTEGER NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+            actor_id INTEGER REFERENCES users(id),
+            event TEXT NOT NULL,
+            note TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_contracts_reseller ON contracts(reseller_id);
+        CREATE INDEX IF NOT EXISTS idx_contract_events ON contract_events(contract_id);
+
         CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             product_id TEXT,
@@ -602,6 +635,18 @@ def migrate_db():
         'is_suspended': "ALTER TABLE reseller_profiles ADD COLUMN is_suspended INTEGER NOT NULL DEFAULT 0",
         'suspended_at': "ALTER TABLE reseller_profiles ADD COLUMN suspended_at TIMESTAMP",
         'auto_suspend_at': "ALTER TABLE reseller_profiles ADD COLUMN auto_suspend_at TEXT",
+        # v13: account/payment model. prepaid = today's wallet; credit = draw
+        # against a limit and settle per cycle; consignment = accrue per draw and
+        # settle on a period statement. SAR base throughout.
+        'account_type': "ALTER TABLE reseller_profiles ADD COLUMN account_type TEXT NOT NULL DEFAULT 'prepaid'",
+        'credit_limit': "ALTER TABLE reseller_profiles ADD COLUMN credit_limit REAL NOT NULL DEFAULT 0",
+        'credit_released': "ALTER TABLE reseller_profiles ADD COLUMN credit_released REAL NOT NULL DEFAULT 0",
+        'credit_outstanding': "ALTER TABLE reseller_profiles ADD COLUMN credit_outstanding REAL NOT NULL DEFAULT 0",
+        'credit_disbursement': "ALTER TABLE reseller_profiles ADD COLUMN credit_disbursement TEXT NOT NULL DEFAULT 'full'",
+        'credit_tranche': "ALTER TABLE reseller_profiles ADD COLUMN credit_tranche REAL NOT NULL DEFAULT 0",
+        'settlement_terms_days': "ALTER TABLE reseller_profiles ADD COLUMN settlement_terms_days INTEGER NOT NULL DEFAULT 30",
+        'billing_cycle': "ALTER TABLE reseller_profiles ADD COLUMN billing_cycle TEXT NOT NULL DEFAULT 'monthly'",
+        'credit_frozen': "ALTER TABLE reseller_profiles ADD COLUMN credit_frozen INTEGER NOT NULL DEFAULT 0",
     }
     just_added_display_cur = 'display_currency' not in cols
     just_added_suspend = 'auto_suspend_at' not in cols
@@ -624,6 +669,51 @@ def migrate_db():
     if just_added_suspend:
         conn.commit()
         conn.execute("UPDATE reseller_profiles SET auto_suspend_at=?", (_suspend_deadline(),))
+        conn.commit()
+
+    # v13: the wallet_transactions.type CHECK originally allowed only
+    # topup/order/adjustment. Credit & consignment need credit_draw /
+    # consignment_draw / settlement. Rebuild the table once to drop the CHECK
+    # (SQLite can't ALTER a constraint) while preserving all rows.
+    wt_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='wallet_transactions'").fetchone()
+    if wt_sql and 'CHECK(type IN' in (wt_sql['sql'] or ''):
+        # Ensure the v11 columns exist on the OLD table before we copy them over
+        # (on a fresh DB the CREATE has the CHECK but not these columns yet).
+        wtc = {r['name'] for r in conn.execute("PRAGMA table_info(wallet_transactions)")}
+        if 'orig_amount' not in wtc:
+            conn.execute("ALTER TABLE wallet_transactions ADD COLUMN orig_amount REAL")
+        if 'orig_currency' not in wtc:
+            conn.execute("ALTER TABLE wallet_transactions ADD COLUMN orig_currency TEXT DEFAULT 'SAR'")
+        conn.commit()
+        conn.executescript("""
+            PRAGMA foreign_keys=OFF;
+            CREATE TABLE wallet_transactions_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                reseller_id INTEGER NOT NULL REFERENCES reseller_profiles(id) ON DELETE CASCADE,
+                type TEXT NOT NULL,
+                amount REAL NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
+                bank_reference TEXT,
+                receipt_file TEXT,
+                note TEXT,
+                reviewed_by INTEGER REFERENCES users(id),
+                reviewed_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                orig_amount REAL,
+                orig_currency TEXT DEFAULT 'SAR'
+            );
+            INSERT INTO wallet_transactions_new
+                (id, reseller_id, type, amount, status, bank_reference, receipt_file, note,
+                 reviewed_by, reviewed_at, created_at, orig_amount, orig_currency)
+                SELECT id, reseller_id, type, amount, status, bank_reference, receipt_file, note,
+                       reviewed_by, reviewed_at, created_at,
+                       COALESCE(orig_amount, amount), COALESCE(orig_currency, 'SAR')
+                FROM wallet_transactions;
+            DROP TABLE wallet_transactions;
+            ALTER TABLE wallet_transactions_new RENAME TO wallet_transactions;
+            PRAGMA foreign_keys=ON;
+        """)
         conn.commit()
 
     # 3. products: active flag + added date (ops catalogue management)
@@ -937,6 +1027,16 @@ def get_reseller_profile(user_id):
     p['display_currency'] = p['display_currency'] or 'SAR'
     p['wallet_balance_display'] = round(
         convert_amount(p.get('wallet_balance', 0), 'SAR', p['display_currency']))
+    # v13: account model + the unified spending headroom, in SAR and display cur.
+    p.setdefault('account_type', 'prepaid')
+    p['account_type'] = p['account_type'] or 'prepaid'
+    p['available_to_spend'] = available_to_spend(p)
+    p['available_display'] = round(
+        convert_amount(p['available_to_spend'], 'SAR', p['display_currency']))
+    p['credit_outstanding_display'] = round(
+        convert_amount(p.get('credit_outstanding', 0), 'SAR', p['display_currency']))
+    p['credit_limit_display'] = round(
+        convert_amount(p.get('credit_limit', 0), 'SAR', p['display_currency']))
     return p
 
 
@@ -1094,6 +1194,156 @@ def update_reseller_profile(reseller_id, client_type=None, countries=None, expec
         for c in countries:
             conn.execute("INSERT INTO reseller_countries (reseller_id, country) VALUES (?,?)", (reseller_id, c))
     conn.commit()
+    conn.close()
+
+
+# ── Contracts & account provisioning (v13) ───────────────────────
+
+def log_contract_event(contract_id, actor_id, event, note=''):
+    conn = get_db()
+    conn.execute("""INSERT INTO contract_events (contract_id, actor_id, event, note)
+                    VALUES (?,?,?,?)""", (contract_id, actor_id, event, note))
+    conn.commit()
+    conn.close()
+
+
+def create_contract(reseller_id, uploaded_by, file_draft, account_type='prepaid',
+                    credit_limit=0, credit_disbursement='full', credit_tranche=0,
+                    settlement_terms_days=30, billing_cycle='monthly', note=''):
+    """Sales uploads a draft contract with the proposed commercial terms."""
+    if account_type not in ACCOUNT_TYPES:
+        account_type = 'prepaid'
+    conn = get_db()
+    conn.execute("""INSERT INTO contracts
+                    (reseller_id, uploaded_by, file_draft, status, account_type, credit_limit,
+                     credit_disbursement, credit_tranche, settlement_terms_days, billing_cycle, note)
+                    VALUES (?,?,?,'sent',?,?,?,?,?,?,?)""",
+                 (reseller_id, uploaded_by, file_draft, account_type, credit_limit or 0,
+                  credit_disbursement, credit_tranche or 0, settlement_terms_days or 30,
+                  billing_cycle, note))
+    cid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit()
+    conn.close()
+    log_contract_event(cid, uploaded_by, 'sent',
+                       f'Draft sent · {account_type}'
+                       + (f' · limit {credit_limit:,.0f} SAR' if account_type != 'prepaid' else ''))
+    return cid
+
+
+def get_contract(contract_id):
+    conn = get_db()
+    c = conn.execute("""SELECT ct.*, cp.company_name, cp.user_id as reseller_user_id,
+                               cp.registered_by
+                        FROM contracts ct JOIN reseller_profiles cp ON ct.reseller_id=cp.id
+                        WHERE ct.id=?""", (contract_id,)).fetchone()
+    if not c:
+        conn.close()
+        return None, []
+    events = conn.execute("""SELECT ce.*, u.name as actor_name FROM contract_events ce
+                             LEFT JOIN users u ON ce.actor_id=u.id
+                             WHERE ce.contract_id=? ORDER BY ce.id""", (contract_id,)).fetchall()
+    conn.close()
+    return dict(c), [dict(e) for e in events]
+
+
+def get_reseller_contracts(reseller_id):
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM contracts WHERE reseller_id=? ORDER BY id DESC",
+                        (reseller_id,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_latest_contract(reseller_id):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM contracts WHERE reseller_id=? ORDER BY id DESC LIMIT 1",
+                       (reseller_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def contracts_awaiting_activation():
+    """Signed contracts waiting to be activated — the CCO/Sales approval queue.
+    Flags whether each needs CCO sign-off (large limit) or Sales can do it."""
+    conn = get_db()
+    rows = conn.execute("""SELECT ct.*, cp.company_name, cp.registered_by,
+                                  su.name as sales_name
+                           FROM contracts ct
+                           JOIN reseller_profiles cp ON ct.reseller_id=cp.id
+                           LEFT JOIN users su ON cp.registered_by=su.id
+                           WHERE ct.status='signed_uploaded'
+                           ORDER BY ct.signed_at DESC, ct.id DESC""").fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d['needs_cco'] = contract_needs_cco(d)
+        out.append(d)
+    return out
+
+
+def contract_needs_cco(contract):
+    """Credit/consignment lines above the auto-approve cap require CCO."""
+    return (contract.get('account_type') in ('credit', 'consignment')
+            and (contract.get('credit_limit') or 0) > AUTO_APPROVE_CAP)
+
+
+def reseller_upload_signed(contract_id, file_signed, actor_id):
+    conn = get_db()
+    conn.execute("""UPDATE contracts SET file_signed=?, status='signed_uploaded',
+                    signed_at=CURRENT_TIMESTAMP WHERE id=?""", (file_signed, contract_id))
+    conn.commit()
+    conn.close()
+    log_contract_event(contract_id, actor_id, 'client_signed', 'Signed copy uploaded by reseller')
+
+
+def activate_contract(contract_id, actor_id):
+    """Apply the contract's commercial terms to the reseller and unlock ordering.
+    Returns (ok, error). Governance (who may call this) is enforced in the route."""
+    conn = get_db()
+    ct = conn.execute("SELECT * FROM contracts WHERE id=?", (contract_id,)).fetchone()
+    if not ct:
+        conn.close()
+        return False, "Contract not found."
+    if ct['status'] not in ('signed_uploaded', 'sent'):
+        conn.close()
+        return False, "This contract is not awaiting activation."
+    rid = ct['reseller_id']
+    conn.execute("""UPDATE reseller_profiles
+                    SET account_type=?, credit_limit=?, credit_disbursement=?, credit_tranche=?,
+                        settlement_terms_days=?, billing_cycle=?, credit_frozen=0,
+                        contract_status='contracted',
+                        contracted_at=COALESCE(contracted_at, CURRENT_TIMESTAMP)
+                    WHERE id=?""",
+                 (ct['account_type'], ct['credit_limit'], ct['credit_disbursement'],
+                  ct['credit_tranche'], ct['settlement_terms_days'], ct['billing_cycle'], rid))
+    conn.execute("""UPDATE contracts SET status='active', activated_at=CURRENT_TIMESTAMP,
+                    activated_by=? WHERE id=?""", (actor_id, contract_id))
+    conn.commit()
+    conn.close()
+    log_contract_event(contract_id, actor_id, 'activated',
+                       f'Activated · {ct["account_type"]}')
+    return True, None
+
+
+def set_credit_terms(reseller_id, credit_limit=None, credit_tranche=None,
+                     credit_disbursement=None, settlement_terms_days=None,
+                     billing_cycle=None, credit_frozen=None):
+    """Direct adjustment of a reseller's live credit terms (used by approved
+    limit bumps and Finance/CCO actions)."""
+    conn = get_db()
+    sets, params = [], []
+    for col, val in (('credit_limit', credit_limit), ('credit_tranche', credit_tranche),
+                     ('credit_disbursement', credit_disbursement),
+                     ('settlement_terms_days', settlement_terms_days),
+                     ('billing_cycle', billing_cycle), ('credit_frozen', credit_frozen)):
+        if val is not None:
+            sets.append(f"{col}=?")
+            params.append(val)
+    if sets:
+        params.append(reseller_id)
+        conn.execute(f"UPDATE reseller_profiles SET {', '.join(sets)} WHERE id=?", params)
+        conn.commit()
     conn.close()
 
 
@@ -1332,6 +1582,44 @@ def convert_amount(amount, from_cur, to_cur, rates=None):
     if not to_rate:
         return amount
     return amount * from_rate / to_rate
+
+
+# ── Account / payment models (v13) ───────────────────────────────
+
+ACCOUNT_TYPES = ['prepaid', 'credit', 'consignment']
+CREDIT_DISBURSEMENTS = ['full', 'staged']
+BILLING_CYCLES = ['monthly', 'weekly', 'custom']
+# Above this credit/consignment limit (SAR), activation needs CCO approval;
+# at or below it the sales manager can activate directly (Finance is notified).
+AUTO_APPROVE_CAP = 100000
+
+ACCOUNT_TYPE_LABELS = {
+    'prepaid':     ('Prepaid (Cash)', '#10b981'),
+    'credit':      ('Credit Line', '#f59e0b'),
+    'consignment': ('Consignment', '#8b5cf6'),
+}
+
+
+def available_to_spend(profile):
+    """The single ordering gate for every account type, in SAR.
+       prepaid     -> wallet balance
+       credit      -> full:   credit_limit - outstanding
+                      staged: min(tranche, credit_limit - outstanding)
+       consignment -> credit_limit - outstanding (accrues to the open statement)
+    A frozen credit/consignment line (overdue) can spend nothing."""
+    at = profile.get('account_type') or 'prepaid'
+    if at == 'prepaid':
+        return round(profile.get('wallet_balance') or 0, 2)
+    if profile.get('credit_frozen'):
+        return 0.0
+    limit = profile.get('credit_limit') or 0
+    outstanding = profile.get('credit_outstanding') or 0
+    headroom = max(0.0, limit - outstanding)
+    if at == 'credit' and (profile.get('credit_disbursement') or 'full') == 'staged':
+        tranche = profile.get('credit_tranche') or 0
+        if tranche > 0:
+            return round(min(tranche, headroom), 2)
+    return round(headroom, 2)
 
 
 def get_all_merchants():
@@ -1645,13 +1933,16 @@ def create_order(reseller_id, items):
     # commit() makes the whole check-and-deduct sequence atomic; a second
     # concurrent call simply waits (up to the busy_timeout in get_db()).
     conn.execute("BEGIN IMMEDIATE")
-    bal = conn.execute("SELECT wallet_balance, display_currency FROM reseller_profiles WHERE id=?",
-                       (reseller_id,)).fetchone()
+    bal = conn.execute("""SELECT wallet_balance, display_currency, account_type, credit_limit,
+                                 credit_released, credit_outstanding, credit_disbursement,
+                                 credit_tranche, credit_frozen
+                          FROM reseller_profiles WHERE id=?""", (reseller_id,)).fetchone()
     if not bal:
         conn.rollback()
         conn.close()
         return None, "Reseller not found."
     disp = bal['display_currency'] or 'SAR'
+    account_type = bal['account_type'] or 'prepaid'
     # v8 Issuing Hub: never sell codes we don't have — validate stock first
     for it in items:
         prow = it.get('product_rowid')
@@ -1664,14 +1955,22 @@ def create_order(reseller_id, items):
                     conn.close()
                     return None, (f"Only {left} gift-card codes left for '{p['product_name']}' "
                                   f"(you requested {it['quantity']}). Ops were alerted to restock.")
-    if bal['wallet_balance'] < total_cost:
+    # v13: one gate for all three account types.
+    available = available_to_spend(dict(bal))
+    if available < total_cost:
         conn.rollback()
         conn.close()
-        # Show the shortfall in the reseller's own display currency.
         total_disp = round(convert_amount(total_cost, 'SAR', disp, rates))
-        wallet_disp = round(convert_amount(bal['wallet_balance'], 'SAR', disp, rates))
-        return None, (f"Insufficient wallet balance. Order total is {total_disp:,.0f} {disp} "
-                      f"but wallet has {wallet_disp:,.0f} {disp}.")
+        avail_disp = round(convert_amount(available, 'SAR', disp, rates))
+        if account_type == 'prepaid':
+            return None, (f"Insufficient wallet balance. Order total is {total_disp:,.0f} {disp} "
+                          f"but wallet has {avail_disp:,.0f} {disp}.")
+        if bal['credit_frozen']:
+            return None, ("Your account is on hold pending settlement of an overdue "
+                          "statement. Please contact your account manager.")
+        noun = 'credit' if account_type == 'credit' else 'consignment limit'
+        return None, (f"Order total is {total_disp:,.0f} {disp} but only {avail_disp:,.0f} {disp} "
+                      f"of {noun} is available right now.")
     conn.execute("""INSERT INTO orders (reseller_id, total_cost, total_face, total_savings)
                     VALUES (?,?,?,?)""", (reseller_id, total_cost, total_face,
                                           round(total_face - total_cost, 2)))
@@ -1685,11 +1984,21 @@ def create_order(reseller_id, items):
                       it.get('category'), it.get('currency'), it['quantity'],
                       it['unit_price'], it['unit_face'], it['unit_price'] * it['quantity'],
                       it['_fx'], it['_line_sar']))
-    conn.execute("UPDATE reseller_profiles SET wallet_balance = wallet_balance - ? WHERE id=?",
-                 (total_cost, reseller_id))
-    conn.execute("""INSERT INTO wallet_transactions (reseller_id, type, amount, status, note)
-                    VALUES (?,?,?,?,?)""",
-                 (reseller_id, 'order', -total_cost, 'approved', f'Order #{oid}'))
+    if account_type == 'prepaid':
+        conn.execute("UPDATE reseller_profiles SET wallet_balance = wallet_balance - ? WHERE id=?",
+                     (total_cost, reseller_id))
+        conn.execute("""INSERT INTO wallet_transactions (reseller_id, type, amount, status, note)
+                        VALUES (?,?,?,?,?)""",
+                     (reseller_id, 'order', -total_cost, 'approved', f'Order #{oid}'))
+    else:
+        # credit / consignment: draw against the limit; settled per statement.
+        draw_type = 'credit_draw' if account_type == 'credit' else 'consignment_draw'
+        conn.execute("""UPDATE reseller_profiles
+                        SET credit_outstanding = credit_outstanding + ? WHERE id=?""",
+                     (total_cost, reseller_id))
+        conn.execute("""INSERT INTO wallet_transactions (reseller_id, type, amount, status, note)
+                        VALUES (?,?,?,?,?)""",
+                     (reseller_id, draw_type, -total_cost, 'approved', f'Order #{oid}'))
     # v6: tie every sold unit to the supplier batch it came from (FIFO)
     _allocate_order_fifo(conn, oid)
     # v8: hand actual gift-card codes to the buyer for issued products
@@ -1699,9 +2008,31 @@ def create_order(reseller_id, items):
     conn.commit()
     conn.close()
     notify_low_issued_stock(touched_issued)
+    if account_type in ('credit', 'consignment'):
+        _notify_if_limit_reached(reseller_id)
     send_webhook(reseller_id, 'order.placed',
                  {'order_id': oid, 'total_sar': total_cost})
     return oid, None
+
+
+def _notify_if_limit_reached(reseller_id):
+    """When a credit/consignment reseller can no longer draw (available == 0),
+    alert the sales manager + CCO + Finance so a limit bump can be considered."""
+    conn = get_db()
+    r = conn.execute("""SELECT cp.*, u.name as contact_name, u.id as uid
+                        FROM reseller_profiles cp JOIN users u ON cp.user_id=u.id
+                        WHERE cp.id=?""", (reseller_id,)).fetchone()
+    conn.close()
+    if not r:
+        return
+    if available_to_spend(dict(r)) > 0.01:
+        return
+    team = [r['registered_by']] + get_user_ids_by_role('cco', 'finance')
+    notify(team, "Credit limit reached 🚧",
+           f"{r['company_name']} has used all available "
+           f"{('credit' if r['account_type'] == 'credit' else 'consignment')} "
+           f"(limit {r['credit_limit']:,.0f} SAR). Review whether to raise the limit.",
+           "/sales/resellers")
 
 
 def get_orders(reseller_id):
