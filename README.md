@@ -1,4 +1,29 @@
-# OneCard — Reseller Operations Platform (v16)
+# OneCard — Reseller Operations Platform (v17)
+
+## Customer CRM: dedup, contact data & CCO tracking board (v17)
+
+Registration and tracking now behave like a lightweight CRM:
+
+- **More contact data** — the sales manager must enter the contact person's **phone**
+  at registration (`contact_phone`).
+- **Duplicate-customer prevention** — a customer may reach two sales managers who don't
+  know about each other; a second registration is now **blocked** when it collides on
+  any strong identifier — **email, company name, or phone** (`find_duplicate_reseller`,
+  with normalised company/phone matching so `+966 50…` and `050…` are the same). The
+  message names the existing customer + managing manager so the team can coordinate.
+- **Commercial registration number** — the customer's primary identifier, captured at
+  **contract time** (option on the contract-upload form), copied onto the profile and
+  also deduplicated (no two customers share a CR number).
+- **CCO Customers board** (`/cco/customers`) — every registered customer across all
+  sales managers, with a **dashboard** (totals, new-this-month, contracted, with-CR,
+  wallet+outstanding exposure, breakdowns by stage & account model) and **filters** by
+  sales manager, stage, tier, account model, registration date range, and free-text
+  search (company / email / phone / CR) — built to stay usable at 100s of customers.
+
+Changes touch registration (route + form), the contract flow, `create_reseller` /
+`update_reseller_profile` / `create_contract`, and the sales My Resellers view (phone +
+CR shown). Coverage: `tests/e2e_v17.py` (14 checks); the existing suites were updated to
+supply the now-required phone. Full regression green — 15 suites, 375 checks.
 
 ## Webhook Hardening & Credit Reporting — Phase 4 (v16)
 

@@ -51,7 +51,8 @@ check('finance dashboard', s == 200 and 'Top-up' in b)
 # ── 2. Sales registers reseller with client type + countries ──
 email = f"e2e_{uuid.uuid4().hex[:8]}@test.com"
 s, b = post(sales, '/sales/register', {
-    'company_name': 'E2E Trading Co', 'contact_name': 'E2E Tester',
+    'company_name': 'E2E Trading Co ' + email[4:12], 'contact_name': 'E2E Tester',
+    'contact_phone': '05' + str(uuid.uuid4().int)[:8],
     'contact_email': email, 'password': 'Test123!',
     'expected_sales': '250000', 'notes': 'e2e', 'client_types': 'Bank',
     'countries': 'Saudi Arabia'})

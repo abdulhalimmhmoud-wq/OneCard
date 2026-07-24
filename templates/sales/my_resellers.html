@@ -35,7 +35,9 @@
                 <td class="fw6">{{ r.company_name }}
                     <div class="text-muted" style="font-size:11px">{{ r.client_type or 'Type not set' }}</div>
                 </td>
-                <td>{{ r.contact_name }}<br><span class="text-muted" style="font-size:11px">{{ r.email }}</span></td>
+                <td>{{ r.contact_name }}<br><span class="text-muted" style="font-size:11px">{{ r.email }}</span>
+                    {% if r.contact_phone %}<br><span class="text-muted" style="font-size:11px">📞 {{ r.contact_phone }}</span>{% endif %}
+                </td>
                 <td class="fw6">SAR {{ r.expected_monthly_sales|money }}</td>
                 <td><span class="badge badge-tier" style="background:{{ r.tier_color or '#64748b' }}20;color:{{ r.tier_color or '#64748b' }}">{{ r.tier_name or 'Unassigned' }}</span></td>
                 <td>
@@ -56,6 +58,7 @@
                     {% if (r.account_type or 'prepaid') != 'prepaid' %}
                     <div class="text-muted" style="font-size:10px">limit {{ r.credit_limit|money }} · out {{ r.credit_outstanding|money }}</div>
                     {% endif %}
+                    {% if r.commercial_reg_no %}<div class="text-muted" style="font-size:10px">CR {{ r.commercial_reg_no }}</div>{% endif %}
                 </td>
                 <td class="fw6">SAR {{ r.wallet_balance|money }}</td>
                 <td>
@@ -127,6 +130,8 @@
                                 <div class="text-muted" style="font-size:11px;margin-bottom:8px">📤 Sent {{ r.contract.sent_at[:10] if r.contract.sent_at }} — waiting for the reseller to sign.</div>
                                 {% endif %}
                                 <form method="POST" action="/sales/resellers/{{ r.id }}/contract/upload" enctype="multipart/form-data">
+                                    <label class="form-label" style="font-size:11px">Commercial registration no. <span class="text-muted">(primary customer ID)</span></label>
+                                    <input type="text" name="commercial_reg_no" value="{{ r.commercial_reg_no or '' }}" placeholder="e.g. 1010XXXXXX" style="width:100%;font-size:12px;padding:5px;margin-bottom:6px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;color:var(--text-1)">
                                     <label class="form-label" style="font-size:11px">Payment model</label>
                                     <select name="account_type" onchange="ctToggle(this)" style="width:100%;font-size:12px;padding:5px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;color:var(--text-1);margin-bottom:6px">
                                         {% for at in account_types %}

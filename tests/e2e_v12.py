@@ -66,6 +66,7 @@ def execu(sql, *a):
 def register(sales, email, countries='Saudi Arabia'):
     post(sales, '/sales/register', {
         'company_name': 'V12 ' + email[:10], 'contact_name': 'T', 'contact_email': email,
+        'contact_phone': '05' + str(uuid.uuid4().int)[:8],
         'password': 'Test123!', 'expected_sales': '60000',
         'client_types': 'Retail Chain', 'countries': countries, 'display_currency': ''})
     return q("""SELECT cp.* FROM reseller_profiles cp JOIN users u ON cp.user_id=u.id

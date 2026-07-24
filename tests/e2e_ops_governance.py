@@ -92,7 +92,8 @@ check('DB is_active=0', active[0]['is_active'] == 0)
 sales = login('sales@onecard.com', 'Sales2025!')
 email = f"e2e5_{uuid.uuid4().hex[:8]}@test.com"
 s, b = post(sales, '/sales/register', {
-    'company_name': 'E2E5 Co', 'contact_name': 'T', 'contact_email': email,
+    'company_name': 'E2E5 Co ' + email[5:13], 'contact_name': 'T', 'contact_email': email,
+    'contact_phone': '05' + str(uuid.uuid4().int)[:8],
     'password': 'Test123!', 'expected_sales': '60000', 'client_type': 'Gaming Store',
     'countries': 'Saudi Arabia'})
 res = login(email, 'Test123!')

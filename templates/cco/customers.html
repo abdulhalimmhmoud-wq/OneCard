@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}Customers (CRM) — CCO — OneCard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">👥 Customers</h1>
+        <p class="page-subtitle">Every registered customer across all sales managers — track stage, tier, account model and exposure. Showing {{ stats.total }} of {{ total_all }}.</p>
+    </div>
+</div>
+
+<!-- Dashboard -->
+<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(180px,1fr))">
+    <div class="stat-card">
+        <div class="stat-icon">👥</div>
+        <div class="stat-value">{{ stats.total }}</div>
+        <div class="stat-label">Customers (filtered)</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🆕</div>
+        <div class="stat-value">{{ stats.new_this_month }}</div>
+        <div class="stat-label">New This Month</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">✍️</div>
+        <div class="stat-value">{{ stats.with_contract }}</div>
+        <div class="stat-label">Contracted</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🆔</div>
+        <div class="stat-value">{{ stats.with_cr }}</div>
+        <div class="stat-label">With CR Number</div>
+    </div>
+    <div class="stat-card" style="border:2px solid var(--accent)">
+        <div class="stat-icon">💰</div>
+        <div class="stat-value" style="color:var(--accent)">SAR {{ stats.exposure|money }}</div>
+        <div class="stat-label">Wallet + Outstanding</div>
+    </div>
+</div>
+
+<div class="grid-2" style="align-items:start;margin-bottom:24px">
+    <div class="card">
+        <div class="card-header"><div class="card-title">By Stage</div></div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+            {% for stage, lbl in lifecycle_labels.items() %}
+            {% if stats.by_stage.get(stage) %}
+            <span class="badge" style="background:{{ lbl[1] }}20;color:{{ lbl[1] }}">{{ lbl[0] }}: <b>{{ stats.by_stage.get(stage) }}</b></span>
+            {% endif %}
+            {% endfor %}
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-header"><div class="card-title">By Account Model</div></div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+            {% for at in account_types %}
+            {% if stats.by_type.get(at) %}
+            <span class="badge" style="background:{{ account_labels[at][1] }}20;color:{{ account_labels[at][1] }}">{{ account_labels[at][0] }}: <b>{{ stats.by_type.get(at) }}</b></span>
+            {% endif %}
+            {% endfor %}
+        </div>
+    </div>
+</div>
+
+<!-- Filters -->
+<div class="card mb-24">
+    <form method="GET" style="display:flex;flex-wrap:wrap;gap:10px;align-items:end">
+        <div>
+            <label class="form-label" style="font-size:11px">Search</label>
+            <input type="text" name="q" value="{{ filters.q }}" placeholder="company / email / phone / CR" style="min-width:200px">
+        </div>
+        <div>
+            <label class="form-label" style="font-size:11px">Sales Manager</label>
+            <select name="sales">
+                <option value="">All</option>
+                {% for s in sales_users %}
+                <option value="{{ s.id }}" {{ 'selected' if filters.sales == s.id|string }}>{{ s.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="form-label" style="font-size:11px">Stage</label>
+            <select name="stage">
+                <option value="">All</option>
+                {% for stage, lbl in lifecycle_labels.items() %}
+                <option value="{{ stage }}" {{ 'selected' if filters.stage == stage }}>{{ lbl[0] }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="form-label" style="font-size:11px">Tier</label>
+            <select name="tier">
+                <option value="">All</option>
+                {% for t in tiers %}
+                <option value="{{ t.id }}" {{ 'selected' if filters.tier == t.id|string }}>{{ t.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="form-label" style="font-size:11px">Account</label>
+            <select name="account_type">
+                <option value="">All</option>
+                {% for at in account_types %}
+                <option value="{{ at }}" {{ 'selected' if filters.account_type == at }}>{{ account_labels[at][0] }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="form-label" style="font-size:11px">Registered from</label>
+            <input type="date" name="from" value="{{ filters.from }}">
+        </div>
+        <div>
+            <label class="form-label" style="font-size:11px">to</label>
+            <input type="date" name="to" value="{{ filters.to }}">
+        </div>
+        <button type="submit" class="btn btn-primary">🔎 Filter</button>
+        <a href="/cco/customers" class="btn btn-ghost">Reset</a>
+    </form>
+</div>
+
+<!-- Table -->
+<div class="table-card">
+    <div class="table-scroll">
+        <table>
+            <thead>
+                <tr>
+                    <th>Company</th>
+                    <th>Contact</th>
+                    <th>Sales Manager</th>
+                    <th>Tier</th>
+                    <th>Account</th>
+                    <th>Stage</th>
+                    <th>CR No.</th>
+                    <th>Registered</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for r in rows %}
+            <tr>
+                <td class="fw6">{{ r.company_name }}
+                    <div class="text-muted" style="font-size:11px">{{ r.client_type or '—' }}</div>
+                </td>
+                <td style="font-size:12px">{{ r.contact_name }}
+                    <div class="text-muted" style="font-size:10px">{{ r.email }}</div>
+                    {% if r.contact_phone %}<div class="text-muted" style="font-size:10px">📞 {{ r.contact_phone }}</div>{% endif %}
+                </td>
+                <td style="font-size:12px">{{ r.sales_name or '—' }}</td>
+                <td><span class="badge badge-tier" style="background:{{ r.tier_color or '#64748b' }}20;color:{{ r.tier_color or '#64748b' }}">{{ r.tier_name or 'Unassigned' }}</span></td>
+                <td><span class="badge" style="background:{{ account_labels.get(r.account_type or 'prepaid', ['', '#64748b'])[1] }}20;color:{{ account_labels.get(r.account_type or 'prepaid', ['', '#64748b'])[1] }}">{{ account_labels.get(r.account_type or 'prepaid', ['Prepaid'])[0] }}</span></td>
+                <td>
+                    {% set lbl = lifecycle_labels.get(r.lifecycle, [r.lifecycle, '#64748b']) %}
+                    <span class="badge" style="background:{{ lbl[1] }}20;color:{{ lbl[1] }}">{{ lbl[0] }}</span>
+                </td>
+                <td class="text-muted" style="font-size:12px">{{ r.commercial_reg_no or '—' }}</td>
+                <td class="text-muted" style="font-size:12px">{{ r.created_at[:10] if r.created_at }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="8" style="text-align:center;padding:40px;color:var(--text-3)">No customers match these filters.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

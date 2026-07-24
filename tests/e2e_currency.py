@@ -66,7 +66,8 @@ sales = login('sales@onecard.com', 'Sales2025!')
 # Saudi market -> SAR
 em_sar = f"cur_sar_{uuid.uuid4().hex[:8]}@test.com"
 post(sales, '/sales/register', {
-    'company_name': 'SAR Market Co', 'contact_name': 'S', 'contact_email': em_sar,
+    'company_name': 'SAR Market Co ' + em_sar[7:15], 'contact_name': 'S', 'contact_email': em_sar,
+    'contact_phone': '05' + str(uuid.uuid4().int)[:8],
     'password': 'Test123!', 'expected_sales': '60000',
     'client_types': 'Retail Chain', 'countries': 'Saudi Arabia', 'display_currency': ''})
 row = q("""SELECT cp.display_currency FROM reseller_profiles cp JOIN users u ON cp.user_id=u.id
@@ -76,7 +77,8 @@ check('Saudi market -> SAR auto', row and row[0]['display_currency'] == 'SAR', s
 # Non-Saudi market -> USD
 em_usd = f"cur_usd_{uuid.uuid4().hex[:8]}@test.com"
 post(sales, '/sales/register', {
-    'company_name': 'USD Market Co', 'contact_name': 'U', 'contact_email': em_usd,
+    'company_name': 'USD Market Co ' + em_usd[7:15], 'contact_name': 'U', 'contact_email': em_usd,
+    'contact_phone': '05' + str(uuid.uuid4().int)[:8],
     'password': 'Test123!', 'expected_sales': '60000',
     'client_types': 'Gaming Store', 'countries': ['Egypt', 'UAE'], 'display_currency': ''})
 usd_rid = q("""SELECT cp.id, cp.display_currency FROM reseller_profiles cp JOIN users u ON cp.user_id=u.id
@@ -86,7 +88,8 @@ check('non-Saudi market -> USD auto', usd_rid['display_currency'] == 'USD')
 # explicit override honored
 em_ov = f"cur_ov_{uuid.uuid4().hex[:8]}@test.com"
 post(sales, '/sales/register', {
-    'company_name': 'Override Co', 'contact_name': 'O', 'contact_email': em_ov,
+    'company_name': 'Override Co ' + em_ov[6:14], 'contact_name': 'O', 'contact_email': em_ov,
+    'contact_phone': '05' + str(uuid.uuid4().int)[:8],
     'password': 'Test123!', 'expected_sales': '60000',
     'client_types': 'Bank', 'countries': 'Egypt', 'display_currency': 'SAR'})
 ovrow = q("""SELECT cp.display_currency FROM reseller_profiles cp JOIN users u ON cp.user_id=u.id

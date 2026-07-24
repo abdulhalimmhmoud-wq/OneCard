@@ -86,7 +86,8 @@ def items(unit_price, qty=1):
 sales = login('sales@onecard.com', 'Sales2025!')
 sales_uid = q("SELECT id FROM users WHERE email='sales@onecard.com'")[0]['id']
 em = f"v14_{uuid.uuid4().hex[:8]}@test.com"
-post(sales, '/sales/register', {'company_name': 'V14 Credit Co', 'contact_name': 'T',
+post(sales, '/sales/register', {'company_name': 'V14 Credit Co ' + em[4:12], 'contact_name': 'T',
+     'contact_phone': '05' + str(uuid.uuid4().int)[:8],
      'contact_email': em, 'password': 'Test123!', 'expected_sales': '80000',
      'client_types': 'Retail Chain', 'countries': 'Saudi Arabia'})
 rid = q("SELECT cp.id FROM reseller_profiles cp JOIN users u ON cp.user_id=u.id WHERE u.email=?", em)[0]['id']

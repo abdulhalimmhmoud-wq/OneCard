@@ -524,9 +524,19 @@ def sales_contract_upload(rid):
     billing_cycle = request.form.get('billing_cycle', 'monthly')
     if billing_cycle not in models.BILLING_CYCLES:
         billing_cycle = 'monthly'
+    # v17 CRM: the commercial registration number is the customer's primary
+    # identifier, usually captured here at contract time. Guard against another
+    # customer already using the same CR.
+    crn = (request.form.get('commercial_reg_no') or '').strip()
+    if crn:
+        dup = models.find_duplicate_reseller(commercial_reg_no=crn, exclude_id=rid)
+        if dup:
+            flash(f"Commercial registration number already belongs to "
+                  f"'{dup['company_name']}' ({dup['sales_name'] or 'another manager'}).", "error")
+            return redirect(request.referrer or url_for('sales_resellers'))
     cid = models.create_contract(rid, curr['id'], fname, account_type, credit_limit,
                                  disbursement, credit_tranche, terms_days, billing_cycle,
-                                 request.form.get('note', ''))
+                                 request.form.get('note', ''), commercial_reg_no=crn)
     models.notify(profile['user_id'], "Your contract is ready to sign ✍️",
                   "Your account manager sent a contract to review and sign. Open it in your "
                   "portal, sign it, and upload the signed copy.", "/reseller/contract")
@@ -590,9 +600,10 @@ def sales_dashboard():
 @auth.sales_required
 def sales_register():
     if request.method == 'POST':
-        comp = request.form.get('company_name')
+        comp = (request.form.get('company_name') or '').strip()
         cname = request.form.get('contact_name')
-        cemail = request.form.get('contact_email')
+        cemail = (request.form.get('contact_email') or '').strip()
+        cphone = (request.form.get('contact_phone') or '').strip()
         pw = request.form.get('password')
         sales = float(request.form.get('expected_sales') or 0)
         notes = request.form.get('notes', '')
@@ -605,17 +616,27 @@ def sales_register():
         assigned = models.auto_assign_tier(sales)
         tier_id = assigned['id'] if assigned else None
 
-        uid = models.create_user(cemail, pw, cname, 'reseller')
-        if uid:
-            curr = auth.get_current_user()
-            models.create_reseller(uid, comp, sales, tier_id, curr['id'], notes,
-                                   client_types=client_types, countries=countries,
-                                   display_currency=display_currency)
-            flash(f"Reseller '{comp}' registered successfully with "
-                  f"'{assigned['name'] if assigned else 'None'}' plan.", "success")
-            return redirect(url_for('sales_dashboard'))
+        # v17 CRM: block a second registration of the same customer (a customer
+        # may reach two sales managers who don't know about each other).
+        dup = models.find_duplicate_reseller(email=cemail, company_name=comp, phone=cphone)
+        if not cphone:
+            flash("Please enter the contact person's phone number.", "error")
+        elif dup:
+            flash(f"This customer is already registered (matched on {dup['matched']}) as "
+                  f"'{dup['company_name']}' under {dup['sales_name'] or 'another manager'}. "
+                  f"Please coordinate with your team / CCO.", "error")
         else:
-            flash("Reseller email address is already in use.", "error")
+            uid = models.create_user(cemail, pw, cname, 'reseller')
+            if uid:
+                curr = auth.get_current_user()
+                models.create_reseller(uid, comp, sales, tier_id, curr['id'], notes,
+                                       client_types=client_types, countries=countries,
+                                       display_currency=display_currency, contact_phone=cphone)
+                flash(f"Reseller '{comp}' registered successfully with "
+                      f"'{assigned['name'] if assigned else 'None'}' plan.", "success")
+                return redirect(url_for('sales_dashboard'))
+            else:
+                flash("Reseller email address is already in use.", "error")
 
     tiers = models.get_all_tiers()
     tiers_json = jdump([dict(t) for t in tiers])
@@ -896,6 +917,74 @@ def cco_credit():
     return render_template('cco/credit.html', active_tab='cco_credit',
                            exposure=models.get_credit_exposure(),
                            credit_requests=models.get_pending_credit_requests())
+
+
+@app.route('/cco/customers')
+@auth.cco_required
+def cco_customers():
+    """CRM tracking board: every registered customer across all sales managers,
+    with filters + a dashboard so the CCO can see the whole book at a glance."""
+    resellers = models.get_all_resellers()
+
+    # ── filters (all optional, combine with AND) ──
+    f_sales = request.args.get('sales', '').strip()
+    f_stage = request.args.get('stage', '').strip()
+    f_tier = request.args.get('tier', '').strip()
+    f_type = request.args.get('account_type', '').strip()
+    f_from = request.args.get('from', '').strip()
+    f_to = request.args.get('to', '').strip()
+    f_q = request.args.get('q', '').strip().lower()
+
+    def keep(r):
+        if f_sales and str(r.get('registered_by')) != f_sales:
+            return False
+        if f_stage and r.get('lifecycle') != f_stage:
+            return False
+        if f_tier and str(r.get('assigned_tier_id') or '') != f_tier:
+            return False
+        if f_type and (r.get('account_type') or 'prepaid') != f_type:
+            return False
+        created = (r.get('created_at') or '')[:10]
+        if f_from and created < f_from:
+            return False
+        if f_to and created > f_to:
+            return False
+        if f_q:
+            hay = ' '.join(str(r.get(k) or '') for k in
+                           ('company_name', 'email', 'contact_name', 'contact_phone',
+                            'commercial_reg_no')).lower()
+            if f_q not in hay:
+                return False
+        return True
+
+    rows = [r for r in resellers if keep(r)]
+
+    # ── dashboard KPIs on the filtered set ──
+    ym = models.datetime.now(models.timezone.utc).strftime('%Y-%m')
+    stats = {
+        'total': len(rows),
+        'by_stage': {}, 'by_type': {}, 'by_tier': {},
+        'new_this_month': sum(1 for r in rows if (r.get('created_at') or '')[:7] == ym),
+        'with_contract': sum(1 for r in rows if r.get('contract_status') == 'contracted'),
+        'with_cr': sum(1 for r in rows if r.get('commercial_reg_no')),
+        'exposure': round(sum((r.get('wallet_balance') or 0) + (r.get('credit_outstanding') or 0) for r in rows)),
+    }
+    for r in rows:
+        stats['by_stage'][r.get('lifecycle')] = stats['by_stage'].get(r.get('lifecycle'), 0) + 1
+        at = r.get('account_type') or 'prepaid'
+        stats['by_type'][at] = stats['by_type'].get(at, 0) + 1
+        tn = r.get('tier_name') or 'Unassigned'
+        stats['by_tier'][tn] = stats['by_tier'].get(tn, 0) + 1
+
+    return render_template('cco/customers.html', active_tab='cco_customers',
+                           rows=rows, stats=stats, total_all=len(resellers),
+                           sales_users=models.get_all_users('sales'),
+                           tiers=models.get_all_tiers(),
+                           account_types=models.ACCOUNT_TYPES,
+                           account_labels=models.ACCOUNT_TYPE_LABELS,
+                           lifecycle_labels=models.LIFECYCLE_LABELS,
+                           filters={'sales': f_sales, 'stage': f_stage, 'tier': f_tier,
+                                    'account_type': f_type, 'from': f_from, 'to': f_to, 'q': f_q})
 
 
 # ── Finance Routes ───────────────────────────────────────────────

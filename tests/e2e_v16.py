@@ -66,7 +66,8 @@ HOOK = f"http://127.0.0.1:{port}/hook"
 sales = login('sales@onecard.com', 'Sales2025!')
 em = f"v16_{uuid.uuid4().hex[:8]}@test.com"
 sales.open(BASE + '/sales/register', data=urllib.parse.urlencode({
-    'company_name': 'V16 Hook Co', 'contact_name': 'H', 'contact_email': em,
+    'company_name': 'V16 Hook Co ' + em[4:12], 'contact_name': 'H', 'contact_email': em,
+    'contact_phone': '05' + str(uuid.uuid4().int)[:8],
     'password': 'Test123!', 'expected_sales': '80000', 'client_types': 'Retail Chain',
     'countries': 'Saudi Arabia', '_csrf': sales._csrf}).encode())
 rid = q("SELECT cp.id FROM reseller_profiles cp JOIN users u ON cp.user_id=u.id WHERE u.email=?", em)[0]['id']
@@ -121,7 +122,8 @@ check('gives up after WEBHOOK_MAX_ATTEMPTS -> failed',
 # ── 6. no webhook URL -> nothing enqueued ──
 em2 = f"v16b_{uuid.uuid4().hex[:8]}@test.com"
 sales.open(BASE + '/sales/register', data=urllib.parse.urlencode({
-    'company_name': 'V16 NoHook', 'contact_name': 'N', 'contact_email': em2,
+    'company_name': 'V16 NoHook ' + em2[5:13], 'contact_name': 'N', 'contact_email': em2,
+    'contact_phone': '05' + str(uuid.uuid4().int)[:8],
     'password': 'Test123!', 'expected_sales': '50000', 'client_types': 'Retail Chain',
     'countries': 'Saudi Arabia', '_csrf': sales._csrf}).encode())
 rid2 = q("SELECT cp.id FROM reseller_profiles cp JOIN users u ON cp.user_id=u.id WHERE u.email=?", em2)[0]['id']

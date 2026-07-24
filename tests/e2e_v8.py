@@ -73,7 +73,8 @@ check('canonical categories present', 'Health &amp; Fitness' in b or 'Health & F
 # ── 3. Multi client types ──
 email = f"v8_{uuid.uuid4().hex[:8]}@test.com"
 s, b = post(sales, '/sales/register', {
-    'company_name': 'V8 Multi Co', 'contact_name': 'T', 'contact_email': email,
+    'company_name': 'V8 Multi Co ' + email[3:11], 'contact_name': 'T', 'contact_email': email,
+    'contact_phone': '05' + str(uuid.uuid4().int)[:8],
     'password': 'Test123!', 'expected_sales': '80000',
     'client_types': ['Bank', 'Fintech / Wallet'], 'countries': 'Saudi Arabia'})
 check('registered with 2 client types', 'registered successfully' in b)

@@ -686,6 +686,11 @@ def migrate_db():
         'credit_limit_base': "ALTER TABLE reseller_profiles ADD COLUMN credit_limit_base REAL NOT NULL DEFAULT 0",
         'credit_temp_until': "ALTER TABLE reseller_profiles ADD COLUMN credit_temp_until TEXT",
         'last_statement_at': "ALTER TABLE reseller_profiles ADD COLUMN last_statement_at TEXT",
+        # v17 (CRM): contact phone (captured at registration) + commercial
+        # registration number (the customer's primary identifier, captured at
+        # contract time). Both also power duplicate-customer prevention.
+        'contact_phone': "ALTER TABLE reseller_profiles ADD COLUMN contact_phone TEXT",
+        'commercial_reg_no': "ALTER TABLE reseller_profiles ADD COLUMN commercial_reg_no TEXT",
     }
     just_added_display_cur = 'display_currency' not in cols
     just_added_suspend = 'auto_suspend_at' not in cols
@@ -834,6 +839,12 @@ def migrate_db():
     if 'statement_id' not in wtcols:
         conn.execute("ALTER TABLE wallet_transactions ADD COLUMN statement_id INTEGER")
     conn.commit()
+
+    # v17 (CRM): commercial registration number captured on the contract
+    ctcols = {r['name'] for r in conn.execute("PRAGMA table_info(contracts)")}
+    if 'commercial_reg_no' not in ctcols:
+        conn.execute("ALTER TABLE contracts ADD COLUMN commercial_reg_no TEXT")
+        conn.commit()
 
     # 7b. v8.1: partner portal login link
     ipcols = {r['name'] for r in conn.execute("PRAGMA table_info(issuing_partners)")}
@@ -1031,9 +1042,60 @@ def next_lower_tier(current_tier_id):
 
 # ── Reseller Profiles ─────────────────────────────────────────────
 
+# ── Customer de-duplication (v17 CRM) ────────────────────────────
+# A customer may approach two sales managers who don't know about each other.
+# We block a second registration that collides on any strong identifier —
+# email, company name, phone, or commercial registration number.
+
+def _norm_company(v):
+    return ' '.join((v or '').lower().split())
+
+
+def _norm_phone(v):
+    digits = ''.join(ch for ch in (v or '') if ch.isdigit())
+    return digits[-9:] if len(digits) >= 9 else digits   # ignore country-code prefixes
+
+
+def _norm_id(v):
+    return ''.join((v or '').split()).lower()
+
+
+def find_duplicate_reseller(email=None, company_name=None, phone=None,
+                            commercial_reg_no=None, exclude_id=None):
+    """Return the first existing customer that collides on a strong identifier,
+    as {matched, company_name, sales_name, reseller_id}, else None."""
+    conn = get_db()
+    rows = conn.execute("""SELECT cp.id, cp.company_name, cp.contact_phone, cp.commercial_reg_no,
+                                  u.email, su.name as sales_name
+                           FROM reseller_profiles cp
+                           JOIN users u ON cp.user_id=u.id
+                           LEFT JOIN users su ON cp.registered_by=su.id""").fetchall()
+    conn.close()
+    email_n = (email or '').lower().strip()
+    comp_n = _norm_company(company_name)
+    phone_n = _norm_phone(phone)
+    crn_n = _norm_id(commercial_reg_no)
+    for r in rows:
+        if exclude_id and r['id'] == exclude_id:
+            continue
+        matched = None
+        if email_n and r['email'] and r['email'].lower() == email_n:
+            matched = 'email'
+        elif comp_n and _norm_company(r['company_name']) == comp_n:
+            matched = 'company name'
+        elif phone_n and _norm_phone(r['contact_phone']) == phone_n:
+            matched = 'phone number'
+        elif crn_n and _norm_id(r['commercial_reg_no']) == crn_n:
+            matched = 'commercial registration number'
+        if matched:
+            return {'matched': matched, 'company_name': r['company_name'],
+                    'sales_name': r['sales_name'], 'reseller_id': r['id']}
+    return None
+
+
 def create_reseller(user_id, company_name, expected_sales, tier_id, registered_by,
                     notes='', client_type='', countries=None, client_types=None,
-                    display_currency=None):
+                    display_currency=None, contact_phone=None):
     """client_types: list (v8 multi-select). client_type stays as the primary/legacy value.
     display_currency (v11): defaults to the one derived from the reseller's markets."""
     types = [t for t in (client_types or ([client_type] if client_type else [])) if t]
@@ -1042,10 +1104,11 @@ def create_reseller(user_id, company_name, expected_sales, tier_id, registered_b
     conn = get_db()
     conn.execute("""INSERT INTO reseller_profiles
                     (user_id, company_name, expected_monthly_sales, assigned_tier_id,
-                     registered_by, notes, client_type, display_currency, auto_suspend_at)
-                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                     registered_by, notes, client_type, display_currency, auto_suspend_at,
+                     contact_phone)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
                  (user_id, company_name, expected_sales, tier_id, registered_by, notes,
-                  primary, disp, _suspend_deadline()))
+                  primary, disp, _suspend_deadline(), (contact_phone or '').strip() or None))
     reseller_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     for c in (countries or []):
         conn.execute("INSERT INTO reseller_countries (reseller_id, country) VALUES (?,?)", (reseller_id, c))
@@ -1238,7 +1301,7 @@ def run_prospect_suspension():
 
 
 def update_reseller_profile(reseller_id, client_type=None, countries=None, expected_sales=None,
-                            display_currency=None):
+                            display_currency=None, contact_phone=None, commercial_reg_no=None):
     conn = get_db()
     if client_type is not None:
         conn.execute("UPDATE reseller_profiles SET client_type=? WHERE id=?", (client_type, reseller_id))
@@ -1246,6 +1309,12 @@ def update_reseller_profile(reseller_id, client_type=None, countries=None, expec
         conn.execute("UPDATE reseller_profiles SET expected_monthly_sales=? WHERE id=?", (expected_sales, reseller_id))
     if display_currency in DISPLAY_CURRENCIES:
         conn.execute("UPDATE reseller_profiles SET display_currency=? WHERE id=?", (display_currency, reseller_id))
+    if contact_phone is not None:
+        conn.execute("UPDATE reseller_profiles SET contact_phone=? WHERE id=?",
+                     ((contact_phone or '').strip() or None, reseller_id))
+    if commercial_reg_no is not None:
+        conn.execute("UPDATE reseller_profiles SET commercial_reg_no=? WHERE id=?",
+                     ((commercial_reg_no or '').strip() or None, reseller_id))
     if countries is not None:
         conn.execute("DELETE FROM reseller_countries WHERE reseller_id=?", (reseller_id,))
         for c in countries:
@@ -1266,24 +1335,32 @@ def log_contract_event(contract_id, actor_id, event, note=''):
 
 def create_contract(reseller_id, uploaded_by, file_draft, account_type='prepaid',
                     credit_limit=0, credit_disbursement='full', credit_tranche=0,
-                    settlement_terms_days=30, billing_cycle='monthly', note=''):
-    """Sales uploads a draft contract with the proposed commercial terms."""
+                    settlement_terms_days=30, billing_cycle='monthly', note='',
+                    commercial_reg_no=None):
+    """Sales uploads a draft contract with the proposed commercial terms. The
+    commercial registration number (the customer's primary identifier) is
+    usually captured here, at contract time, and copied onto the profile."""
     if account_type not in ACCOUNT_TYPES:
         account_type = 'prepaid'
+    crn = (commercial_reg_no or '').strip() or None
     conn = get_db()
     conn.execute("""INSERT INTO contracts
                     (reseller_id, uploaded_by, file_draft, status, account_type, credit_limit,
-                     credit_disbursement, credit_tranche, settlement_terms_days, billing_cycle, note)
-                    VALUES (?,?,?,'sent',?,?,?,?,?,?,?)""",
+                     credit_disbursement, credit_tranche, settlement_terms_days, billing_cycle,
+                     note, commercial_reg_no)
+                    VALUES (?,?,?,'sent',?,?,?,?,?,?,?,?)""",
                  (reseller_id, uploaded_by, file_draft, account_type, credit_limit or 0,
                   credit_disbursement, credit_tranche or 0, settlement_terms_days or 30,
-                  billing_cycle, note))
+                  billing_cycle, note, crn))
     cid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    if crn:
+        conn.execute("UPDATE reseller_profiles SET commercial_reg_no=? WHERE id=?", (crn, reseller_id))
     conn.commit()
     conn.close()
     log_contract_event(cid, uploaded_by, 'sent',
                        f'Draft sent · {account_type}'
-                       + (f' · limit {credit_limit:,.0f} SAR' if account_type != 'prepaid' else ''))
+                       + (f' · limit {credit_limit:,.0f} SAR' if account_type != 'prepaid' else '')
+                       + (f' · CR {crn}' if crn else ''))
     return cid
 
 

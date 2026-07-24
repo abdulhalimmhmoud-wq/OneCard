@@ -72,7 +72,8 @@ def execu(sql, *a):
 # ── set up a consignment reseller with an API key ──
 sales = login('sales@onecard.com', 'Sales2025!')
 em = f"v15_{uuid.uuid4().hex[:8]}@test.com"
-post(sales, '/sales/register', {'company_name': 'V15 Bank Consign', 'contact_name': 'B',
+post(sales, '/sales/register', {'company_name': 'V15 Bank Consign ' + em[4:12], 'contact_name': 'B',
+     'contact_phone': '05' + str(uuid.uuid4().int)[:8],
      'contact_email': em, 'password': 'Test123!', 'expected_sales': '90000',
      'client_types': 'Bank', 'countries': 'Saudi Arabia'})
 rid = q("SELECT cp.id FROM reseller_profiles cp JOIN users u ON cp.user_id=u.id WHERE u.email=?", em)[0]['id']
@@ -134,7 +135,8 @@ check('ops page lists the consignment account + API channel',
 
 # ── 7. a CREDIT (staged) client pulls card-by-card via the API too ──
 em2 = f"v15c_{uuid.uuid4().hex[:8]}@test.com"
-post(sales, '/sales/register', {'company_name': 'V15 Credit API', 'contact_name': 'C',
+post(sales, '/sales/register', {'company_name': 'V15 Credit API ' + em2[5:13], 'contact_name': 'C',
+     'contact_phone': '05' + str(uuid.uuid4().int)[:8],
      'contact_email': em2, 'password': 'Test123!', 'expected_sales': '90000',
      'client_types': 'Retail Chain', 'countries': 'Saudi Arabia'})
 rid2 = q("SELECT cp.id FROM reseller_profiles cp JOIN users u ON cp.user_id=u.id WHERE u.email=?", em2)[0]['id']
