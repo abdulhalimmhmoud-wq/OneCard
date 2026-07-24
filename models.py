@@ -379,6 +379,16 @@ def init_db():
             UNIQUE(reseller_id, merchant)
         );
 
+        -- v18: merchants hidden from a specific reseller's catalogue (e.g. a
+        -- competitor of that reseller). Products of these merchants are removed
+        -- from everything that reseller sees (portal, API, recommended, forecast).
+        CREATE TABLE IF NOT EXISTS reseller_hidden_merchants (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reseller_id INTEGER NOT NULL REFERENCES reseller_profiles(id) ON DELETE CASCADE,
+            merchant TEXT NOT NULL,
+            UNIQUE(reseller_id, merchant)
+        );
+
         -- ── v4: Notifications ─────────────────────────────────
         CREATE TABLE IF NOT EXISTS notifications (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1095,9 +1105,10 @@ def find_duplicate_reseller(email=None, company_name=None, phone=None,
 
 def create_reseller(user_id, company_name, expected_sales, tier_id, registered_by,
                     notes='', client_type='', countries=None, client_types=None,
-                    display_currency=None, contact_phone=None):
+                    display_currency=None, contact_phone=None, hidden_merchants=None):
     """client_types: list (v8 multi-select). client_type stays as the primary/legacy value.
-    display_currency (v11): defaults to the one derived from the reseller's markets."""
+    display_currency (v11): defaults to the one derived from the reseller's markets.
+    hidden_merchants (v18): merchants this reseller should never see (e.g. competitors)."""
     types = [t for t in (client_types or ([client_type] if client_type else [])) if t]
     primary = types[0] if types else (client_type or '')
     disp = display_currency or derive_display_currency(countries or [])
@@ -1115,9 +1126,25 @@ def create_reseller(user_id, company_name, expected_sales, tier_id, registered_b
     for t in types:
         conn.execute("INSERT OR IGNORE INTO reseller_client_types (reseller_id, client_type) VALUES (?,?)",
                      (reseller_id, t))
+    for mrc in (hidden_merchants or []):
+        if mrc:
+            conn.execute("INSERT OR IGNORE INTO reseller_hidden_merchants (reseller_id, merchant) VALUES (?,?)",
+                         (reseller_id, mrc))
     conn.commit()
     conn.close()
     return reseller_id
+
+
+def set_reseller_hidden_merchants(reseller_id, merchants):
+    """Replace the reseller's hidden-merchant set (Sales edits this later)."""
+    conn = get_db()
+    conn.execute("DELETE FROM reseller_hidden_merchants WHERE reseller_id=?", (reseller_id,))
+    for mrc in (merchants or []):
+        if mrc:
+            conn.execute("INSERT OR IGNORE INTO reseller_hidden_merchants (reseller_id, merchant) VALUES (?,?)",
+                         (reseller_id, mrc))
+    conn.commit()
+    conn.close()
 
 
 def get_reseller_profile(user_id):
@@ -1133,6 +1160,8 @@ def get_reseller_profile(user_id):
         "SELECT client_type FROM reseller_client_types WHERE reseller_id=?", (p['id'],))]
     if not p['client_types'] and p.get('client_type'):
         p['client_types'] = [p['client_type']]
+    p['hidden_merchants'] = [r['merchant'] for r in conn.execute(
+        "SELECT merchant FROM reseller_hidden_merchants WHERE reseller_id=?", (p['id'],))]
     if profile['assigned_tier_id']:
         tier = conn.execute("SELECT * FROM tier_rules WHERE id=?", (profile['assigned_tier_id'],)).fetchone()
         p['tier'] = dict(tier) if tier else None
@@ -1531,10 +1560,15 @@ def enrich_products_for_reseller(profile, products=None):
     base_share = (tier['margin_share_pct'] / 100.0) if tier else 0.20
     overrides = profile.get('overrides', {})
     display_cur = profile.get('display_currency') or 'SAR'
+    # v18: merchants hidden from this reseller (e.g. their competitors) are
+    # removed from everything they see.
+    hidden = set(profile.get('hidden_merchants') or [])
     rates = get_fx_rates()
 
     enriched = []
     for p in products:
+        if p['merchant'] in hidden:
+            continue
         share = overrides.get(p['merchant'], None)
         share = (share / 100.0) if share is not None else base_share
         disc = p['oc_margin'] * share
@@ -1569,6 +1603,40 @@ def get_reseller_products(user_id):
     if not profile:
         return [], None
     return enrich_products_for_reseller(profile), profile
+
+
+def get_merchant_pricing_for_reseller(reseller_id, merchant):
+    """Everything the discount calculator needs for one merchant + reseller, in
+    the reseller's DISPLAY currency. Because pricing is linear
+    (client_price = default - oc_margin*share, floored at cost), the calculator
+    can invert it live in the browser: share = (default - target) / oc_margin.
+    Returns {display_currency, base_share_pct, current_share_pct, products:[...]}."""
+    profile = get_reseller_profile_by_id(reseller_id)
+    if not profile:
+        return None
+    disp = profile['display_currency'] or 'SAR'
+    rates = get_fx_rates()
+    tier = profile.get('tier')
+    base_share = (tier['margin_share_pct'] if tier else 20)
+    override = profile.get('overrides', {}).get(merchant)
+    current_share = override if override is not None else base_share
+    prods = []
+    for p in get_products(merchant=merchant):
+        m = convert_amount(1.0, p['currency'], disp, rates)   # orig -> display multiplier
+        if p['oc_margin'] <= 0:
+            continue   # nothing to discount on this line
+        default_d = round(p['default_price'] * m, 4)
+        cost_d = round(p['cost'] * m, 4)
+        margin_d = round(p['oc_margin'] * m, 4)
+        cur_price = max(p['default_price'] - p['oc_margin'] * (current_share / 100.0), p['cost'])
+        prods.append({
+            'name': p['product_name'], 'face_value': round(p['face_value'] * m),
+            'default_price': default_d, 'cost': cost_d, 'oc_margin': margin_d,
+            'current_price': round(cur_price * m),
+        })
+    return {'display_currency': disp, 'base_share_pct': round(base_share, 1),
+            'current_share_pct': round(current_share, 1),
+            'merchant': merchant, 'products': prods}
 
 
 def get_all_regions():

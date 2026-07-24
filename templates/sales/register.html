@@ -61,6 +61,18 @@
             </div>
             <div class="form-hint">Select every market where the reseller sells. Recommendations prioritize these countries.</div>
         </div>
+        <div class="form-group">
+            <label class="form-label">Hide Merchants <span class="text-muted" style="font-weight:400;font-size:11px">— optional (e.g. the client's competitors)</span></label>
+            <input type="text" placeholder="Filter merchants..." oninput="filterHideMerchants(this.value)" style="margin-bottom:6px">
+            <div id="hideMerchantsBox" style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px;background:var(--bg-2);display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:4px">
+                {% for m in merchants %}
+                <label class="hm-item" style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding:3px 6px;border-radius:6px">
+                    <input type="checkbox" name="hidden_merchants" value="{{ m.merchant }}" style="width:auto"> {{ m.merchant }}
+                </label>
+                {% endfor %}
+            </div>
+            <div class="form-hint">Products from any merchant you tick here are removed from this client's catalogue, API and recommendations.</div>
+        </div>
 
         <div class="form-group">
             <label class="form-label">Catalogue Currency</label>
@@ -133,5 +145,12 @@ function updateTierPreview() {
 }
 
 document.getElementById('salesInput').addEventListener('input', updateTierPreview);
+
+function filterHideMerchants(term) {
+    term = (term || '').toLowerCase();
+    document.querySelectorAll('#hideMerchantsBox .hm-item').forEach(function (el) {
+        el.style.display = el.textContent.toLowerCase().includes(term) ? 'flex' : 'none';
+    });
+}
 </script>
 {% endblock %}

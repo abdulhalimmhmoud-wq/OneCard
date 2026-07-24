@@ -16,7 +16,7 @@
         <form method="POST" action="/sales/discounts">
             <div class="form-group">
                 <label class="form-label">Reseller *</label>
-                <select name="reseller_id" id="drReseller" required onchange="updatePreview()">
+                <select name="reseller_id" id="drReseller" required onchange="updatePreview();loadMerchantPricing()">
                     <option value="">-- Select reseller --</option>
                     {% for r in resellers %}
                     <option value="{{ r.id }}">{{ r.company_name }} ({{ r.tier_name or 'No plan' }})</option>
@@ -25,7 +25,7 @@
             </div>
             <div class="form-group">
                 <label class="form-label">Merchant *</label>
-                <select name="merchant" id="drMerchant" required onchange="updatePreview()">
+                <select name="merchant" id="drMerchant" required onchange="updatePreview();loadMerchantPricing()">
                     <option value="">-- Select merchant --</option>
                     {% for m in merchants %}
                     <option value="{{ m.merchant }}">{{ m.merchant }}</option>
@@ -37,6 +37,36 @@
                     <label class="form-label">Requested Margin Share % *</label>
                     <input type="number" name="requested_share" id="drShare" required min="1" max="95" step="1" placeholder="e.g. 70" oninput="updatePreview()">
                     <div class="form-hint">Current share: <span id="drCurrentShare">—</span></div>
+                </div>
+            </div>
+
+            <!-- Price ↔ discount calculator -->
+            <div class="card" style="background:var(--bg-2);border:1px dashed var(--border)">
+                <div style="font-size:13px;font-weight:600;margin-bottom:6px">💡 Price ↔ Discount Calculator <span class="text-muted" id="calcCur"></span></div>
+                <div id="calcHint" class="text-muted" style="font-size:12px">Select a reseller and a merchant to load its product prices.</div>
+                <div id="calcBody" style="display:none">
+                    <div class="text-muted" style="font-size:12px;margin-bottom:6px">
+                        The client wants a target buy-price? Enter it — we compute the margin share needed.
+                        Prices are in <b id="calcCur2"></b> and apply to <b>every</b> product of this merchant.
+                    </div>
+                    <div class="form-row" style="gap:8px;align-items:end">
+                        <div class="form-group" style="flex:2;margin-bottom:8px">
+                            <label class="form-label" style="font-size:11px">Product</label>
+                            <select id="calcProduct" onchange="calcRender()"></select>
+                        </div>
+                        <div class="form-group" style="flex:1;margin-bottom:8px">
+                            <label class="form-label" style="font-size:11px">Target price</label>
+                            <input type="number" id="calcTarget" step="0.5" placeholder="e.g. 20" min="0">
+                        </div>
+                        <div class="form-group" style="margin-bottom:8px">
+                            <button type="button" class="btn btn-sm btn-primary" onclick="calcFromTarget()">→ % needed</button>
+                        </div>
+                    </div>
+                    <div id="calcResult" class="text-muted" style="font-size:12px;margin-bottom:6px"></div>
+                    <div class="table-scroll" style="max-height:200px;overflow-y:auto">
+                        <table style="font-size:12px"><thead><tr><th>Product</th><th>Current</th><th>New @ share</th><th>vs cost</th></tr></thead>
+                        <tbody id="calcTable"></tbody></table>
+                    </div>
                 </div>
             </div>
             <div class="form-row">
@@ -129,6 +159,67 @@ function updatePreview() {
         OneCard profit now: <b>${fmt(profitNow)} SAR</b> (share ${Math.round(r.share)}%, sales ${fmt(curSales)})<br>
         OneCard profit after: <b>${fmt(profitAfter)} SAR</b> (share ${Math.round(reqShare)}%, sales ${fmt(projSales)})<br>
         Impact: <b class="${cls}">${sign}${fmt(delta)} SAR / month</b>`;
+    calcRender();
+}
+
+// ── Price ↔ discount calculator ──
+let calcData = null;
+function loadMerchantPricing() {
+    const rid = document.getElementById('drReseller').value;
+    const merch = document.getElementById('drMerchant').value;
+    const body = document.getElementById('calcBody');
+    const hint = document.getElementById('calcHint');
+    if (!rid || !merch) { calcData = null; body.style.display = 'none'; hint.style.display = 'block'; return; }
+    hint.textContent = 'Loading prices…'; hint.style.display = 'block';
+    fetch(`/sales/merchant-pricing?reseller_id=${rid}&merchant=${encodeURIComponent(merch)}`)
+        .then(r => r.json())
+        .then(d => {
+            if (d.error || !d.products || !d.products.length) {
+                calcData = null; body.style.display = 'none';
+                hint.textContent = 'No priceable products for this merchant.'; return;
+            }
+            calcData = d;
+            document.getElementById('calcCur').textContent = `(${d.display_currency})`;
+            document.getElementById('calcCur2').textContent = d.display_currency;
+            const sel = document.getElementById('calcProduct');
+            sel.innerHTML = d.products.map((p, i) => `<option value="${i}">${p.name}</option>`).join('');
+            hint.style.display = 'none'; body.style.display = 'block';
+            calcRender();
+        })
+        .catch(() => { calcData = null; body.style.display = 'none'; hint.textContent = 'Could not load prices.'; });
+}
+
+function priceAt(p, share) {   // share in %
+    return Math.max(p.default_price - p.oc_margin * (share / 100), p.cost);
+}
+
+function calcFromTarget() {
+    if (!calcData) return;
+    const p = calcData.products[parseInt(document.getElementById('calcProduct').value) || 0];
+    const target = parseFloat(document.getElementById('calcTarget').value);
+    const res = document.getElementById('calcResult');
+    if (!p || isNaN(target)) { res.textContent = 'Enter a target price.'; return; }
+    let share = (p.default_price - target) / p.oc_margin * 100;
+    let note = '';
+    if (target < p.cost) { note = ` ⚠️ below our cost (${p.cost.toFixed(2)}) — capped at 100%.`; }
+    share = Math.max(0, Math.min(100, share));
+    document.getElementById('drShare').value = Math.round(share);
+    res.innerHTML = `To sell <b>${p.name}</b> at <b>${target} ${calcData.display_currency}</b> you need a margin share of ` +
+        `<b class="text-accent">${share.toFixed(1)}%</b> (currently ${calcData.current_share_pct}%).${note}`;
+    calcRender();
+}
+
+function calcRender() {
+    if (!calcData) return;
+    const share = parseFloat(document.getElementById('drShare').value) || calcData.current_share_pct;
+    const cur = calcData.display_currency;
+    document.getElementById('calcTable').innerHTML = calcData.products.map(p => {
+        const np = Math.round(priceAt(p, share));
+        const atCost = np <= Math.ceil(p.cost) + 0.01;
+        return `<tr><td>${p.name}</td><td>${p.current_price} ${cur}</td>` +
+            `<td class="fw6 ${np < p.current_price ? 'text-accent' : ''}">${np} ${cur}</td>` +
+            `<td class="${atCost ? 'text-d' : 'text-muted'}">${atCost ? 'at cost' : '+' + Math.round(np - p.cost)}</td></tr>`;
+    }).join('');
 }
 </script>
 {% endblock %}

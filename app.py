@@ -609,6 +609,7 @@ def sales_register():
         notes = request.form.get('notes', '')
         client_types = request.form.getlist('client_types')
         countries = request.form.getlist('countries')
+        hidden_merchants = request.form.getlist('hidden_merchants')
         # Currency the reseller sees everything in. Default derives from their
         # markets; the form lets the sales manager override it explicitly.
         display_currency = request.form.get('display_currency') or None
@@ -631,7 +632,8 @@ def sales_register():
                 curr = auth.get_current_user()
                 models.create_reseller(uid, comp, sales, tier_id, curr['id'], notes,
                                        client_types=client_types, countries=countries,
-                                       display_currency=display_currency, contact_phone=cphone)
+                                       display_currency=display_currency, contact_phone=cphone,
+                                       hidden_merchants=hidden_merchants)
                 flash(f"Reseller '{comp}' registered successfully with "
                       f"'{assigned['name'] if assigned else 'None'}' plan.", "success")
                 return redirect(url_for('sales_dashboard'))
@@ -644,6 +646,7 @@ def sales_register():
                            tiers_json=tiers_json,
                            client_types=models.CLIENT_TYPES,
                            display_currencies=models.DISPLAY_CURRENCIES,
+                           merchants=models.get_all_merchants(),
                            countries=models.get_all_countries())
 
 
@@ -656,10 +659,45 @@ def sales_resellers():
         r['contract'] = models.get_latest_contract(r['id'])
         r['account_type_needs_cco'] = (models.contract_needs_cco(r['contract'])
                                        if r['contract'] else False)
+        r['hidden_merchants'] = models.get_reseller_profile_by_id(r['id'])['hidden_merchants']
     return render_template('sales/my_resellers.html', active_tab='resellers', resellers=resellers,
                            account_types=models.ACCOUNT_TYPES,
                            account_labels=models.ACCOUNT_TYPE_LABELS,
-                           auto_cap=models.AUTO_APPROVE_CAP)
+                           auto_cap=models.AUTO_APPROVE_CAP,
+                           all_merchants=models.get_all_merchants())
+
+
+@app.route('/sales/resellers/<int:rid>/hidden-merchants', methods=['POST'])
+@auth.sales_required
+def sales_hidden_merchants(rid):
+    """Sales sets which merchants a reseller can't see (e.g. their competitors)."""
+    curr = auth.get_current_user()
+    profile = models.get_reseller_profile_by_id(rid)
+    if not profile or (curr['role'] not in ('admin', 'cco') and profile['registered_by'] != curr['id']):
+        flash("Access denied.", "error")
+        return redirect(url_for('sales_resellers'))
+    models.set_reseller_hidden_merchants(rid, request.form.getlist('hidden_merchants'))
+    flash(f"Hidden merchants updated for {profile['company_name']}.", "success")
+    return redirect(url_for('sales_resellers'))
+
+
+@app.route('/sales/merchant-pricing')
+@auth.sales_required
+def sales_merchant_pricing():
+    """JSON feed for the discount calculator: a merchant's products priced in the
+    reseller's display currency, so the browser can compute the margin-share %
+    needed to hit a target price (and vice versa)."""
+    curr = auth.get_current_user()
+    try:
+        rid = int(request.args.get('reseller_id') or 0)
+    except ValueError:
+        return {'error': 'bad reseller_id'}, 400
+    merchant = request.args.get('merchant', '')
+    profile = models.get_reseller_profile_by_id(rid)
+    if not profile or (curr['role'] not in ('admin', 'cco') and profile['registered_by'] != curr['id']):
+        return {'error': 'not_found'}, 404
+    data = models.get_merchant_pricing_for_reseller(rid, merchant)
+    return data or {'error': 'not_found'}, (200 if data else 404)
 
 
 @app.route('/sales/resellers/<int:rid>/update', methods=['POST'])

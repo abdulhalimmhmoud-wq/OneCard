@@ -161,6 +161,25 @@
                             </div>
                         </details>
 
+                        <!-- Hidden merchants (e.g. the client's competitors) -->
+                        <details style="position:relative">
+                            <summary class="btn btn-sm btn-ghost" style="list-style:none;cursor:pointer">🙈 Merchants{{ ' (' ~ r.hidden_merchants|length ~ ')' if r.hidden_merchants }}</summary>
+                            <div style="position:absolute;right:0;top:110%;z-index:200;background:var(--bg-1);border:1px solid var(--border);border-radius:10px;padding:12px;width:300px;box-shadow:0 12px 32px rgba(0,0,0,.5)">
+                                <div class="text-muted" style="font-size:11px;margin-bottom:6px">Hide merchants from {{ r.company_name }} (e.g. competitors). Ticked = hidden.</div>
+                                <input type="text" placeholder="Filter..." oninput="hmFilter(this)" style="width:100%;font-size:12px;padding:5px;margin-bottom:6px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;color:var(--text-1)">
+                                <form method="POST" action="/sales/resellers/{{ r.id }}/hidden-merchants">
+                                    <div class="hm-list" style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:6px;margin-bottom:8px">
+                                        {% for m in all_merchants %}
+                                        <label class="hm-row" style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding:2px 4px">
+                                            <input type="checkbox" name="hidden_merchants" value="{{ m.merchant }}" style="width:auto" {{ 'checked' if m.merchant in r.hidden_merchants }}> {{ m.merchant }}
+                                        </label>
+                                        {% endfor %}
+                                    </div>
+                                    <button class="btn btn-sm btn-primary" style="width:100%" type="submit">💾 Save Hidden Merchants</button>
+                                </form>
+                            </div>
+                        </details>
+
                         {% if (r.account_type or 'prepaid') != 'prepaid' %}
                         <details style="position:relative">
                             <summary class="btn btn-sm btn-ghost" style="list-style:none;cursor:pointer">💳 Credit+</summary>
@@ -222,5 +241,12 @@ function ctToggle(el) {
     tranche.style.display = (type === 'credit' && disb && disb.value === 'staged') ? 'block' : 'none';
 }
 document.querySelectorAll('select[name="account_type"]').forEach(function (s) { ctToggle(s); });
+
+function hmFilter(input) {
+    var term = (input.value || '').toLowerCase();
+    input.parentNode.querySelectorAll('.hm-row').forEach(function (el) {
+        el.style.display = el.textContent.toLowerCase().includes(term) ? 'flex' : 'none';
+    });
+}
 </script>
 {% endblock %}

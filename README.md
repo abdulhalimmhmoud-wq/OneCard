@@ -1,4 +1,25 @@
-# OneCard — Reseller Operations Platform (v17)
+# OneCard — Reseller Operations Platform (v18)
+
+## Hidden Merchants + Price↔Discount Calculator (v18)
+
+Two sales-facing tools:
+
+- **Hide merchants per reseller** — at registration (and editable later on My
+  Resellers) the sales manager can tick merchants to **hide from a client** — e.g. a
+  client's own competitors, whose products they'd never resell. Hidden merchants
+  (`reseller_hidden_merchants`) are filtered inside `enrich_products_for_reseller`, so
+  they disappear from **everything** that client sees: portal catalogue, By-Merchant,
+  Recommended, forecast and the Integration API catalogue.
+- **Price ↔ discount calculator** — on the discount-request page, once a reseller +
+  merchant are chosen, the sales manager sees the merchant's products priced in the
+  client's currency and can **enter the target buy-price the client is asking for** →
+  the tool computes the exact **margin-share % needed** (inverting the linear pricing
+  `client_price = default − oc_margin × share`) and previews the new price for every
+  product of that merchant. The computed % pre-fills the discount request. Backed by a
+  JSON feed (`/sales/merchant-pricing`) so it stays fast and accurate per merchant.
+
+Coverage: `tests/e2e_v18.py` (12 checks incl. the hide filter across portal + API and
+the calculator inversion/round-trip). Full regression green — 16 suites, 387 checks.
 
 ## Customer CRM: dedup, contact data & CCO tracking board (v17)
 
