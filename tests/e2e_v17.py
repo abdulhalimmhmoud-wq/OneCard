@@ -70,7 +70,8 @@ def exists(email):
 
 sales = login('sales@onecard.com', 'Sales2025!')
 tag = uuid.uuid4().hex[:6]
-A_co, A_em, A_ph = f"CRM Alpha {tag} Co", f"crm_a_{tag}@test.com", "+966 50 111 2233"
+_ph9 = str(uuid.uuid4().int)[:9]   # unique 9-digit base so we never collide with residue
+A_co, A_em, A_ph = f"CRM Alpha {tag} Co", f"crm_a_{tag}@test.com", "+966" + _ph9
 
 # ── 1. phone required ──
 b = register(sales, f"CRM NoPhone {tag}", f"crm_np_{tag}@test.com", "")
@@ -88,7 +89,7 @@ check('duplicate company name is blocked', not exists(f"crm_dupco_{tag}@test.com
       and 'already registered' in b.lower() and 'company name' in b.lower())
 
 # ── 4. duplicate by phone (different format) is blocked ──
-b = register(sales, f"CRM Different {tag} Co", f"crm_dupph_{tag}@test.com", "0501112233")  # same digits as A_ph
+b = register(sales, f"CRM Different {tag} Co", f"crm_dupph_{tag}@test.com", "0" + _ph9)  # same digits as A_ph
 check('duplicate phone (normalised) is blocked', not exists(f"crm_dupph_{tag}@test.com")
       and 'phone number' in b.lower())
 

@@ -1,4 +1,36 @@
-# OneCard — Reseller Operations Platform (v19)
+# OneCard — Reseller Operations Platform (v20)
+
+## Hardening pass — correctness, security & scale (v20)
+
+From a 360° review, addressed:
+
+- **API respects suspension** — a suspended reseller is now blocked from the
+  Integration API too (previously the API bypassed the portal's suspension guard).
+- **Credit limit is validated** — a credit/consignment contract can no longer be
+  created or activated with a zero limit (which silently blocked all ordering).
+- **Statement issuance is race-safe** — `issue_statement` now runs under
+  `BEGIN IMMEDIATE`, so a manual issue and the daily sweep can't double-bill.
+- **No leaked DB locks on error** — the money-critical writers (`create_order`,
+  `create_forecast`, `issue_statement`) now roll back + close on any exception
+  instead of leaking a connection that holds the write lock.
+- **WAL mode** — the DB runs in `journal_mode=WAL` so readers don't block on a
+  writer (matters with the background webhook worker + `BEGIN IMMEDIATE`).
+- **Indexes** on `reseller_profiles(user_id, api_key)` — the per-request suspension/
+  NDA guards and API-key auth no longer table-scan.
+- **My Resellers is no longer N+1** — latest contract + hidden merchants are fetched
+  in one batched query each.
+- **Smaller fixes** — hidden merchants are respected in the discount calculator;
+  the exploratory "starting budget" is reported as *unallocated* demand instead of a
+  fake merchant on the Ops board; admin/CCO can override a company-name duplicate;
+  contract/intel files are served as downloads (never rendered inline).
+
+Coverage: `tests/e2e_v20.py` (13 checks). Full regression green — 18 suites.
+
+**Still open (need infra/architecture decisions, not quick fixes):** pushing catalogue
+enrichment into SQL instead of iterating ~3k products in Python (B4); running the
+webhook worker as a single dedicated process under a multi-worker WSGI server (C1);
+a Postgres/HA path off single-file SQLite (C2); and an isolated/ephemeral test DB so
+runs stop sharing the dev database (E).
 
 ## Budget Onboarding + Competitor Intel→BD + NDA Gate (v19)
 

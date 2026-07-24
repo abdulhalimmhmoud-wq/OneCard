@@ -30,6 +30,11 @@
         <div class="stat-value">{{ demand.by_merchant|length }}</div>
         <div class="stat-label">Merchants in Demand</div>
     </div>
+    <div class="stat-card">
+        <div class="stat-icon">💡</div>
+        <div class="stat-value">SAR {{ demand.unallocated_budget|money }}</div>
+        <div class="stat-label">Unallocated Budget (exploratory)</div>
+    </div>
 </div>
 
 <div class="grid-2">

@@ -137,6 +137,12 @@ def get_db():
 def init_db():
     """Create all tables."""
     conn = get_db()
+    # v20: WAL lets readers run concurrently with a writer (default 'delete'
+    # mode blocks all readers during any write). Persistent on the DB file.
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        pass
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -649,6 +655,10 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_orders_reseller ON orders(reseller_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_wallet_reseller ON wallet_transactions(reseller_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_allocations_item ON order_item_allocations(order_item_id);
+        -- v20: reseller_profiles is looked up per-request by user_id (suspension +
+        -- NDA guards) and per API call by api_key; index both to avoid table scans.
+        CREATE INDEX IF NOT EXISTS idx_reseller_user ON reseller_profiles(user_id);
+        CREATE INDEX IF NOT EXISTS idx_reseller_apikey ON reseller_profiles(api_key);
     """)
     conn.commit()
     conn.close()
@@ -1473,6 +1483,36 @@ def get_latest_contract(reseller_id):
     return dict(row) if row else None
 
 
+def get_latest_contracts_map(reseller_ids):
+    """{reseller_id: latest contract dict} in ONE query (avoids N+1 on lists)."""
+    ids = [r for r in reseller_ids if r]
+    if not ids:
+        return {}
+    ph = ','.join('?' * len(ids))
+    conn = get_db()
+    rows = conn.execute(f"""SELECT c.* FROM contracts c
+        JOIN (SELECT reseller_id, MAX(id) mid FROM contracts
+              WHERE reseller_id IN ({ph}) GROUP BY reseller_id) m ON c.id=m.mid""", ids).fetchall()
+    conn.close()
+    return {r['reseller_id']: dict(r) for r in rows}
+
+
+def get_hidden_merchants_map(reseller_ids):
+    """{reseller_id: [merchant,...]} in ONE query (avoids N+1 on lists)."""
+    ids = [r for r in reseller_ids if r]
+    if not ids:
+        return {}
+    ph = ','.join('?' * len(ids))
+    conn = get_db()
+    rows = conn.execute(f"""SELECT reseller_id, merchant FROM reseller_hidden_merchants
+                            WHERE reseller_id IN ({ph})""", ids).fetchall()
+    conn.close()
+    out = {}
+    for r in rows:
+        out.setdefault(r['reseller_id'], []).append(r['merchant'])
+    return out
+
+
 def contracts_awaiting_activation():
     """Signed contracts waiting to be activated — the CCO/Sales approval queue.
     Flags whether each needs CCO sign-off (large limit) or Sales can do it."""
@@ -1519,6 +1559,9 @@ def activate_contract(contract_id, actor_id):
     if ct['status'] not in ('signed_uploaded', 'sent'):
         conn.close()
         return False, "This contract is not awaiting activation."
+    if (ct['account_type'] or 'prepaid') != 'prepaid' and (ct['credit_limit'] or 0) <= 0:
+        conn.close()
+        return False, "This credit/consignment contract has no credit limit set."
     rid = ct['reseller_id']
     conn.execute("""UPDATE reseller_profiles
                     SET account_type=?, credit_limit=?, credit_disbursement=?, credit_tranche=?,
@@ -1662,6 +1705,10 @@ def get_merchant_pricing_for_reseller(reseller_id, merchant):
     profile = get_reseller_profile_by_id(reseller_id)
     if not profile:
         return None
+    # v20: a merchant hidden from this reseller has no prices for them.
+    if merchant in set(profile.get('hidden_merchants') or []):
+        return {'display_currency': profile['display_currency'] or 'SAR', 'base_share_pct': 0,
+                'current_share_pct': 0, 'merchant': merchant, 'products': [], 'hidden': True}
     disp = profile['display_currency'] or 'SAR'
     rates = get_fx_rates()
     tier = profile.get('tier')
@@ -2041,34 +2088,44 @@ def unbilled_amount(reseller_id):
 
 def issue_statement(reseller_id, actor_id=None, auto=False):
     """Bill the currently un-billed drawn amount as a new statement.
-    due date = today + settlement_terms_days. Returns statement id or None."""
+    due date = today + settlement_terms_days. Returns statement id or None.
+    v20: BEGIN IMMEDIATE serializes the read-then-insert so a manual issue and
+    the daily sweep can't both bill the same unbilled amount (double-billing)."""
     conn = get_db()
-    prof = conn.execute("""SELECT cp.*, u.id as uid FROM reseller_profiles cp
-                           JOIN users u ON cp.user_id=u.id WHERE cp.id=?""", (reseller_id,)).fetchone()
-    if not prof or (prof['account_type'] or 'prepaid') == 'prepaid':
-        conn.close()
-        return None
-    unbilled = (prof['credit_outstanding'] or 0) - _open_statements_total(conn, reseller_id)
-    unbilled = round(max(0.0, unbilled), 2)
-    if unbilled <= 0.009:
-        # nothing new to bill, but still advance the cycle marker
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        prof = conn.execute("""SELECT cp.*, u.id as uid FROM reseller_profiles cp
+                               JOIN users u ON cp.user_id=u.id WHERE cp.id=?""", (reseller_id,)).fetchone()
+        if not prof or (prof['account_type'] or 'prepaid') == 'prepaid':
+            conn.rollback()
+            return None
+        unbilled = (prof['credit_outstanding'] or 0) - _open_statements_total(conn, reseller_id)
+        unbilled = round(max(0.0, unbilled), 2)
+        if unbilled <= 0.009:
+            # nothing new to bill, but still advance the cycle marker
+            conn.execute("UPDATE reseller_profiles SET last_statement_at=? WHERE id=?",
+                         (datetime.now(timezone.utc).date().isoformat(), reseller_id))
+            conn.commit()
+            return None
+        today = datetime.now(timezone.utc).date()
+        due = (today + timedelta(days=int(prof['settlement_terms_days'] or 30))).isoformat()
+        period_start = prof['last_statement_at'] or (prof['contracted_at'] or '')[:10] or today.isoformat()
+        conn.execute("""INSERT INTO statements
+                        (reseller_id, amount, status, period_start, period_end, due_at, issued_by)
+                        VALUES (?,?,?,?,?,?,?)""",
+                     (reseller_id, unbilled, 'issued', period_start, today.isoformat(), due, actor_id))
+        sid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.execute("UPDATE reseller_profiles SET last_statement_at=? WHERE id=?",
-                     (datetime.now(timezone.utc).date().isoformat(), reseller_id))
+                     (today.isoformat(), reseller_id))
         conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
         conn.close()
-        return None
-    today = datetime.now(timezone.utc).date()
-    due = (today + timedelta(days=int(prof['settlement_terms_days'] or 30))).isoformat()
-    period_start = prof['last_statement_at'] or (prof['contracted_at'] or '')[:10] or today.isoformat()
-    conn.execute("""INSERT INTO statements
-                    (reseller_id, amount, status, period_start, period_end, due_at, issued_by)
-                    VALUES (?,?,?,?,?,?,?)""",
-                 (reseller_id, unbilled, 'issued', period_start, today.isoformat(), due, actor_id))
-    sid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-    conn.execute("UPDATE reseller_profiles SET last_statement_at=? WHERE id=?",
-                 (today.isoformat(), reseller_id))
-    conn.commit()
-    conn.close()
     disp = prof['display_currency'] or 'SAR'
     amt_disp = round(convert_amount(unbilled, 'SAR', disp))
     notify([prof['uid']], "New statement issued 🧾",
@@ -2473,17 +2530,19 @@ BUDGET_MERCHANT = 'Starting budget (exploratory)'
 def create_forecast(reseller_id, note, items):
     """items: list of dicts {item_type, merchant, product_rowid, product_name, quantity, est_value}"""
     conn = get_db()
-    conn.execute("INSERT INTO forecasts (reseller_id, note) VALUES (?,?)", (reseller_id, note))
-    fid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-    for it in items:
-        conn.execute("""INSERT INTO forecast_items
-                        (forecast_id, item_type, merchant, product_rowid, product_name, quantity, est_value)
-                        VALUES (?,?,?,?,?,?,?)""",
-                     (fid, it['item_type'], it['merchant'], it.get('product_rowid'),
-                      it.get('product_name'), it.get('quantity'), it.get('est_value', 0)))
-    conn.commit()
-    conn.close()
-    return fid
+    try:
+        conn.execute("INSERT INTO forecasts (reseller_id, note) VALUES (?,?)", (reseller_id, note))
+        fid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        for it in items:
+            conn.execute("""INSERT INTO forecast_items
+                            (forecast_id, item_type, merchant, product_rowid, product_name, quantity, est_value)
+                            VALUES (?,?,?,?,?,?,?)""",
+                         (fid, it['item_type'], it['merchant'], it.get('product_rowid'),
+                          it.get('product_name'), it.get('quantity'), it.get('est_value', 0)))
+        conn.commit()
+        return fid
+    finally:
+        conn.close()
 
 
 def create_budget_forecast(reseller_id, amount_sar, note=''):
@@ -2545,9 +2604,15 @@ def get_forecast_demand_summary(days=90):
                COALESCE(SUM(CASE WHEN fi.item_type='product' THEN fi.quantity ELSE 0 END),0) as qty
         FROM forecast_items fi
         JOIN forecasts f ON fi.forecast_id = f.id
-        WHERE date(f.created_at) >= ?
+        WHERE date(f.created_at) >= ? AND fi.merchant != ?
         GROUP BY fi.merchant
-        ORDER BY est_value DESC""", (since,)).fetchall()
+        ORDER BY est_value DESC""", (since, BUDGET_MERCHANT)).fetchall()
+    # v20: exploratory "starting budget" isn't a real merchant to stock — report
+    # it separately as unallocated demand rather than polluting by-merchant.
+    unallocated = conn.execute("""
+        SELECT COALESCE(SUM(fi.est_value),0) FROM forecast_items fi
+        JOIN forecasts f ON fi.forecast_id = f.id
+        WHERE date(f.created_at) >= ? AND fi.merchant = ?""", (since, BUDGET_MERCHANT)).fetchone()[0]
     by_product = conn.execute("""
         SELECT fi.product_name, fi.merchant,
                COALESCE(SUM(fi.quantity),0) as qty,
@@ -2570,6 +2635,7 @@ def get_forecast_demand_summary(days=90):
         'by_merchant': [dict(r) for r in by_merchant],
         'by_product': [dict(r) for r in by_product],
         'totals': dict(totals),
+        'unallocated_budget': round(unallocated, 2),
         'days': days,
     }
 
@@ -2711,13 +2777,23 @@ def create_order(reseller_id, items):
         conn.execute("""INSERT INTO wallet_transactions (reseller_id, type, amount, status, note)
                         VALUES (?,?,?,?,?)""",
                      (reseller_id, draw_type, -total_cost, 'approved', f'Order #{oid}'))
-    # v6: tie every sold unit to the supplier batch it came from (FIFO)
-    _allocate_order_fifo(conn, oid)
-    # v8: hand actual gift-card codes to the buyer for issued products
-    touched_issued = _assign_issued_codes(conn, oid)
-    # v9: run provider adapters for merchants that have one registered
-    _run_fulfillment_adapters(conn, oid)
-    conn.commit()
+    # v20: any failure in allocation / code assignment / a provider adapter must
+    # roll the whole order back and release the write lock, never leak it.
+    try:
+        # v6: tie every sold unit to the supplier batch it came from (FIFO)
+        _allocate_order_fifo(conn, oid)
+        # v8: hand actual gift-card codes to the buyer for issued products
+        touched_issued = _assign_issued_codes(conn, oid)
+        # v9: run provider adapters for merchants that have one registered
+        _run_fulfillment_adapters(conn, oid)
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        conn.close()
+        return None, "Order could not be completed due to a system error. Please try again."
     conn.close()
     notify_low_issued_stock(touched_issued)
     if account_type in ('credit', 'consignment'):

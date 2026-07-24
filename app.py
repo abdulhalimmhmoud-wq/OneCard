@@ -376,7 +376,9 @@ def contract_file(cid, which):
                or (curr['role'] == 'sales' and curr['id'] == contract['registered_by']))
     if not allowed:
         abort(403)
-    return send_from_directory(CONTRACT_DIR, fname)
+    # v20: force download (never render inline) — these are extension-validated
+    # documents, so don't let a browser execute one.
+    return send_from_directory(CONTRACT_DIR, fname, as_attachment=True)
 
 
 # ── Admin Routes (BD Manager) ────────────────────────────────────
@@ -544,6 +546,11 @@ def sales_contract_upload(rid):
     to_sar = lambda v: round(models.convert_amount(float(v or 0), profile['display_currency'], 'SAR'), 2)
     credit_limit = to_sar(request.form.get('credit_limit')) if account_type != 'prepaid' else 0
     credit_tranche = to_sar(request.form.get('credit_tranche')) if account_type == 'credit' else 0
+    # v20: a credit/consignment line with no limit would silently block all
+    # ordering (available_to_spend = 0) — reject it up front.
+    if account_type != 'prepaid' and credit_limit <= 0:
+        flash("Set a credit limit greater than zero for a credit/consignment account.", "error")
+        return redirect(request.referrer or url_for('sales_resellers'))
     disbursement = request.form.get('credit_disbursement', 'full')
     if disbursement not in models.CREDIT_DISBURSEMENTS:
         disbursement = 'full'
@@ -649,13 +656,20 @@ def sales_register():
 
         # v17 CRM: block a second registration of the same customer (a customer
         # may reach two sales managers who don't know about each other).
+        # v20: email/phone always block; a company-name-only match can be
+        # overridden by admin/CCO (two genuinely different firms can share a name).
+        curr_role = auth.get_current_user()['role']
         dup = models.find_duplicate_reseller(email=cemail, company_name=comp, phone=cphone)
+        override = (dup and dup['matched'] == 'company name' and curr_role in ('admin', 'cco')
+                    and request.form.get('override_dup') == 'yes')
         if not cphone:
             flash("Please enter the contact person's phone number.", "error")
-        elif dup:
+        elif dup and not override:
+            extra = (" You can tick 'override' to proceed anyway." if dup['matched'] == 'company name'
+                     and curr_role in ('admin', 'cco') else "")
             flash(f"This customer is already registered (matched on {dup['matched']}) as "
                   f"'{dup['company_name']}' under {dup['sales_name'] or 'another manager'}. "
-                  f"Please coordinate with your team / CCO.", "error")
+                  f"Please coordinate with your team / CCO.{extra}", "error")
         else:
             uid = models.create_user(cemail, pw, cname, 'reseller')
             if uid:
@@ -685,11 +699,14 @@ def sales_register():
 def sales_resellers():
     curr = auth.get_current_user()
     resellers = models.get_all_resellers(registered_by=curr['id'])
+    ids = [r['id'] for r in resellers]
+    contracts = models.get_latest_contracts_map(ids)      # one query, not N
+    hidden = models.get_hidden_merchants_map(ids)          # one query, not N
     for r in resellers:
-        r['contract'] = models.get_latest_contract(r['id'])
+        r['contract'] = contracts.get(r['id'])
         r['account_type_needs_cco'] = (models.contract_needs_cco(r['contract'])
                                        if r['contract'] else False)
-        r['hidden_merchants'] = models.get_reseller_profile_by_id(r['id'])['hidden_merchants']
+        r['hidden_merchants'] = hidden.get(r['id'], [])
     return render_template('sales/my_resellers.html', active_tab='resellers', resellers=resellers,
                            account_types=models.ACCOUNT_TYPES,
                            account_labels=models.ACCOUNT_TYPE_LABELS,
@@ -939,7 +956,7 @@ def intel_file(intel_id):
     curr = auth.get_current_user()
     if curr['role'] not in ('bd', 'cco', 'admin') and curr['id'] != intel['submitted_by']:
         abort(403)
-    return send_from_directory(INTEL_DIR, intel['attachment_file'])
+    return send_from_directory(INTEL_DIR, intel['attachment_file'], as_attachment=True)
 
 
 # ── BD: Competitor Price Intel inbox (v19) ───────────────────────
@@ -1525,7 +1542,12 @@ def api_error(code, message, http=400):
 def require_api_reseller():
     key = (request.headers.get('X-API-Key')
            or (request.headers.get('Authorization') or '').replace('Bearer ', '').strip())
-    return models.get_reseller_by_api_key(key)
+    profile = models.get_reseller_by_api_key(key)
+    # v20: a suspended reseller is blocked everywhere — including the API, which
+    # otherwise bypassed the portal's suspension guard.
+    if profile and profile.get('is_suspended'):
+        return None
+    return profile
 
 
 @app.route('/api/v1/ping')
