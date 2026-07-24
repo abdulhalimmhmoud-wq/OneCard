@@ -1,7 +1,7 @@
 """End-to-end workflow test for OneCard Platform v4."""
 import urllib.request, urllib.parse, http.cookiejar as cj
 import re as _re
-import json, io, uuid
+import json, io, uuid, sqlite3
 
 BASE = 'http://127.0.0.1:8000'
 results = []
@@ -57,6 +57,7 @@ s, b = post(sales, '/sales/register', {
     'expected_sales': '250000', 'notes': 'e2e', 'client_types': 'Bank',
     'countries': 'Saudi Arabia'})
 check('register reseller (Gold expected)', 'Gold' in b or 'registered successfully' in b)
+_nc = sqlite3.connect('onecard.db'); _nc.execute("UPDATE reseller_profiles SET nda_accepted_at=CURRENT_TIMESTAMP WHERE user_id=(SELECT id FROM users WHERE email=?)", (email,)); _nc.commit(); _nc.close()
 
 # ── 3. Reseller portal pages ──
 res = login(email, 'Test123!')

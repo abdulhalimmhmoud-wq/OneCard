@@ -90,6 +90,7 @@ post(sales, '/sales/register', {'company_name': 'V14 Credit Co ' + em[4:12], 'co
      'contact_phone': '05' + str(uuid.uuid4().int)[:8],
      'contact_email': em, 'password': 'Test123!', 'expected_sales': '80000',
      'client_types': 'Retail Chain', 'countries': 'Saudi Arabia'})
+execu("UPDATE reseller_profiles SET nda_accepted_at=CURRENT_TIMESTAMP WHERE user_id=(SELECT id FROM users WHERE email=?)", em)
 rid = q("SELECT cp.id FROM reseller_profiles cp JOIN users u ON cp.user_id=u.id WHERE u.email=?", em)[0]['id']
 execu("""UPDATE reseller_profiles SET account_type='credit', credit_limit=100000, credit_limit_base=100000,
          credit_disbursement='full', contract_status='contracted', credit_outstanding=0,

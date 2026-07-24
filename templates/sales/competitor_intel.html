@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Competitor Intel — OneCard Sales{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">🔍 Competitor Price Intel</h1>
+        <p class="page-subtitle">Found a competitor beating our price? Send it to Business Development with the source (screenshot / file / Excel) so they can act on it.</p>
+    </div>
+</div>
+
+<div class="grid-2" style="align-items:start">
+    <!-- Submit -->
+    <div class="card">
+        <div class="card-header"><div class="card-title">➕ Report a Competitor Price</div></div>
+        <form method="POST" action="/sales/competitor-intel" enctype="multipart/form-data">
+            <div class="form-group">
+                <label class="form-label">Merchant</label>
+                <select name="merchant">
+                    <option value="">-- Optional --</option>
+                    {% for m in merchants %}<option value="{{ m.merchant }}">{{ m.merchant }}</option>{% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Product (optional)</label>
+                <input type="text" name="product_name" placeholder="e.g. PUBG 660 UC">
+            </div>
+            <div class="form-row">
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Competitor</label>
+                    <input type="text" name="competitor_name" placeholder="Competitor name">
+                </div>
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Their Price (SAR)</label>
+                    <input type="number" name="competitor_price" step="0.01" min="0" placeholder="e.g. 20">
+                </div>
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Our Price (SAR)</label>
+                    <input type="number" name="our_price" step="0.01" min="0" placeholder="e.g. 22.5">
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Notes</label>
+                <textarea name="note" placeholder="Context: which client mentioned it, how big the gap is, etc." style="height:70px"></textarea>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Source of the information</label>
+                <input type="file" name="attachment" accept=".pdf,.png,.jpg,.jpeg,.webp,.xls,.xlsx,.csv,.doc,.docx"
+                       style="padding:10px;background:var(--bg-2);border:1px dashed var(--border);border-radius:var(--radius-sm);width:100%;color:var(--text-2)">
+                <div class="form-hint">Screenshot, PDF, Excel or CSV of the competitor's offer</div>
+            </div>
+            <button type="submit" class="btn btn-primary btn-lg" style="width:100%;justify-content:center">📨 Send to Business Development</button>
+        </form>
+    </div>
+
+    <!-- My submissions -->
+    <div class="table-card">
+        <div class="table-header"><div class="table-title">📜 My Submissions</div></div>
+        <div class="table-scroll" style="max-height:640px;overflow-y:auto">
+            <table>
+                <thead><tr><th>Merchant / Product</th><th>Prices</th><th>Status</th></tr></thead>
+                <tbody>
+                {% for s in submissions %}
+                <tr>
+                    <td>
+                        <div class="fw6">{{ s.merchant or '—' }}</div>
+                        <div class="text-muted" style="font-size:11px">{{ s.product_name or '' }} · {{ s.created_at[:10] }}</div>
+                        {% if s.attachment_file %}<a href="/intel/{{ s.id }}/file" target="_blank" style="font-size:11px;color:var(--accent)">📎 source</a>{% endif %}
+                    </td>
+                    <td style="font-size:12px">
+                        {% if s.competitor_price %}<span class="text-d">{{ s.competitor_name or 'them' }}: {{ s.competitor_price|money }}</span>{% endif %}
+                        {% if s.our_price %}<br><span class="text-muted">us: {{ s.our_price|money }}</span>{% endif %}
+                    </td>
+                    <td>
+                        {% if s.status == 'new' %}<span class="badge badge-warning">🆕 New</span>
+                        {% elif s.status == 'reviewing' %}<span class="badge badge-info">🔍 Reviewing</span>
+                        {% elif s.status == 'actioned' %}<span class="badge badge-success">✅ Actioned</span>
+                        {% else %}<span class="badge badge-ghost">Dismissed</span>{% endif %}
+                        {% if s.bd_note %}<div class="text-muted" style="font-size:11px;margin-top:4px">BD: {{ s.bd_note }}</div>{% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="3" style="text-align:center;padding:30px;color:var(--text-3)">No submissions yet</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

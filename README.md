@@ -1,4 +1,27 @@
-# OneCard — Reseller Operations Platform (v18)
+# OneCard — Reseller Operations Platform (v19)
+
+## Budget Onboarding + Competitor Intel→BD + NDA Gate (v19)
+
+Three additions:
+
+- **Budget-based onboarding** — brand-new clients who don't yet know what to buy can
+  just commit a **starting budget** ("start with 100,000") on the Purchase Plan page
+  instead of a detailed forecast. They then connect via API / browse the catalogue and
+  draw whenever they like; the budget flows through the same Sales/Ops forecast views
+  (`create_budget_forecast`).
+- **Competitor price intel → Business Development** — a new **Competitor Intel** page
+  lets a sales manager report a competitor beating our price, attaching the **source**
+  (screenshot / PDF / Excel / CSV). It lands in BD's new **Price Intel** inbox where BD
+  can view the source and set status (reviewing / actioned / dismissed) with a note back
+  to sales. Files are access-controlled (`competitor_intel` + `/intel/<id>/file`).
+- **Confidentiality (NDA) gate** — a newly registered client must accept a confidentiality
+  notice on first login (keep info confidential, no sharing, no screenshots, account
+  auto-closes in 15 days without a contract) before the portal opens; acceptance is
+  timestamped (`nda_accepted_at`) and enforced by a `before_request` guard. Existing
+  resellers were backfilled as already-accepted.
+
+Coverage: `tests/e2e_v19.py` (15 checks). The suites that drive the reseller portal now
+accept the NDA after registering. Full regression green — 17 suites, 402 checks.
 
 ## Hidden Merchants + Price↔Discount Calculator (v18)
 

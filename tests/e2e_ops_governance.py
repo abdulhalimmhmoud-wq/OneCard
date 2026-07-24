@@ -96,6 +96,7 @@ s, b = post(sales, '/sales/register', {
     'contact_phone': '05' + str(uuid.uuid4().int)[:8],
     'password': 'Test123!', 'expected_sales': '60000', 'client_type': 'Gaming Store',
     'countries': 'Saudi Arabia'})
+_nc = sqlite3.connect(DB); _nc.execute("UPDATE reseller_profiles SET nda_accepted_at=CURRENT_TIMESTAMP WHERE user_id=(SELECT id FROM users WHERE email=?)", (email,)); _nc.commit(); _nc.close()
 res = login(email, 'Test123!')
 s, b = get(res, '/reseller/products')
 check('deactivated product hidden from reseller', pname not in b)

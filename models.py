@@ -553,6 +553,26 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
+        -- ── v19: Competitor price intelligence (Sales -> BD) ──
+        CREATE TABLE IF NOT EXISTS competitor_intel (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            submitted_by INTEGER NOT NULL REFERENCES users(id),
+            merchant TEXT,
+            product_name TEXT,
+            competitor_name TEXT,
+            competitor_price REAL,
+            our_price REAL,
+            currency TEXT DEFAULT 'SAR',
+            note TEXT,
+            attachment_file TEXT,
+            status TEXT NOT NULL DEFAULT 'new',   -- new | reviewing | actioned | dismissed
+            bd_note TEXT,
+            reviewed_by INTEGER REFERENCES users(id),
+            reviewed_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_competitor_intel ON competitor_intel(status, created_at);
+
         -- ── v6: Multi-supplier sourcing ───────────────────────
         -- One product can be offered by many suppliers, each at their own cost.
         CREATE TABLE IF NOT EXISTS supplier_products (
@@ -701,12 +721,22 @@ def migrate_db():
         # contract time). Both also power duplicate-customer prevention.
         'contact_phone': "ALTER TABLE reseller_profiles ADD COLUMN contact_phone TEXT",
         'commercial_reg_no': "ALTER TABLE reseller_profiles ADD COLUMN commercial_reg_no TEXT",
+        # v19: when the reseller accepted the confidentiality notice (NDA) on
+        # first login. Null = must accept before using the portal.
+        'nda_accepted_at': "ALTER TABLE reseller_profiles ADD COLUMN nda_accepted_at TIMESTAMP",
     }
     just_added_display_cur = 'display_currency' not in cols
     just_added_suspend = 'auto_suspend_at' not in cols
+    just_added_nda = 'nda_accepted_at' not in cols
     for col, sql in add.items():
         if col not in cols:
             conn.execute(sql)
+    # v19: existing resellers are treated as having accepted the NDA already —
+    # only NEW clients (created after this upgrade) get the acceptance gate.
+    if just_added_nda:
+        conn.commit()
+        conn.execute("UPDATE reseller_profiles SET nda_accepted_at=CURRENT_TIMESTAMP")
+        conn.commit()
     # Backfill display_currency for existing resellers from their markets.
     if just_added_display_cur:
         conn.commit()
@@ -1267,6 +1297,24 @@ def is_user_suspended(user_id):
                        (user_id,)).fetchone()
     conn.close()
     return bool(row and row['is_suspended'])
+
+
+def reseller_nda_pending(user_id):
+    """True if this user is a reseller who hasn't yet accepted the confidentiality
+    notice (NDA). Used by the per-request gate on the reseller portal."""
+    conn = get_db()
+    row = conn.execute("SELECT nda_accepted_at FROM reseller_profiles WHERE user_id=?",
+                       (user_id,)).fetchone()
+    conn.close()
+    return bool(row) and not row['nda_accepted_at']
+
+
+def set_nda_accepted(reseller_id):
+    conn = get_db()
+    conn.execute("""UPDATE reseller_profiles SET nda_accepted_at=CURRENT_TIMESTAMP
+                    WHERE id=? AND nda_accepted_at IS NULL""", (reseller_id,))
+    conn.commit()
+    conn.close()
 
 
 def set_reseller_suspended(reseller_id, suspended, reason='', actor_id=None):
@@ -2419,6 +2467,9 @@ def get_credit_portfolio():
 
 # ── Forecasts ────────────────────────────────────────────────────
 
+BUDGET_MERCHANT = 'Starting budget (exploratory)'
+
+
 def create_forecast(reseller_id, note, items):
     """items: list of dicts {item_type, merchant, product_rowid, product_name, quantity, est_value}"""
     conn = get_db()
@@ -2433,6 +2484,16 @@ def create_forecast(reseller_id, note, items):
     conn.commit()
     conn.close()
     return fid
+
+
+def create_budget_forecast(reseller_id, amount_sar, note=''):
+    """Brand-new clients who don't yet know what to buy just commit a starting
+    budget (they'll connect via API and explore). Stored as a single merchant-type
+    line under the special BUDGET_MERCHANT so it flows through the same Sales/Ops
+    forecast views + actual tracking without a schema change."""
+    return create_forecast(reseller_id, note, [{
+        'item_type': 'merchant', 'merchant': BUDGET_MERCHANT,
+        'est_value': round(amount_sar, 2)}])
 
 
 def get_forecasts_for_sales(sales_user_id=None):
@@ -2877,6 +2938,72 @@ def update_bd_request_status(rid, status, handled_by, note=''):
     notify(req['created_by'], f"Your deal '{req['title']}' {labels.get(status, status)}",
            note or '', "/deals")
     return dict(req)
+
+
+# ── Competitor price intelligence (Sales -> BD) (v19) ────────────
+
+def create_competitor_intel(submitted_by, merchant, product_name, competitor_name,
+                            competitor_price, our_price, currency, note, attachment_file):
+    conn = get_db()
+    conn.execute("""INSERT INTO competitor_intel
+                    (submitted_by, merchant, product_name, competitor_name, competitor_price,
+                     our_price, currency, note, attachment_file)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (submitted_by, merchant or None, product_name or None, competitor_name or None,
+                  competitor_price, our_price, currency or 'SAR', note or None, attachment_file))
+    iid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    row = conn.execute("SELECT name FROM users WHERE id=?", (submitted_by,)).fetchone()
+    conn.commit()
+    conn.close()
+    notify(get_user_ids_by_role('bd', 'cco'),
+           "Competitor pricing intel 🔍",
+           f"{row['name'] if row else 'Sales'} flagged a better competitor price"
+           + (f" on {merchant}" if merchant else "") + ". Review it in Price Intel.",
+           "/bd/intel")
+    return iid
+
+
+def get_competitor_intel(submitted_by=None, status=None):
+    conn = get_db()
+    q = """SELECT ci.*, su.name as submitted_by_name, ru.name as reviewed_by_name
+           FROM competitor_intel ci
+           JOIN users su ON ci.submitted_by=su.id
+           LEFT JOIN users ru ON ci.reviewed_by=ru.id WHERE 1=1"""
+    params = []
+    if submitted_by:
+        q += " AND ci.submitted_by=?"
+        params.append(submitted_by)
+    if status:
+        q += " AND ci.status=?"
+        params.append(status)
+    q += " ORDER BY CASE ci.status WHEN 'new' THEN 0 WHEN 'reviewing' THEN 1 ELSE 2 END, ci.created_at DESC"
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_competitor_intel_one(intel_id):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM competitor_intel WHERE id=?", (intel_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def update_competitor_intel(intel_id, status, bd_note, reviewer_id):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM competitor_intel WHERE id=?", (intel_id,)).fetchone()
+    if not row:
+        conn.close()
+        return None
+    conn.execute("""UPDATE competitor_intel SET status=?, bd_note=COALESCE(NULLIF(?,''), bd_note),
+                    reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP WHERE id=?""",
+                 (status, bd_note, reviewer_id, intel_id))
+    conn.commit()
+    conn.close()
+    labels = {'reviewing': 'is under review 🔍', 'actioned': 'was actioned ✅', 'dismissed': 'was dismissed'}
+    notify(row['submitted_by'], f"Your competitor intel {labels.get(status, status)}",
+           bd_note or '', "/sales/competitor-intel")
+    return dict(row)
 
 
 # ── Ops: Product Management (v5) ─────────────────────────────────

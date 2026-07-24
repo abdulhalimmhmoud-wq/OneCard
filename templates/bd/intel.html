@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Competitor Price Intel — BD — OneCard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">🔍 Competitor Price Intel</h1>
+        <p class="page-subtitle">Price intelligence from the sales team — review the source and decide what to do (raise a deal, renegotiate sourcing, or dismiss).</p>
+    </div>
+</div>
+
+<div class="table-card">
+    <div class="table-scroll">
+        <table>
+            <thead>
+                <tr>
+                    <th>Submitted</th>
+                    <th>Merchant / Product</th>
+                    <th>Competitor</th>
+                    <th>Their / Our</th>
+                    <th>Source</th>
+                    <th>Status</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for s in submissions %}
+            <tr>
+                <td style="font-size:12px">{{ s.submitted_by_name }}
+                    <div class="text-muted" style="font-size:10px">{{ s.created_at[:16] }}</div>
+                </td>
+                <td class="fw6">{{ s.merchant or '—' }}
+                    <div class="text-muted" style="font-size:11px">{{ s.product_name or '' }}</div>
+                    {% if s.note %}<div class="text-muted" style="font-size:11px;margin-top:2px">{{ s.note }}</div>{% endif %}
+                </td>
+                <td style="font-size:12px">{{ s.competitor_name or '—' }}</td>
+                <td style="font-size:12px">
+                    {% if s.competitor_price %}<span class="text-d fw6">{{ s.competitor_price|money }}</span>{% else %}—{% endif %}
+                    {% if s.our_price %}<span class="text-muted"> / {{ s.our_price|money }}</span>{% endif %}
+                    {% if s.competitor_price and s.our_price and s.our_price > s.competitor_price %}
+                    <div class="text-d" style="font-size:10px">−{{ (s.our_price - s.competitor_price)|money }} SAR gap</div>{% endif %}
+                </td>
+                <td>{% if s.attachment_file %}<a href="/intel/{{ s.id }}/file" target="_blank" class="btn btn-sm btn-ghost">📎 View</a>{% else %}<span class="text-muted" style="font-size:11px">none</span>{% endif %}</td>
+                <td>
+                    {% if s.status == 'new' %}<span class="badge badge-warning">🆕 New</span>
+                    {% elif s.status == 'reviewing' %}<span class="badge badge-info">🔍 Reviewing</span>
+                    {% elif s.status == 'actioned' %}<span class="badge badge-success">✅ Actioned</span>
+                    {% else %}<span class="badge badge-ghost">Dismissed</span>{% endif %}
+                    {% if s.reviewed_by_name %}<div class="text-muted" style="font-size:10px">{{ s.reviewed_by_name }}</div>{% endif %}
+                </td>
+                <td>
+                    <details style="position:relative">
+                        <summary class="btn btn-sm btn-ghost" style="list-style:none;cursor:pointer">Update</summary>
+                        <div style="position:absolute;right:0;top:110%;z-index:200;background:var(--bg-1);border:1px solid var(--border);border-radius:10px;padding:12px;width:240px;box-shadow:0 12px 32px rgba(0,0,0,.5)">
+                            <form method="POST" action="/bd/intel/{{ s.id }}/status">
+                                <select name="status" style="width:100%;font-size:12px;padding:5px;margin-bottom:6px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;color:var(--text-1)">
+                                    <option value="reviewing" {{ 'selected' if s.status == 'reviewing' }}>🔍 Reviewing</option>
+                                    <option value="actioned" {{ 'selected' if s.status == 'actioned' }}>✅ Actioned</option>
+                                    <option value="dismissed" {{ 'selected' if s.status == 'dismissed' }}>Dismissed</option>
+                                    <option value="new">🆕 New</option>
+                                </select>
+                                <textarea name="bd_note" placeholder="Note back to sales..." style="width:100%;font-size:12px;height:50px;margin-bottom:6px">{{ s.bd_note or '' }}</textarea>
+                                <button class="btn btn-sm btn-primary" style="width:100%" type="submit">Save</button>
+                            </form>
+                        </div>
+                    </details>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text-3)">No competitor intel submitted yet.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

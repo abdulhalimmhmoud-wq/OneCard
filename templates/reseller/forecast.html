@@ -9,6 +9,27 @@
     </div>
 </div>
 
+<!-- Not sure what to buy yet? Start with a budget -->
+<div class="card mb-24" style="border-left:3px solid var(--accent)">
+    <div class="card-header"><div class="card-title">💡 Not sure yet? Start with a budget</div></div>
+    <p class="text-muted" style="font-size:13px;margin-bottom:12px">
+        If you're just getting started and don't know exactly what you'll buy, commit a starting budget.
+        You can then browse the whole catalogue and place orders whenever you like — through the portal or via the
+        API — and track what you actually draw.
+    </p>
+    <form method="POST" action="/reseller/forecast/budget" style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">
+        <div class="form-group" style="flex:1;min-width:180px;margin-bottom:0">
+            <label class="form-label">Starting budget ({{ disp }})</label>
+            <input type="number" name="amount" required min="1" step="1000" placeholder="e.g. 100000">
+        </div>
+        <div class="form-group" style="flex:2;min-width:200px;margin-bottom:0">
+            <label class="form-label">Note (optional)</label>
+            <input type="text" name="note" placeholder="Anything your account manager should know...">
+        </div>
+        <button type="submit" class="btn btn-primary">💡 Set Starting Budget</button>
+    </form>
+</div>
+
 <div class="grid-2" style="align-items:start">
     <!-- LEFT: builders -->
     <div>

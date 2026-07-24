@@ -69,6 +69,7 @@ def register(sales, email, countries='Saudi Arabia'):
         'contact_phone': '05' + str(uuid.uuid4().int)[:8],
         'password': 'Test123!', 'expected_sales': '60000',
         'client_types': 'Retail Chain', 'countries': countries, 'display_currency': ''})
+    execu("UPDATE reseller_profiles SET nda_accepted_at=CURRENT_TIMESTAMP WHERE user_id=(SELECT id FROM users WHERE email=?)", email)
     return q("""SELECT cp.* FROM reseller_profiles cp JOIN users u ON cp.user_id=u.id
                 WHERE u.email=?""", email)[0]
 

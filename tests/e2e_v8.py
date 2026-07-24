@@ -78,6 +78,7 @@ s, b = post(sales, '/sales/register', {
     'password': 'Test123!', 'expected_sales': '80000',
     'client_types': ['Bank', 'Fintech / Wallet'], 'countries': 'Saudi Arabia'})
 check('registered with 2 client types', 'registered successfully' in b)
+_nc = sqlite3.connect(DB); _nc.execute("UPDATE reseller_profiles SET nda_accepted_at=CURRENT_TIMESTAMP WHERE user_id=(SELECT id FROM users WHERE email=?)", (email,)); _nc.commit(); _nc.close()
 rid = q("""SELECT cp.id FROM reseller_profiles cp JOIN users u ON cp.user_id=u.id
            WHERE u.email=?""", email)[0]['id']
 types = [r['client_type'] for r in q("SELECT client_type FROM reseller_client_types WHERE reseller_id=?", rid)]

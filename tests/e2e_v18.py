@@ -87,6 +87,7 @@ check('hidden merchant removed from enriched catalogue', M1 not in seen)
 check('other merchants remain', M2 in seen)
 
 # ── reseller portal doesn't show the hidden merchant ──
+execu("UPDATE reseller_profiles SET nda_accepted_at=CURRENT_TIMESTAMP WHERE id=?", rid)
 res = login(em, 'Test123!')
 s, b = get(res, '/reseller/products')
 check('reseller catalogue page hides the merchant', s == 200 and M1 not in b)

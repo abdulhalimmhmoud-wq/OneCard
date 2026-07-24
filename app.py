@@ -57,10 +57,13 @@ DEBUG_MODE = os.environ.get('ONECARD_DEBUG', '0') == '1'
 UPLOAD_DIR = os.path.join(BASE_DIR, 'uploads', 'receipts')
 PRICEFILE_DIR = os.path.join(BASE_DIR, 'uploads', 'pricefiles')
 CONTRACT_DIR = os.path.join(BASE_DIR, 'uploads', 'contracts')
+INTEL_DIR = os.path.join(BASE_DIR, 'uploads', 'intel')
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(PRICEFILE_DIR, exist_ok=True)
 os.makedirs(CONTRACT_DIR, exist_ok=True)
+os.makedirs(INTEL_DIR, exist_ok=True)
 ALLOWED_CONTRACT_EXT = {'.pdf', '.doc', '.docx', '.png', '.jpg', '.jpeg'}
+ALLOWED_INTEL_EXT = {'.pdf', '.png', '.jpg', '.jpeg', '.webp', '.xls', '.xlsx', '.csv', '.doc', '.docx'}
 
 
 def _save_contract_file(file, reseller_id):
@@ -73,6 +76,19 @@ def _save_contract_file(file, reseller_id):
         return None
     fname = f"c{reseller_id}_{uuid.uuid4().hex[:12]}{ext}"
     file.save(os.path.join(CONTRACT_DIR, fname))
+    return fname
+
+
+def _save_intel_file(file):
+    """Persist a competitor-intel source file (screenshot / PDF / Excel).
+    Returns the stored filename or None if the type isn't allowed."""
+    if not file or not file.filename:
+        return None
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in ALLOWED_INTEL_EXT:
+        return None
+    fname = f"intel_{uuid.uuid4().hex[:12]}{ext}"
+    file.save(os.path.join(INTEL_DIR, fname))
     return fname
 # Receipt uploads are validated by content (see _sniff_receipt_ext), not
 # extension — they're reachable by any reseller. Price files stay
@@ -188,6 +204,20 @@ def enforce_suspension():
         session.clear()
         flash("Your account is inactive. Please contact your account manager.", "error")
         return redirect(url_for('login'))
+
+
+@app.before_request
+def enforce_nda():
+    """A new reseller must accept the confidentiality notice (NDA) before using
+    the portal. Sales preview is unaffected (session user is the sales manager)."""
+    if request.endpoint in (None, 'static', 'login', 'logout',
+                            'reseller_nda', 'reseller_accept_nda'):
+        return
+    if request.path.startswith('/api/'):
+        return
+    uid = session.get('user_id')
+    if uid and 'preview_user_id' not in session and models.reseller_nda_pending(uid):
+        return redirect(url_for('reseller_nda'))
 
 
 _last_compliance_tick = 0.0
@@ -863,6 +893,75 @@ def sales_discounts():
     return render_template('sales/discounts.html', active_tab='discounts',
                            resellers=resellers, merchants=merchants, requests=my_requests,
                            resellers_json=resellers_json, merchants_json=merchants_json)
+
+
+# ── Sales: Competitor price intelligence -> BD (v19) ─────────────
+
+@app.route('/sales/competitor-intel', methods=['GET', 'POST'])
+@auth.sales_required
+def sales_competitor_intel():
+    curr = auth.get_current_user()
+    if request.method == 'POST':
+        merchant = request.form.get('merchant', '').strip()
+        competitor = request.form.get('competitor_name', '').strip()
+        note = request.form.get('note', '').strip()
+        if not (merchant or competitor or note):
+            flash("Add at least a merchant, competitor, or a note.", "error")
+            return redirect(url_for('sales_competitor_intel'))
+        def num(v):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+        fname = _save_intel_file(request.files.get('attachment'))
+        if request.files.get('attachment') and request.files.get('attachment').filename and not fname:
+            flash("Attachment must be an image, PDF, Excel or CSV file.", "error")
+            return redirect(url_for('sales_competitor_intel'))
+        models.create_competitor_intel(
+            curr['id'], merchant, request.form.get('product_name', '').strip(), competitor,
+            num(request.form.get('competitor_price')), num(request.form.get('our_price')),
+            'SAR', note, fname)
+        flash("Competitor intel sent to Business Development. Thank you!", "success")
+        return redirect(url_for('sales_competitor_intel'))
+    return render_template('sales/competitor_intel.html', active_tab='competitor_intel',
+                           merchants=models.get_all_merchants(),
+                           submissions=models.get_competitor_intel(submitted_by=curr['id']))
+
+
+@app.route('/intel/<int:intel_id>/file')
+@auth.login_required
+def intel_file(intel_id):
+    """Serve a competitor-intel attachment. Private: the submitting sales manager,
+    BD, CCO and admin."""
+    intel = models.get_competitor_intel_one(intel_id)
+    if not intel or not intel['attachment_file']:
+        abort(404)
+    curr = auth.get_current_user()
+    if curr['role'] not in ('bd', 'cco', 'admin') and curr['id'] != intel['submitted_by']:
+        abort(403)
+    return send_from_directory(INTEL_DIR, intel['attachment_file'])
+
+
+# ── BD: Competitor Price Intel inbox (v19) ───────────────────────
+
+@app.route('/bd/intel')
+@auth.bd_required
+def bd_intel():
+    return render_template('bd/intel.html', active_tab='bd_intel',
+                           submissions=models.get_competitor_intel())
+
+
+@app.route('/bd/intel/<int:intel_id>/status', methods=['POST'])
+@auth.bd_required
+def bd_intel_status(intel_id):
+    curr = auth.get_current_user()
+    status = request.form.get('status', '')
+    if status not in ('new', 'reviewing', 'actioned', 'dismissed'):
+        flash("Invalid status.", "error")
+        return redirect(url_for('bd_intel'))
+    intel = models.update_competitor_intel(intel_id, status, request.form.get('bd_note', ''), curr['id'])
+    flash("Intel updated." if intel else "Intel not found.", "info" if intel else "error")
+    return redirect(url_for('bd_intel'))
 
 
 @app.route('/sales/preview/<int:uid>')
@@ -2111,6 +2210,35 @@ def _reseller_ctx():
     return uid, prods, profile
 
 
+@app.route('/reseller/nda')
+@auth.login_required
+def reseller_nda():
+    """Confidentiality notice a new reseller must accept before using the portal."""
+    curr = auth.get_current_user()
+    profile = models.get_reseller_profile(curr['id'])
+    if not profile:
+        return _no_reseller_profile()
+    if profile.get('nda_accepted_at'):
+        return redirect(url_for('reseller_dashboard'))
+    return render_template('reseller/nda.html', profile=profile,
+                           suspend_days=models.PROSPECT_SUSPEND_DAYS)
+
+
+@app.route('/reseller/accept-nda', methods=['POST'])
+@auth.login_required
+def reseller_accept_nda():
+    curr = auth.get_current_user()
+    profile = models.get_reseller_profile(curr['id'])
+    if not profile:
+        return _no_reseller_profile()
+    if request.form.get('agree') != 'yes':
+        flash("Please tick the box to acknowledge the confidentiality notice.", "error")
+        return redirect(url_for('reseller_nda'))
+    models.set_nda_accepted(profile['id'])
+    flash("Thank you. Welcome to OneCard!", "success")
+    return redirect(url_for('reseller_dashboard'))
+
+
 @app.route('/reseller')
 @auth.login_required
 def reseller_dashboard():
@@ -2306,6 +2434,34 @@ def reseller_forecast():
                            merchants_json=jdump(sorted(merchants_data.values(),
                                                             key=lambda x: x['merchant'])),
                            my_forecasts=my_forecasts)
+
+
+@app.route('/reseller/forecast/budget', methods=['POST'])
+@auth.login_required
+def reseller_forecast_budget():
+    """Brand-new clients who don't yet know what to buy just commit a starting
+    budget; they'll connect via API and explore the catalogue."""
+    uid, _, profile = _reseller_ctx()
+    if not profile:
+        return _no_reseller_profile()
+    if block_in_preview():
+        return redirect(url_for('reseller_forecast'))
+    disp = profile['display_currency']
+    amount = float(request.form.get('amount') or 0)
+    if amount <= 0:
+        flash("Enter the budget you'd like to start with.", "error")
+        return redirect(url_for('reseller_forecast'))
+    amount_sar = round(models.convert_amount(amount, disp, 'SAR'), 2)
+    models.create_budget_forecast(profile['id'], amount_sar, request.form.get('note', ''))
+    models.notify(profile['registered_by'], "New client set a starting budget 💡",
+                  f"{profile['company_name']} will start with {amount:,.0f} {disp} and explore "
+                  f"the catalogue (likely via API).", "/sales/forecasts")
+    models.notify(models.get_user_ids_by_role('ops'), "Exploratory budget for planning 📦",
+                  f"{profile['company_name']} committed a {amount_sar:,.0f} SAR starting budget.",
+                  "/ops/forecasts")
+    flash(f"Your starting budget of {amount:,.0f} {disp} was recorded. Browse the catalogue and "
+          f"place orders whenever you're ready — via the portal or the API.", "success")
+    return redirect(url_for('reseller_forecast'))
 
 
 # ── Reseller: Orders (post-contract) ─────────────────────────────

@@ -81,6 +81,7 @@ post(sales, '/sales/register', {
     'contact_phone': '05' + str(uuid.uuid4().int)[:8],
     'password': 'Test123!', 'expected_sales': '60000',
     'client_types': 'Gaming Store', 'countries': ['Egypt', 'UAE'], 'display_currency': ''})
+_nc = sqlite3.connect(DB); _nc.execute("UPDATE reseller_profiles SET nda_accepted_at=CURRENT_TIMESTAMP WHERE user_id=(SELECT id FROM users WHERE email=?)", (em_usd,)); _nc.commit(); _nc.close()
 usd_rid = q("""SELECT cp.id, cp.display_currency FROM reseller_profiles cp JOIN users u ON cp.user_id=u.id
                WHERE u.email=?""", em_usd)[0]
 check('non-Saudi market -> USD auto', usd_rid['display_currency'] == 'USD')
@@ -123,15 +124,16 @@ check('USD product currency label is USD', en_usd[sample]['currency'] == 'USD')
 import io
 boundary = '----curboundary'
 png = b'\x89PNG\r\n\x1a\n' + b'\x00' * 20
+topup_ref = 'USD-TOPUP-' + uuid.uuid4().hex[:10]   # unique per run — never collide with residue
 parts = (f'--{boundary}\r\nContent-Disposition: form-data; name="_csrf"\r\n\r\n{usd_res._csrf}\r\n'
          f'--{boundary}\r\nContent-Disposition: form-data; name="amount"\r\n\r\n10000\r\n'
-         f'--{boundary}\r\nContent-Disposition: form-data; name="bank_reference"\r\n\r\nUSD-TOPUP-1\r\n'
+         f'--{boundary}\r\nContent-Disposition: form-data; name="bank_reference"\r\n\r\n{topup_ref}\r\n'
          f'--{boundary}\r\nContent-Disposition: form-data; name="receipt"; filename="r.png"\r\n'
          f'Content-Type: application/octet-stream\r\n\r\n').encode() + png + f'\r\n--{boundary}--\r\n'.encode()
 req = urllib.request.Request(BASE + '/reseller/wallet', data=parts,
                              headers={'Content-Type': f'multipart/form-data; boundary={boundary}'})
 usd_res.open(req)
-txn = q("""SELECT wt.* FROM wallet_transactions wt WHERE wt.bank_reference='USD-TOPUP-1'""")[0]
+txn = q("""SELECT wt.* FROM wallet_transactions wt WHERE wt.bank_reference=?""", topup_ref)[0]
 check('top-up orig_amount is the USD figure entered', abs(txn['orig_amount'] - 10000) < 0.01
       and txn['orig_currency'] == 'USD')
 check('top-up stored amount is USD converted to SAR',
