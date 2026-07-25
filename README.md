@@ -1,4 +1,29 @@
-# OneCard — Reseller Operations Platform (v20)
+# OneCard — Reseller Operations Platform (v21)
+
+## Buy-side, Phase 1 — Supplier account models & payables (v21)
+
+The sell-side account models (prepaid / credit / consignment) are now **mirrored on the
+buy side**, so how we settle **suppliers** is modelled the same way we settle customers:
+
+- **Supplier account type** on each supplier (Operations → Suppliers): `prepaid` (we pay
+  upfront), `credit` (the supplier grants **us** a limit and we settle per cycle), or
+  `consignment` (pay as we sell), with **our credit limit**, net-days and billing cycle.
+- **Payables accrue on purchase** — a credit/consignment `purchase batch` increases what
+  we owe that supplier (`our_outstanding`), and a purchase that would exceed **our credit
+  limit with them** is refused (`supplier_available_to_buy`). Prepaid purchases accrue
+  nothing (paid upfront).
+- **Finance → Supplier Payables** — a new page showing what we owe each supplier, our
+  headroom, 30-day buying, oldest open purchase, and a **record-payment** action
+  (`supplier_payments`) that reduces the outstanding. Portfolio KPIs: credit granted to
+  us, total outstanding, headroom left.
+
+This is Phase 1 of the procurement/finance programme. Coverage: `tests/e2e_v21.py`
+(14 checks). Full regression green — 19 suites.
+
+**Next phases (planned):** supplier period statements + buy-via-API pull + settlement
+receipts (Phase 2); inventory on-hand + a **buy-decision engine** weighing draw-down rate,
+forecast (active-client vs new-client), stock and cash (Phase 3); a **cash-flow dashboard**
+(receivables vs payables → safe-to-buy) + Ops/Finance UX polish (Phase 4).
 
 ## Hardening pass — correctness, security & scale (v20)
 

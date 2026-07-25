@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}Supplier Payables — Finance — OneCard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">📤 Supplier Payables</h1>
+        <p class="page-subtitle">What we owe suppliers on credit/consignment terms — record payments and watch our exposure. All figures in SAR.</p>
+    </div>
+</div>
+
+<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">
+    <div class="stat-card">
+        <div class="stat-icon">💳</div>
+        <div class="stat-value">SAR {{ summary.total_limit|money }}</div>
+        <div class="stat-label">Credit Granted to Us</div>
+    </div>
+    <div class="stat-card" style="border:2px solid var(--warning)">
+        <div class="stat-icon">📤</div>
+        <div class="stat-value" style="color:var(--warning)">SAR {{ summary.total_outstanding|money }}</div>
+        <div class="stat-label">We Owe (outstanding)</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">✅</div>
+        <div class="stat-value">SAR {{ summary.available|money }}</div>
+        <div class="stat-label">Buying Headroom Left</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🚚</div>
+        <div class="stat-value">{{ summary.accounts }}</div>
+        <div class="stat-label">Credit / Consignment Suppliers</div>
+    </div>
+</div>
+
+<div class="table-card">
+    <div class="table-header"><div class="table-title">🚚 What We Owe, by Supplier</div></div>
+    <div class="table-scroll">
+        <table>
+            <thead>
+                <tr>
+                    <th>Supplier</th>
+                    <th>Terms</th>
+                    <th>We Owe</th>
+                    <th>Limit</th>
+                    <th>Headroom</th>
+                    <th>Bought 30d</th>
+                    <th>Oldest Open</th>
+                    <th>Record Payment</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for p in payables %}
+            <tr>
+                <td class="fw6">{{ p.name }}</td>
+                <td><span class="badge" style="background:{{ supplier_labels.get(p.account_type, ['','#64748b'])[1] }}20;color:{{ supplier_labels.get(p.account_type, ['','#64748b'])[1] }}">{{ supplier_labels.get(p.account_type, [p.account_type])[0] }}</span>
+                    <div class="text-muted" style="font-size:10px">net {{ p.settlement_terms_days }}d · {{ p.billing_cycle }}</div>
+                </td>
+                <td class="fw6 {{ 'text-d' if p.our_outstanding }}">{{ p.our_outstanding|money }}</td>
+                <td>{{ p.our_credit_limit|money }}</td>
+                <td class="fw6 {{ 'text-d' if p.available <= 0 }}">{{ p.available|money }}</td>
+                <td class="text-muted">{{ p.bought_30d|money }}</td>
+                <td class="text-muted" style="font-size:12px">{{ (p.oldest_days ~ ' days') if p.oldest_open_purchase else '—' }}</td>
+                <td>
+                    {% if p.our_outstanding > 0 %}
+                    <details style="position:relative">
+                        <summary class="btn btn-sm btn-primary" style="list-style:none;cursor:pointer">💸 Pay</summary>
+                        <div style="position:absolute;right:0;top:110%;z-index:200;background:var(--bg-1);border:1px solid var(--border);border-radius:10px;padding:12px;width:240px;box-shadow:0 12px 32px rgba(0,0,0,.5)">
+                            <form method="POST" action="/finance/payables/{{ p.id }}/pay">
+                                <input type="number" name="amount" required min="1" step="1000" value="{{ p.our_outstanding|round|int }}" style="width:100%;font-size:12px;padding:5px;margin-bottom:6px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;color:var(--text-1)">
+                                <input type="text" name="reference" placeholder="Bank reference" style="width:100%;font-size:12px;padding:5px;margin-bottom:6px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;color:var(--text-1)">
+                                <button class="btn btn-sm btn-primary" style="width:100%" type="submit">Record Payment</button>
+                            </form>
+                        </div>
+                    </details>
+                    {% else %}<span class="badge badge-success">settled</span>{% endif %}
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="8" style="text-align:center;padding:40px;color:var(--text-3)">
+                No credit/consignment suppliers yet. Set a supplier's terms in Operations → Suppliers.
+            </td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="table-card mt-24">
+    <div class="table-header"><div class="table-title">📜 Recent Payments to Suppliers</div></div>
+    <div class="table-scroll" style="max-height:360px;overflow-y:auto">
+        <table>
+            <thead><tr><th>Date</th><th>Supplier</th><th>Amount</th><th>Reference</th><th>By</th></tr></thead>
+            <tbody>
+            {% for pay in payments %}
+            <tr>
+                <td class="text-muted" style="font-size:12px">{{ pay.created_at[:16] }}</td>
+                <td class="fw6">{{ pay.supplier_name }}</td>
+                <td class="fw6">SAR {{ pay.amount|money }}</td>
+                <td class="text-muted" style="font-size:12px">{{ pay.reference or '—' }}</td>
+                <td class="text-muted" style="font-size:12px">{{ pay.paid_by_name or '—' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text-3)">No payments recorded yet</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

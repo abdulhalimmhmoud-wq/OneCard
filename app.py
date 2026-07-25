@@ -1422,19 +1422,34 @@ def ops_suppliers():
     if request.method == 'POST':
         sid = request.form.get('supplier_id') or None
         merchants = [m.strip() for m in request.form.getlist('merchants') if m.strip()]
+        try:
+            our_limit = float(request.form.get('our_credit_limit') or 0)
+        except ValueError:
+            our_limit = 0
+        try:
+            terms_days = int(request.form.get('settlement_terms_days') or 30)
+        except ValueError:
+            terms_days = 30
         models.upsert_supplier(int(sid) if sid else None,
                                request.form.get('name', '').strip(),
                                request.form.get('contact_person', ''),
                                request.form.get('email', ''),
                                request.form.get('phone', ''),
                                request.form.get('payment_terms', ''),
-                               request.form.get('notes', ''), merchants)
+                               request.form.get('notes', ''), merchants,
+                               account_type=request.form.get('account_type', 'prepaid'),
+                               our_credit_limit=our_limit,
+                               settlement_terms_days=terms_days,
+                               billing_cycle=request.form.get('billing_cycle', 'monthly'))
         flash("Supplier saved.", "success")
         return redirect(url_for('ops_suppliers'))
     suppliers = models.get_suppliers()
     all_merchants = [m['merchant'] for m in models.get_all_merchants()]
     return render_template('ops/suppliers.html', active_tab='ops_suppliers',
-                           suppliers=suppliers, all_merchants=all_merchants)
+                           suppliers=suppliers, all_merchants=all_merchants,
+                           supplier_types=models.SUPPLIER_ACCOUNT_TYPES,
+                           supplier_labels=models.SUPPLIER_ACCOUNT_LABELS,
+                           payables_summary=models.get_payables_summary())
 
 
 @app.route('/ops/suppliers/<int:sid>/delete', methods=['POST'])
@@ -2044,6 +2059,38 @@ def finance_batch_review(bid):
     else:
         flash(f"Batch #{bid} marked as disputed — Ops notified.", "warning")
     return redirect(url_for('finance_batches'))
+
+
+# ── Finance: Supplier Payables (money WE owe suppliers) (v21) ─────
+
+@app.route('/finance/payables')
+@auth.finance_required
+def finance_payables():
+    return render_template('finance/payables.html', active_tab='finance_payables',
+                           summary=models.get_payables_summary(),
+                           payables=models.get_supplier_payables(),
+                           payments=models.get_supplier_payments(limit=25),
+                           supplier_labels=models.SUPPLIER_ACCOUNT_LABELS)
+
+
+@app.route('/finance/payables/<int:sid>/pay', methods=['POST'])
+@auth.finance_required
+def finance_pay_supplier(sid):
+    curr = auth.get_current_user()
+    try:
+        amount = float(request.form.get('amount') or 0)
+    except ValueError:
+        amount = 0
+    ok, err = models.pay_supplier(sid, amount, request.form.get('method', ''),
+                                  request.form.get('reference', ''),
+                                  request.form.get('note', ''), curr['id'])
+    if ok:
+        s = models.get_supplier(sid)
+        flash(f"Recorded {amount:,.0f} SAR paid to {s['name'] if s else 'supplier'} "
+              f"— {s['our_outstanding']:,.0f} SAR still outstanding.", "success")
+    else:
+        flash(err, "error")
+    return redirect(url_for('finance_payables'))
 
 
 # ── BD: Deal Pipeline (v8) ───────────────────────────────────────

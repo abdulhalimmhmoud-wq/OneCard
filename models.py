@@ -629,6 +629,19 @@ def init_db():
 
         CREATE INDEX IF NOT EXISTS idx_batches_product ON purchase_batches(product_rowid, created_at);
 
+        -- ── v21: Payments WE make to suppliers (settle what we owe) ──
+        CREATE TABLE IF NOT EXISTS supplier_payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+            amount REAL NOT NULL,                 -- SAR paid to the supplier
+            method TEXT,                          -- bank transfer / etc.
+            reference TEXT,
+            note TEXT,
+            paid_by INTEGER REFERENCES users(id),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_supplier_payments ON supplier_payments(supplier_id, created_at);
+
         -- Which batch every sold unit came from (FIFO) → true COGS per sale
         CREATE TABLE IF NOT EXISTS order_item_allocations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -826,6 +839,21 @@ def migrate_db():
     scols = {r['name'] for r in conn.execute("PRAGMA table_info(suppliers)")}
     if 'api_key' not in scols:
         conn.execute("ALTER TABLE suppliers ADD COLUMN api_key TEXT")
+    # v21: how WE pay a supplier (mirror of the customer account models):
+    #   prepaid     = we pay upfront (advance), no payable accrues
+    #   credit      = the supplier grants US a limit; each purchase accrues to
+    #                 our_outstanding and we settle per cycle
+    #   consignment = they place stock with us; we owe as we buy/draw, settle later
+    for col, ddl in (
+        ('account_type', "ALTER TABLE suppliers ADD COLUMN account_type TEXT NOT NULL DEFAULT 'prepaid'"),
+        ('our_credit_limit', "ALTER TABLE suppliers ADD COLUMN our_credit_limit REAL NOT NULL DEFAULT 0"),
+        ('our_outstanding', "ALTER TABLE suppliers ADD COLUMN our_outstanding REAL NOT NULL DEFAULT 0"),
+        ('settlement_terms_days', "ALTER TABLE suppliers ADD COLUMN settlement_terms_days INTEGER NOT NULL DEFAULT 30"),
+        ('billing_cycle', "ALTER TABLE suppliers ADD COLUMN billing_cycle TEXT NOT NULL DEFAULT 'monthly'"),
+        ('is_active', "ALTER TABLE suppliers ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1"),
+    ):
+        if col not in scols:
+            conn.execute(ddl)
 
     # 6. v7 hardening: FX-aware order items + backfill of historical data
     oicols = {r['name'] for r in conn.execute("PRAGMA table_info(order_items)")}
@@ -1895,6 +1923,25 @@ ACCOUNT_TYPE_LABELS = {
     'credit':      ('Credit Line', '#f59e0b'),
     'consignment': ('Consignment', '#8b5cf6'),
 }
+
+# v21: how WE settle a SUPPLIER (same three arrangements, mirrored on the buy side).
+SUPPLIER_ACCOUNT_TYPES = ['prepaid', 'credit', 'consignment']
+SUPPLIER_ACCOUNT_LABELS = {
+    'prepaid':     ('Prepaid — we pay upfront', '#10b981'),
+    'credit':      ('Credit — they give us a limit', '#f59e0b'),
+    'consignment': ('Consignment — pay as we sell', '#8b5cf6'),
+}
+
+
+def supplier_available_to_buy(supplier):
+    """How much more we can buy from this supplier on account (SAR).
+    prepaid = unbounded (we pay upfront each time); credit/consignment are capped
+    by the limit they grant us, minus what we already owe."""
+    at = supplier.get('account_type') or 'prepaid'
+    if at == 'prepaid':
+        return None   # not limited by a payable
+    headroom = (supplier.get('our_credit_limit') or 0) - (supplier.get('our_outstanding') or 0)
+    return round(max(0.0, headroom), 2)
 
 
 def available_to_spend(profile):
@@ -3332,16 +3379,24 @@ def get_suppliers():
     return out
 
 
-def upsert_supplier(sid, name, contact_person, email, phone, payment_terms, notes, merchants):
+def upsert_supplier(sid, name, contact_person, email, phone, payment_terms, notes, merchants,
+                    account_type='prepaid', our_credit_limit=0, settlement_terms_days=30,
+                    billing_cycle='monthly'):
+    if account_type not in SUPPLIER_ACCOUNT_TYPES:
+        account_type = 'prepaid'
     conn = get_db()
     if sid:
         conn.execute("""UPDATE suppliers SET name=?, contact_person=?, email=?, phone=?,
-                        payment_terms=?, notes=? WHERE id=?""",
-                     (name, contact_person, email, phone, payment_terms, notes, sid))
+                        payment_terms=?, notes=?, account_type=?, our_credit_limit=?,
+                        settlement_terms_days=?, billing_cycle=? WHERE id=?""",
+                     (name, contact_person, email, phone, payment_terms, notes, account_type,
+                      our_credit_limit or 0, settlement_terms_days or 30, billing_cycle, sid))
     else:
-        conn.execute("""INSERT INTO suppliers (name, contact_person, email, phone, payment_terms, notes)
-                        VALUES (?,?,?,?,?,?)""",
-                     (name, contact_person, email, phone, payment_terms, notes))
+        conn.execute("""INSERT INTO suppliers (name, contact_person, email, phone, payment_terms,
+                        notes, account_type, our_credit_limit, settlement_terms_days, billing_cycle)
+                        VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                     (name, contact_person, email, phone, payment_terms, notes, account_type,
+                      our_credit_limit or 0, settlement_terms_days or 30, billing_cycle))
         sid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.execute("DELETE FROM supplier_merchants WHERE supplier_id=?", (sid,))
     for m in merchants:
@@ -3363,6 +3418,104 @@ def set_supplier_api_key(sid, key):
     conn.execute("UPDATE suppliers SET api_key=? WHERE id=?", (key, sid))
     conn.commit()
     conn.close()
+
+
+def get_supplier(sid):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM suppliers WHERE id=?", (sid,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def pay_supplier(supplier_id, amount, method='', reference='', note='', paid_by=None):
+    """Record a payment WE make to a supplier and reduce what we owe them.
+    Race-safe: the read-and-reduce runs under BEGIN IMMEDIATE."""
+    amount = round(float(amount or 0), 2)
+    if amount <= 0:
+        return False, "Enter a valid payment amount."
+    conn = get_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        s = conn.execute("SELECT name, our_outstanding FROM suppliers WHERE id=?", (supplier_id,)).fetchone()
+        if not s:
+            conn.rollback()
+            return False, "Supplier not found."
+        conn.execute("""INSERT INTO supplier_payments
+                        (supplier_id, amount, method, reference, note, paid_by)
+                        VALUES (?,?,?,?,?,?)""",
+                     (supplier_id, amount, method or None, reference or None, note or None, paid_by))
+        conn.execute("UPDATE suppliers SET our_outstanding = MAX(0, our_outstanding - ?) WHERE id=?",
+                     (amount, supplier_id))
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+    return True, None
+
+
+def get_supplier_payments(supplier_id=None, limit=100):
+    conn = get_db()
+    q = """SELECT sp.*, s.name as supplier_name, u.name as paid_by_name
+           FROM supplier_payments sp JOIN suppliers s ON sp.supplier_id=s.id
+           LEFT JOIN users u ON sp.paid_by=u.id WHERE 1=1"""
+    params = []
+    if supplier_id:
+        q += " AND sp.supplier_id=?"
+        params.append(supplier_id)
+    q += " ORDER BY sp.created_at DESC, sp.id DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_supplier_payables():
+    """Per-supplier payables for Finance: what we owe, our limit + headroom, and
+    the age of the oldest unpaid purchase (a simple aging signal). SAR."""
+    conn = get_db()
+    today = datetime.now(timezone.utc).date()
+    rows = conn.execute("""
+        SELECT s.id, s.name, s.account_type, s.our_credit_limit, s.our_outstanding,
+               s.settlement_terms_days, s.billing_cycle,
+               (SELECT COALESCE(SUM(total_cost),0) FROM purchase_batches b
+                    WHERE b.supplier_id=s.id AND b.created_at >= date('now','-30 day')) as bought_30d,
+               (SELECT MIN(created_at) FROM purchase_batches b
+                    WHERE b.supplier_id=s.id AND b.status!='reconciled') as oldest_open_purchase
+        FROM suppliers s
+        WHERE s.account_type IN ('credit','consignment')
+        ORDER BY s.our_outstanding DESC""").fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d['available'] = round(max(0.0, (d['our_credit_limit'] or 0) - (d['our_outstanding'] or 0)), 2)
+        d['oldest_days'] = 0
+        if d['oldest_open_purchase']:
+            try:
+                d['oldest_days'] = max(0, (today - date.fromisoformat(d['oldest_open_purchase'][:10])).days)
+            except (ValueError, TypeError):
+                d['oldest_days'] = 0
+        out.append(d)
+    return out
+
+
+def get_payables_summary():
+    """Portfolio payables totals for the Finance/Ops dashboards (SAR)."""
+    conn = get_db()
+    row = conn.execute("""SELECT
+            COALESCE(SUM(our_credit_limit),0) as total_limit,
+            COALESCE(SUM(our_outstanding),0) as total_outstanding,
+            COUNT(*) as accounts
+        FROM suppliers WHERE account_type IN ('credit','consignment')""").fetchone()
+    conn.close()
+    d = dict(row)
+    d['available'] = round(max(0.0, (d['total_limit'] or 0) - (d['total_outstanding'] or 0)), 2)
+    return d
 
 
 def get_supplier_by_api_key(key):
@@ -3533,20 +3686,36 @@ def create_batch(supplier_id, product_rowid, quantity, unit_cost, invoice_ref=''
     best_cost = best['supplier_cost'] if best else None
     variance = round((unit_cost - best_cost) * quantity, 2) if best_cost is not None else 0
 
+    total = round(unit_cost * quantity, 2)
     conn = get_db()
     p = conn.execute("SELECT product_name, merchant FROM products WHERE id=?", (product_rowid,)).fetchone()
-    s = conn.execute("SELECT name FROM suppliers WHERE id=?", (supplier_id,)).fetchone()
+    s = conn.execute("""SELECT name, account_type, our_credit_limit, our_outstanding
+                        FROM suppliers WHERE id=?""", (supplier_id,)).fetchone()
     if not p or not s:
         conn.close()
         return None, "Product or supplier not found."
+    # v21: a purchase on supplier credit/consignment can't exceed the limit they
+    # grant us. Prepaid means we pay upfront, so no payable / no cap.
+    account_type = s['account_type'] or 'prepaid'
+    if account_type != 'prepaid':
+        headroom = (s['our_credit_limit'] or 0) - (s['our_outstanding'] or 0)
+        if total > headroom + 0.01:
+            conn.close()
+            return None, (f"This {total:,.0f} SAR purchase exceeds our available credit with "
+                          f"{s['name']} ({headroom:,.0f} SAR left of a {s['our_credit_limit']:,.0f} limit). "
+                          f"Settle outstanding first or raise the limit.")
     conn.execute("""INSERT INTO purchase_batches
                     (supplier_id, product_rowid, quantity, remaining_qty, unit_cost, total_cost,
                      best_cost_at_purchase, sourcing_variance, reason, invoice_ref, created_by)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                  (supplier_id, product_rowid, quantity, quantity, unit_cost,
-                  round(unit_cost * quantity, 2), best_cost, max(variance, 0),
+                  total, best_cost, max(variance, 0),
                   reason, invoice_ref, created_by))
     bid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    # credit/consignment purchases accrue to what we owe this supplier
+    if account_type != 'prepaid':
+        conn.execute("UPDATE suppliers SET our_outstanding = our_outstanding + ? WHERE id=?",
+                     (total, supplier_id))
     conn.commit()
     conn.close()
 

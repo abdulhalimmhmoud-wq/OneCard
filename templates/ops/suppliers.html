@@ -34,8 +34,32 @@
                 <input type="email" name="email" id="supEmail" placeholder="orders@supplier.com">
             </div>
             <div class="form-group">
-                <label class="form-label">Payment Terms</label>
-                <input type="text" name="payment_terms" id="supTerms" placeholder="e.g. Prepaid / Net 30 / Credit line 500K">
+                <label class="form-label">Payment Terms (free text)</label>
+                <input type="text" name="payment_terms" id="supTerms" placeholder="e.g. Net 30 after invoice">
+            </div>
+            <div class="form-row">
+                <div class="form-group" style="flex:2">
+                    <label class="form-label">How we settle them *</label>
+                    <select name="account_type" id="supAcct" onchange="supAcctToggle()">
+                        {% for at in supplier_types %}<option value="{{ at }}">{{ supplier_labels[at][0] }}</option>{% endfor %}
+                    </select>
+                </div>
+                <div class="form-group sup-credit" style="flex:1">
+                    <label class="form-label">Our credit limit (SAR)</label>
+                    <input type="number" name="our_credit_limit" id="supLimit" min="0" step="1000" placeholder="e.g. 500000">
+                </div>
+            </div>
+            <div class="form-row sup-credit">
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Settle within (net days)</label>
+                    <input type="number" name="settlement_terms_days" id="supNetDays" min="0" step="1" value="30">
+                </div>
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Billing cycle</label>
+                    <select name="billing_cycle" id="supCycle">
+                        <option value="monthly">monthly</option><option value="weekly">weekly</option><option value="custom">custom</option>
+                    </select>
+                </div>
             </div>
             <div class="form-group">
                 <label class="form-label">Merchants supplied</label>
@@ -65,7 +89,13 @@
                     <div class="text-muted" style="font-size:12px;margin-top:4px">
                         {{ s.contact_person or '—' }}{% if s.email %} · {{ s.email }}{% endif %}{% if s.phone %} · {{ s.phone }}{% endif %}
                     </div>
-                    {% if s.payment_terms %}<div style="font-size:12px;margin-top:6px">💳 Terms: <b>{{ s.payment_terms }}</b></div>{% endif %}
+                    <div style="font-size:12px;margin-top:6px">
+                        <span class="badge" style="background:{{ supplier_labels.get(s.account_type or 'prepaid', ['','#64748b'])[1] }}20;color:{{ supplier_labels.get(s.account_type or 'prepaid', ['','#64748b'])[1] }}">{{ supplier_labels.get(s.account_type or 'prepaid', ['Prepaid'])[0] }}</span>
+                        {% if (s.account_type or 'prepaid') != 'prepaid' %}
+                        <span style="margin-left:6px">we owe <b class="{{ 'text-d' if s.our_outstanding }}">{{ s.our_outstanding|money }}</b> / {{ s.our_credit_limit|money }} SAR · net {{ s.settlement_terms_days }}d</span>
+                        {% endif %}
+                    </div>
+                    {% if s.payment_terms %}<div class="text-muted" style="font-size:11px;margin-top:2px">💳 {{ s.payment_terms }}</div>{% endif %}
                     {% if s.notes %}<div class="text-muted" style="font-size:12px;margin-top:4px">🗒️ {{ s.notes }}</div>{% endif %}
                     <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:8px">
                         {% for m in s.merchants %}<span class="badge badge-info" style="font-size:10px">{{ m }}</span>{% endfor %}
@@ -117,10 +147,21 @@ function editSupplier(s) {
     document.getElementById('supEmail').value = s.email || '';
     document.getElementById('supTerms').value = s.payment_terms || '';
     document.getElementById('supNotes').value = s.notes || '';
+    document.getElementById('supAcct').value = s.account_type || 'prepaid';
+    document.getElementById('supLimit').value = s.our_credit_limit || '';
+    document.getElementById('supNetDays').value = s.settlement_terms_days || 30;
+    document.getElementById('supCycle').value = s.billing_cycle || 'monthly';
+    supAcctToggle();
     document.querySelectorAll('#supMerchants input[type=checkbox]').forEach(cb => {
         cb.checked = (s.merchants || []).includes(cb.value);
     });
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
+
+function supAcctToggle() {
+    const credit = document.getElementById('supAcct').value !== 'prepaid';
+    document.querySelectorAll('.sup-credit').forEach(el => { el.style.display = credit ? '' : 'none'; });
+}
+supAcctToggle();
 </script>
 {% endblock %}
