@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Cash-Flow Command Centre — OneCard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">💵 Cash-Flow Command Centre</h1>
+        <p class="page-subtitle">Money owed to us vs money we owe, and how much we can safely commit to buying right now. All figures in SAR.</p>
+    </div>
+</div>
+
+<!-- The verdict -->
+<div class="card mb-24" style="border-left:4px solid {{ 'var(--success)' if cf.covers_urgent else 'var(--danger)' }}">
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:16px;align-items:center">
+        <div>
+            <div style="font-size:13px;font-weight:600">🧭 Safe-to-buy verdict</div>
+            <div style="font-size:14px;margin-top:4px">
+                {% if cf.covers_urgent %}
+                <span class="text-s">✅ Buying power of <b>SAR {{ cf.buying_power|money }}</b> covers the urgent restock of
+                <b>SAR {{ cf.urgent_restock_cost|money }}</b> — surplus <b>SAR {{ cf.surplus_after_urgent|money }}</b>.</span>
+                {% else %}
+                <span class="text-d">⚠️ Buying power is only <b>SAR {{ cf.buying_power|money }}</b> against an urgent restock of
+                <b>SAR {{ cf.urgent_restock_cost|money }}</b> — short by <b>SAR {{ (-cf.surplus_after_urgent)|money }}</b>.
+                Prioritise fastest-moving lines, collect receivables, or raise supplier credit.</span>
+                {% endif %}
+            </div>
+        </div>
+        <a href="/ops/buying" class="btn btn-ghost">🧭 Open Buy Planner</a>
+    </div>
+</div>
+
+<div class="grid-2" style="align-items:start">
+    <!-- Money IN -->
+    <div class="card">
+        <div class="card-header"><div class="card-title" style="color:var(--success)">⬇️ Money In (receivables)</div></div>
+        <div style="display:flex;flex-direction:column;gap:10px;font-size:14px">
+            <div style="display:flex;justify-content:space-between"><span class="text-muted">Customers owe us (credit/consignment)</span><b>{{ cf.customer_receivable|money }}</b></div>
+            <div style="display:flex;justify-content:space-between"><span class="text-muted">— of which overdue</span><b class="{{ 'text-d' if cf.customer_overdue }}">{{ cf.customer_overdue|money }}</b></div>
+            <div style="display:flex;justify-content:space-between"><span class="text-muted">Prepaid wallet float we hold</span><span>{{ cf.wallet_float|money }}</span></div>
+            <div class="text-muted" style="font-size:11px">Wallet float is customers' money earmarked for their own orders — it is <b>not</b> counted in buying power.</div>
+        </div>
+    </div>
+
+    <!-- Money OUT -->
+    <div class="card">
+        <div class="card-header"><div class="card-title" style="color:var(--warning)">⬆️ Money Out (payables)</div></div>
+        <div style="display:flex;flex-direction:column;gap:10px;font-size:14px">
+            <div style="display:flex;justify-content:space-between"><span class="text-muted">We owe suppliers (credit/consignment)</span><b>{{ cf.supplier_payable|money }}</b></div>
+            <div style="display:flex;justify-content:space-between"><span class="text-muted">— of which overdue</span><b class="{{ 'text-d' if cf.supplier_overdue }}">{{ cf.supplier_overdue|money }}</b></div>
+            <div style="display:flex;justify-content:space-between"><span class="text-muted">Supplier credit headroom left</span><b>{{ cf.supplier_headroom|money }}</b></div>
+        </div>
+    </div>
+</div>
+
+<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(210px,1fr));margin-top:24px">
+    <div class="stat-card" style="{{ 'border:2px solid var(--success)' if cf.net_position >= 0 else 'border:2px solid var(--danger)' }}">
+        <div class="stat-icon">⚖️</div>
+        <div class="stat-value">SAR {{ cf.net_position|money }}</div>
+        <div class="stat-label">Net Position (in − out)</div>
+    </div>
+    <div class="stat-card" style="border:2px solid var(--accent)">
+        <div class="stat-icon">🛒</div>
+        <div class="stat-value" style="color:var(--accent)">SAR {{ cf.buying_power|money }}</div>
+        <div class="stat-label">Buying Power (safe-to-buy)</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🚨</div>
+        <div class="stat-value">SAR {{ cf.urgent_restock_cost|money }}</div>
+        <div class="stat-label">Urgent Restock Cost</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">👀</div>
+        <div class="stat-value">SAR {{ cf.watch_restock_cost|money }}</div>
+        <div class="stat-label">Watch-list Restock Cost</div>
+    </div>
+</div>
+
+<div class="card mt-24" style="background:var(--bg-2)">
+    <div class="text-muted" style="font-size:12.5px;line-height:1.7">
+        <b>How buying power is computed (conservative):</b> supplier credit headroom
+        (SAR {{ cf.supplier_headroom|money }}) + any net receivables
+        (max of 0 and net position). It deliberately excludes the prepaid wallet float, since
+        that is customers' money committed to their orders — with our thin margins and fast cash
+        cycle, we don't fund stock from it.
+    </div>
+</div>
+{% endblock %}

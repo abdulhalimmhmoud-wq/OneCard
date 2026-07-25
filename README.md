@@ -1,4 +1,31 @@
-# OneCard — Reseller Operations Platform (v23)
+# OneCard — Reseller Operations Platform (v24)
+
+## Buy-side, Phase 4 — Cash-Flow Command Centre (v24) [programme complete]
+
+The capstone that ties the whole money picture together, for **Finance, Ops and CCO**
+(`/cashflow`):
+
+- **Money in (receivables):** what customers owe us (credit/consignment) + overdue + the
+  prepaid wallet float we hold.
+- **Money out (payables):** what we owe suppliers + overdue + our remaining supplier-credit
+  headroom.
+- **Net position** (in − out) and a **conservative "buying power" (safe-to-buy)** =
+  supplier credit headroom + net receivables, **deliberately excluding the prepaid float**
+  (that's customers' money for their orders — with our thin margins and fast cash cycle we
+  don't fund stock from it).
+- A **safe-to-buy verdict** compares buying power to the **Buy Planner's urgent restock
+  cost** and tells Ops whether we can cover it or must prioritise / collect / raise credit.
+
+Engine: `get_cashflow_overview()`. Coverage: `tests/e2e_v24.py` (11 checks). Full regression
+green — 22 suites.
+
+### The buy-side programme (v21–v24) is complete
+| Phase | Ver | What it added |
+|---|---|---|
+| 1 | v21 | Supplier account models (prepaid/credit/consignment) + our credit limit + payables |
+| 2 | v22 | Supplier statements + settlement lifecycle + buying methods (API/offline) |
+| 3 | v23 | Inventory + buy-decision engine (draw-rate + active-vs-new forecast weighting) |
+| 4 | v24 | Cash-flow command centre (receivables vs payables → safe-to-buy) |
 
 ## Buy-side, Phase 3 — Inventory & the Buy-Decision Engine (v23)
 

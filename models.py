@@ -3637,6 +3637,45 @@ def get_payables_summary():
     return d
 
 
+def get_cashflow_overview():
+    """Cross-functional money picture (SAR): what's owed to us (customers) vs what
+    we owe (suppliers), the prepaid float we hold, and a conservative 'safe-to-buy'
+    that our thin margins / fast cash-cycle demand. Ties into the Buy Planner's
+    urgent restock cost so Ops+Finance can decide when to deploy cash."""
+    cust = get_credit_exposure()          # customers who owe us (credit/consignment)
+    pay = get_payables_summary()          # suppliers we owe
+    conn = get_db()
+    wallet_float = conn.execute("SELECT COALESCE(SUM(wallet_balance),0) FROM reseller_profiles").fetchone()[0]
+    supplier_overdue = conn.execute("""SELECT COALESCE(SUM(amount),0) FROM supplier_statements
+                                       WHERE status='overdue'""").fetchone()[0]
+    conn.close()
+    recs = get_buy_recommendations()
+    urgent_cost = round(sum(r['est_cost'] for r in recs if r['signal'] in ('out', 'reorder')), 2)
+    watch_cost = round(sum(r['est_cost'] for r in recs if r['signal'] == 'watch'), 2)
+
+    receivable_in = round(cust['total_outstanding'], 2)     # customers owe us
+    payable_out = round(pay['total_outstanding'], 2)        # we owe suppliers
+    net_position = round(receivable_in - payable_out, 2)
+    # Conservative buying power: what we can commit on supplier credit headroom
+    # plus any net receivables — WITHOUT dipping into customers' prepaid float
+    # (that money is earmarked for their orders).
+    buying_power = round(pay['available'] + max(0.0, net_position), 2)
+    return {
+        'customer_receivable': receivable_in,
+        'customer_overdue': round(cust['overdue_amount'], 2),
+        'supplier_payable': payable_out,
+        'supplier_overdue': round(supplier_overdue, 2),
+        'supplier_headroom': pay['available'],
+        'wallet_float': round(wallet_float, 2),
+        'net_position': net_position,
+        'buying_power': buying_power,
+        'urgent_restock_cost': urgent_cost,
+        'watch_restock_cost': watch_cost,
+        'covers_urgent': buying_power >= urgent_cost,
+        'surplus_after_urgent': round(buying_power - urgent_cost, 2),
+    }
+
+
 # ── Supplier statements (period bill of what we owe them) (v22) ──
 
 def _open_supplier_statements_total(conn, supplier_id):

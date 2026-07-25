@@ -2098,6 +2098,18 @@ def finance_payables():
                            supplier_labels=models.SUPPLIER_ACCOUNT_LABELS)
 
 
+@app.route('/cashflow')
+@auth.login_required
+def cashflow():
+    """Cross-functional cash-flow command centre (Finance + Ops + CCO): receivables
+    in vs payables out, and a conservative safe-to-buy vs the urgent restock cost."""
+    curr = auth.get_current_user()
+    if curr['role'] not in ('finance', 'ops', 'cco', 'admin'):
+        abort(403)
+    return render_template('cashflow.html', active_tab='cashflow',
+                           cf=models.get_cashflow_overview(), role=curr['role'])
+
+
 @app.route('/finance/payables/<int:sid>/issue-statement', methods=['POST'])
 @auth.finance_required
 def finance_issue_supplier_statement(sid):
