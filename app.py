@@ -1321,7 +1321,22 @@ def ops_buying():
                            rows=rows, by_signal=by_signal, reorder_cost=reorder_cost,
                            total=len(recs), merchants=merchants,
                            filters={'signal': f_signal, 'merchant': f_merchant},
-                           new_weight=int(models.NEW_CLIENT_FORECAST_WEIGHT * 100))
+                           settings=models.get_buy_settings())
+
+
+@app.route('/ops/buy-settings', methods=['POST'])
+@auth.ops_required
+def ops_buy_settings():
+    """Ops tunes the buy-decision weights (stored in app_meta)."""
+    for k in models.BUY_SETTING_DEFAULTS:
+        v = request.form.get(k)
+        if v not in (None, ''):
+            try:
+                models.set_setting('buy.' + k, float(v))
+            except ValueError:
+                pass
+    flash("Buy-planner settings saved.", "success")
+    return redirect(url_for('ops_buying'))
 
 
 @app.route('/ops/products')
@@ -1462,7 +1477,8 @@ def ops_suppliers():
                                account_type=request.form.get('account_type', 'prepaid'),
                                our_credit_limit=our_limit,
                                settlement_terms_days=terms_days,
-                               billing_cycle=request.form.get('billing_cycle', 'monthly'))
+                               billing_cycle=request.form.get('billing_cycle', 'monthly'),
+                               consignment_settle_on=request.form.get('consignment_settle_on', 'sale'))
         flash("Supplier saved.", "success")
         return redirect(url_for('ops_suppliers'))
     suppliers = models.get_suppliers()
@@ -1804,6 +1820,36 @@ def api_order_codes(oid):
     return {'ok': True, 'order_id': oid,
             'codes': [{'line_id': line, 'code': c['code'], 'pin': c.get('pin')}
                       for line, arr in codes.items() for c in arr]}
+
+
+@app.route('/api/v1/redemptions', methods=['POST'])
+def api_redemptions():
+    """A client (e.g. a bank) reports that end customers redeemed cards. For units
+    sourced from a consignment supplier who settles on redemption, this is what
+    makes us owe them. Body: {"redemptions": [{"line_id": N, "quantity": M}]}."""
+    profile = require_api_reseller()
+    if not profile:
+        return api_error('unauthorized', 'Missing or invalid API key.', 401)
+    body = request.get_json(silent=True) or {}
+    reds = body.get('redemptions') or ([body] if body.get('line_id') else [])
+    if not reds:
+        return api_error('bad_request', "Body must include a non-empty 'redemptions' array.")
+    # only allow reporting redemptions against this reseller's own order lines
+    own_lines = set(models.get_reseller_order_line_ids(profile['id']))
+    results, total = [], 0.0
+    for r in reds:
+        try:
+            line_id, qty = int(r.get('line_id')), int(r.get('quantity') or 0)
+        except (TypeError, ValueError):
+            return api_error('bad_request', 'Each redemption needs an integer line_id and quantity.')
+        if line_id not in own_lines:
+            return api_error('unknown_line', f'Order line not found: {line_id}', 422)
+        accrued, err = models.record_redemption(line_id, qty)
+        if err:
+            return api_error('bad_request', err)
+        total += accrued
+        results.append({'line_id': line_id, 'quantity': qty, 'supplier_accrued_sar': accrued})
+    return {'ok': True, 'redemptions': results, 'total_supplier_accrued_sar': round(total, 2)}
 
 
 @app.route('/api/supplier-prices', methods=['POST'])

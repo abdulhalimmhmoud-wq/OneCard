@@ -61,6 +61,14 @@
                     </select>
                 </div>
             </div>
+            <div class="form-group sup-consign" style="display:none">
+                <label class="form-label">Consignment — we owe them when</label>
+                <select name="consignment_settle_on" id="supSettleOn">
+                    <option value="sale">We sell the card</option>
+                    <option value="redemption">The customer redeems it</option>
+                </select>
+                <div class="form-hint">Consignment stock adds no payable at purchase — it accrues on sale, or on the end-customer's redemption (reported via the API).</div>
+            </div>
             <div class="form-group">
                 <label class="form-label">Merchants supplied</label>
                 <div style="max-height:170px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px;background:var(--bg-2);display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:4px" id="supMerchants">
@@ -151,6 +159,7 @@ function editSupplier(s) {
     document.getElementById('supLimit').value = s.our_credit_limit || '';
     document.getElementById('supNetDays').value = s.settlement_terms_days || 30;
     document.getElementById('supCycle').value = s.billing_cycle || 'monthly';
+    document.getElementById('supSettleOn').value = s.consignment_settle_on || 'sale';
     supAcctToggle();
     document.querySelectorAll('#supMerchants input[type=checkbox]').forEach(cb => {
         cb.checked = (s.merchants || []).includes(cb.value);
@@ -159,8 +168,9 @@ function editSupplier(s) {
 }
 
 function supAcctToggle() {
-    const credit = document.getElementById('supAcct').value !== 'prepaid';
-    document.querySelectorAll('.sup-credit').forEach(el => { el.style.display = credit ? '' : 'none'; });
+    const at = document.getElementById('supAcct').value;
+    document.querySelectorAll('.sup-credit').forEach(el => { el.style.display = at !== 'prepaid' ? '' : 'none'; });
+    document.querySelectorAll('.sup-consign').forEach(el => { el.style.display = at === 'consignment' ? '' : 'none'; });
 }
 supAcctToggle();
 </script>

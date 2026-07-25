@@ -53,9 +53,11 @@
             <tr>
                 <td class="fw6">{{ p.name }}</td>
                 <td><span class="badge" style="background:{{ supplier_labels.get(p.account_type, ['','#64748b'])[1] }}20;color:{{ supplier_labels.get(p.account_type, ['','#64748b'])[1] }}">{{ supplier_labels.get(p.account_type, [p.account_type])[0] }}</span>
-                    <div class="text-muted" style="font-size:10px">net {{ p.settlement_terms_days }}d · {{ p.billing_cycle }}</div>
+                    <div class="text-muted" style="font-size:10px">net {{ p.settlement_terms_days }}d · {{ p.billing_cycle }}{% if p.account_type == 'consignment' %} · on {{ p.consignment_settle_on }}{% endif %}</div>
                 </td>
-                <td class="fw6 {{ 'text-d' if p.our_outstanding }}">{{ p.our_outstanding|money }}</td>
+                <td class="fw6 {{ 'text-d' if p.our_outstanding }}">{{ p.our_outstanding|money }}
+                    {% if p.over_limit %}<div><span class="badge badge-danger" style="font-size:9px">⚠️ over limit</span></div>{% endif %}
+                </td>
                 <td>{{ p.our_credit_limit|money }}</td>
                 <td class="fw6 {{ 'text-d' if p.available <= 0 }}">{{ p.available|money }}</td>
                 <td class="text-muted">{{ p.bought_30d|money }}</td>

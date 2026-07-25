@@ -70,9 +70,12 @@ check('credit purchase accrues our_outstanding (100*300=30000)', abs(s['our_outs
       f"outstanding={s['our_outstanding']}")
 check('headroom dropped to 70000', models.supplier_available_to_buy(s) == 70000)
 
-# ── a purchase beyond our headroom is refused ──
-bid2, err2 = models.create_batch(credit_sid, prod['id'], 1000, 100, created_by=ops_uid)  # 100000 > 70000 left
-check('purchase beyond our credit limit is refused', bid2 is None and err2 and 'exceeds our available credit' in err2.lower())
+# ── v25: exceeding our headroom warns but is NOT blocked (tested fully in e2e_v25) ──
+# (kept here as a smoke check that a normal within-limit purchase still succeeds)
+bid2, err2 = models.create_batch(credit_sid, prod['id'], 50, 100, created_by=ops_uid)  # 5000, within headroom
+check('a within-limit purchase succeeds', bid2 is not None and err2 is None)
+# reset outstanding to 30000 so the payment math below stays deterministic
+execu("UPDATE suppliers SET our_outstanding=30000 WHERE id=?", credit_sid)
 
 # ── prepaid supplier: no payable accrues ──
 prepaid_sid = models.upsert_supplier(None, f'V21 Prepaid Supplier {tag}', 'P', 'p@sup.test', '',

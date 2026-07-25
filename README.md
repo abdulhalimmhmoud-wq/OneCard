@@ -1,4 +1,23 @@
-# OneCard — Reseller Operations Platform (v24)
+# OneCard — Reseller Operations Platform (v25)
+
+## Buy-side refinements — consignment triggers, soft limits, tunable planner (v25)
+
+- **Consignment settle trigger** — a consignment supplier now settles either **on sale**
+  (we owe when we sell the unit) or **on redemption** (we owe when the end customer
+  actually uses the card). Consignment purchases add **no payable at purchase**; the
+  payable accrues at the chosen moment: sale via the FIFO allocation, redemption via a new
+  **`POST /api/v1/redemptions`** endpoint (a client reports usage; capped at units sold, no
+  double-count). Set per supplier in Operations → Suppliers.
+- **Supplier credit limit warns, doesn't block** — exceeding what a supplier grants us no
+  longer refuses the purchase (it may have been arranged informally); it goes through and
+  **notifies Finance/Ops/CCO**, and the Payables page flags the supplier as *over limit*.
+- **Tunable Buy Planner** — the decision weights (new/unproven-client forecast %, target
+  cover days, reorder threshold, draw window) are now **editable by Ops** (⚙️ Tune weights),
+  stored in settings; the engine reads the live values.
+- **Logic review fixes** — sale/redemption accrual proven not to double-count with each
+  other; over-limit visibility on Payables; API guide documents redemptions.
+
+Coverage: `tests/e2e_v25.py` (12 checks). Full regression green — 25 suites.
 
 ## Buy-side, Phase 4 — Cash-Flow Command Centre (v24) [programme complete]
 

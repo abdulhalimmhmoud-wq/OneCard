@@ -869,6 +869,9 @@ def migrate_db():
         ('is_active', "ALTER TABLE suppliers ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1"),
         # v22: cycle marker for auto-issuing supplier statements
         ('last_statement_at', "ALTER TABLE suppliers ADD COLUMN last_statement_at TEXT"),
+        # v25: for a CONSIGNMENT supplier, when we owe them — 'sale' (when we sell
+        # the unit) or 'redemption' (when the end customer actually uses the card).
+        ('consignment_settle_on', "ALTER TABLE suppliers ADD COLUMN consignment_settle_on TEXT NOT NULL DEFAULT 'sale'"),
     ):
         if col not in scols:
             conn.execute(ddl)
@@ -876,6 +879,11 @@ def migrate_db():
     bcols = {r['name'] for r in conn.execute("PRAGMA table_info(purchase_batches)")}
     if 'method' not in bcols:
         conn.execute("ALTER TABLE purchase_batches ADD COLUMN method TEXT NOT NULL DEFAULT 'offline'")
+    # v25: track how many of a sold allocation have been redeemed (drives
+    # consignment 'redemption' accrual without double-counting)
+    aacols = {r['name'] for r in conn.execute("PRAGMA table_info(order_item_allocations)")}
+    if 'redeemed_qty' not in aacols:
+        conn.execute("ALTER TABLE order_item_allocations ADD COLUMN redeemed_qty INTEGER NOT NULL DEFAULT 0")
 
     # 6. v7 hardening: FX-aware order items + backfill of historical data
     oicols = {r['name'] for r in conn.execute("PRAGMA table_info(order_items)")}
@@ -2908,6 +2916,15 @@ def get_order_items(order_id):
     return [dict(r) for r in rows]
 
 
+def get_reseller_order_line_ids(reseller_id):
+    """order_item ids belonging to a reseller (v25: used to validate redemptions)."""
+    conn = get_db()
+    rows = conn.execute("""SELECT oi.id FROM order_items oi JOIN orders o ON oi.order_id=o.id
+                           WHERE o.reseller_id=?""", (reseller_id,)).fetchall()
+    conn.close()
+    return [r['id'] for r in rows]
+
+
 def get_month_orders_by_merchant(reseller_id, ym=None):
     """merchant → ordered value for a given month (default: current month)."""
     ym = ym or datetime.now(timezone.utc).strftime('%Y-%m')
@@ -3290,14 +3307,57 @@ def get_price_log(limit=200, product_rowid=None):
 
 # v23: forecast from a brand-new/unproven client (no orders yet) is speculative,
 # so it's discounted vs a proven active client's forecast in buy planning.
+# v25: these are now defaults; the live values are editable (stored in app_meta).
 NEW_CLIENT_FORECAST_WEIGHT = 0.4
 
+BUY_SETTING_DEFAULTS = {
+    'new_client_forecast_weight': 40,   # % weight of a new/unproven client's forecast
+    'cover_days': 14,                   # target days of stock cover to reorder toward
+    'reorder_days': 7,                  # below this many days of cover → "reorder now"
+    'draw_days': 30,                    # window used to measure the draw-down rate
+    'forecast_days': 30,                # window/horizon used for forecast demand
+}
 
-def get_buy_recommendations(cover_days=14, draw_days=30, forecast_days=30):
+
+def get_setting(key, default=None):
+    conn = get_db()
+    row = conn.execute("SELECT value FROM app_meta WHERE key=?", (key,)).fetchone()
+    conn.close()
+    return row['value'] if row else default
+
+
+def set_setting(key, value):
+    conn = get_db()
+    conn.execute("""INSERT INTO app_meta (key,value) VALUES (?,?)
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value""", (key, str(value)))
+    conn.commit()
+    conn.close()
+
+
+def get_buy_settings():
+    """Live buy-decision weights (editable by Ops), falling back to defaults."""
+    out = {}
+    for k, dv in BUY_SETTING_DEFAULTS.items():
+        v = get_setting('buy.' + k)
+        try:
+            out[k] = float(v) if v is not None else float(dv)
+        except (ValueError, TypeError):
+            out[k] = float(dv)
+    return out
+
+
+def get_buy_recommendations(cover_days=None, draw_days=None, forecast_days=None):
     """The buy-decision engine: for each supplier-bought (non-issued) product, weigh
     stock on hand vs the recent draw-down rate and forecast demand (active-client
     forecast counts fully; new/unproven-client forecast is discounted) to recommend
-    what to reorder now. All money in SAR. Returns a list of per-product dicts."""
+    what to reorder now. All money in SAR. Returns a list of per-product dicts.
+    Weights come from Ops-editable settings (get_buy_settings), overridable per call."""
+    cfg = get_buy_settings()
+    cover_days = cover_days if cover_days is not None else cfg['cover_days']
+    draw_days = int(draw_days if draw_days is not None else cfg['draw_days'])
+    forecast_days = int(forecast_days if forecast_days is not None else cfg['forecast_days'])
+    new_weight = cfg['new_client_forecast_weight'] / 100.0
+    reorder_days = cfg['reorder_days']
     conn = get_db()
     since = (datetime.now(timezone.utc).date() - timedelta(days=draw_days)).isoformat()
     fsince = (datetime.now(timezone.utc).date() - timedelta(days=forecast_days)).isoformat()
@@ -3345,7 +3405,7 @@ def get_buy_recommendations(cover_days=14, draw_days=30, forecast_days=30):
         oh = on_hand.get(pid, 0)
         daily_draw = sold.get(pid, 0) / float(draw_days)
         fa, fn = fc_active.get(pid, 0), fc_new.get(pid, 0)
-        weighted_fc = fa + NEW_CLIENT_FORECAST_WEIGHT * fn
+        weighted_fc = fa + new_weight * fn
         daily_fc = weighted_fc / float(forecast_days)
         daily_expected = max(daily_draw, daily_fc)
         days_cover = round(oh / daily_expected, 1) if daily_expected > 0 else None
@@ -3356,7 +3416,7 @@ def get_buy_recommendations(cover_days=14, draw_days=30, forecast_days=30):
             signal = 'ok'
         elif oh <= 0 and daily_expected > 0:
             signal = 'out'
-        elif days_cover is not None and days_cover < 7:
+        elif days_cover is not None and days_cover < reorder_days:
             signal = 'reorder'
         elif days_cover is not None and days_cover < cover_days:
             signal = 'watch'
@@ -3490,22 +3550,24 @@ def get_suppliers():
 
 def upsert_supplier(sid, name, contact_person, email, phone, payment_terms, notes, merchants,
                     account_type='prepaid', our_credit_limit=0, settlement_terms_days=30,
-                    billing_cycle='monthly'):
+                    billing_cycle='monthly', consignment_settle_on='sale'):
     if account_type not in SUPPLIER_ACCOUNT_TYPES:
         account_type = 'prepaid'
+    settle_on = 'redemption' if consignment_settle_on == 'redemption' else 'sale'
     conn = get_db()
     if sid:
         conn.execute("""UPDATE suppliers SET name=?, contact_person=?, email=?, phone=?,
                         payment_terms=?, notes=?, account_type=?, our_credit_limit=?,
-                        settlement_terms_days=?, billing_cycle=? WHERE id=?""",
+                        settlement_terms_days=?, billing_cycle=?, consignment_settle_on=? WHERE id=?""",
                      (name, contact_person, email, phone, payment_terms, notes, account_type,
-                      our_credit_limit or 0, settlement_terms_days or 30, billing_cycle, sid))
+                      our_credit_limit or 0, settlement_terms_days or 30, billing_cycle, settle_on, sid))
     else:
         conn.execute("""INSERT INTO suppliers (name, contact_person, email, phone, payment_terms,
-                        notes, account_type, our_credit_limit, settlement_terms_days, billing_cycle)
-                        VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                        notes, account_type, our_credit_limit, settlement_terms_days, billing_cycle,
+                        consignment_settle_on)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                      (name, contact_person, email, phone, payment_terms, notes, account_type,
-                      our_credit_limit or 0, settlement_terms_days or 30, billing_cycle))
+                      our_credit_limit or 0, settlement_terms_days or 30, billing_cycle, settle_on))
         sid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.execute("DELETE FROM supplier_merchants WHERE supplier_id=?", (sid,))
     for m in merchants:
@@ -3593,6 +3655,52 @@ def get_supplier_payments(supplier_id=None, limit=100):
     return [dict(r) for r in rows]
 
 
+def record_redemption(order_item_id, quantity, actor_id=None):
+    """The end customer actually used `quantity` cards from a sold order line.
+    For units drawn from a CONSIGNMENT supplier who settles on 'redemption', this
+    is the moment we owe them. Tracks redeemed_qty per allocation so we never
+    double-count. Returns (accrued_sar, error)."""
+    quantity = int(quantity or 0)
+    if quantity <= 0:
+        return 0.0, "Redeemed quantity must be positive."
+    conn = get_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        allocs = conn.execute("""SELECT a.id, a.quantity, a.redeemed_qty, a.unit_cost, a.batch_id,
+                                        b.supplier_id, s.account_type, s.consignment_settle_on
+                                 FROM order_item_allocations a
+                                 LEFT JOIN purchase_batches b ON a.batch_id=b.id
+                                 LEFT JOIN suppliers s ON b.supplier_id=s.id
+                                 WHERE a.order_item_id=? ORDER BY a.id""", (order_item_id,)).fetchall()
+        left = quantity
+        accrued = 0.0
+        for a in allocs:
+            if left <= 0:
+                break
+            room = (a['quantity'] or 0) - (a['redeemed_qty'] or 0)
+            if room <= 0:
+                continue
+            take = min(left, room)
+            conn.execute("UPDATE order_item_allocations SET redeemed_qty = redeemed_qty + ? WHERE id=?",
+                         (take, a['id']))
+            if a['account_type'] == 'consignment' and (a['consignment_settle_on'] or 'sale') == 'redemption':
+                amt = round(take * (a['unit_cost'] or 0), 2)
+                conn.execute("UPDATE suppliers SET our_outstanding = our_outstanding + ? WHERE id=?",
+                             (amt, a['supplier_id']))
+                accrued += amt
+            left -= take
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+    return round(accrued, 2), None
+
+
 def get_supplier_payables():
     """Per-supplier payables for Finance: what we owe, our limit + headroom, and
     the age of the oldest unpaid purchase (a simple aging signal). SAR."""
@@ -3600,7 +3708,7 @@ def get_supplier_payables():
     today = datetime.now(timezone.utc).date()
     rows = conn.execute("""
         SELECT s.id, s.name, s.account_type, s.our_credit_limit, s.our_outstanding,
-               s.settlement_terms_days, s.billing_cycle,
+               s.settlement_terms_days, s.billing_cycle, s.consignment_settle_on,
                (SELECT COALESCE(SUM(total_cost),0) FROM purchase_batches b
                     WHERE b.supplier_id=s.id AND b.created_at >= date('now','-30 day')) as bought_30d,
                (SELECT MIN(created_at) FROM purchase_batches b
@@ -3613,6 +3721,7 @@ def get_supplier_payables():
     for r in rows:
         d = dict(r)
         d['available'] = round(max(0.0, (d['our_credit_limit'] or 0) - (d['our_outstanding'] or 0)), 2)
+        d['over_limit'] = (d['our_outstanding'] or 0) > (d['our_credit_limit'] or 0) + 0.01
         d['oldest_days'] = 0
         if d['oldest_open_purchase']:
             try:
@@ -3975,16 +4084,13 @@ def create_batch(supplier_id, product_rowid, quantity, unit_cost, invoice_ref=''
     if not p or not s:
         conn.close()
         return None, "Product or supplier not found."
-    # v21: a purchase on supplier credit/consignment can't exceed the limit they
-    # grant us. Prepaid means we pay upfront, so no payable / no cap.
     account_type = s['account_type'] or 'prepaid'
-    if account_type != 'prepaid':
-        headroom = (s['our_credit_limit'] or 0) - (s['our_outstanding'] or 0)
-        if total > headroom + 0.01:
-            conn.close()
-            return None, (f"This {total:,.0f} SAR purchase exceeds our available credit with "
-                          f"{s['name']} ({headroom:,.0f} SAR left of a {s['our_credit_limit']:,.0f} limit). "
-                          f"Settle outstanding first or raise the limit.")
+    # v25: CREDIT accrues at purchase; CONSIGNMENT accrues later (at sale or
+    # redemption), so a consignment purchase adds no payable here.
+    accrue_now = account_type == 'credit'
+    # v25: exceeding our limit with a supplier WARNS but never blocks — the limit
+    # may have been extended informally (busy season, invoice delays, etc.).
+    over_limit = accrue_now and ((s['our_outstanding'] or 0) + total) > (s['our_credit_limit'] or 0) + 0.01
     conn.execute("""INSERT INTO purchase_batches
                     (supplier_id, product_rowid, quantity, remaining_qty, unit_cost, total_cost,
                      best_cost_at_purchase, sourcing_variance, reason, invoice_ref, created_by, method)
@@ -3993,12 +4099,18 @@ def create_batch(supplier_id, product_rowid, quantity, unit_cost, invoice_ref=''
                   total, best_cost, max(variance, 0),
                   reason, invoice_ref, created_by, method))
     bid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-    # credit/consignment purchases accrue to what we owe this supplier
-    if account_type != 'prepaid':
+    if accrue_now:
         conn.execute("UPDATE suppliers SET our_outstanding = our_outstanding + ? WHERE id=?",
                      (total, supplier_id))
     conn.commit()
     conn.close()
+
+    if over_limit:
+        notify(get_user_ids_by_role('finance', 'ops', 'cco'),
+               "⚠️ Over supplier credit limit (allowed)",
+               f"Purchase #{bid} pushed what we owe {s['name']} over their "
+               f"{s['our_credit_limit']:,.0f} SAR limit — the buy went through; please confirm "
+               f"the limit was extended.", "/finance/payables")
 
     # Finance reconciliation queue
     notify(get_user_ids_by_role('finance'),
@@ -4073,15 +4185,19 @@ def reconcile_batch(batch_id, ok, reviewer_id, note=''):
 
 def _allocate_order_fifo(conn, order_id):
     """Consume purchase batches oldest-first for every item of an order.
-    Units without recorded stock get a NULL-batch allocation at standard cost."""
+    Units without recorded stock get a NULL-batch allocation at standard cost.
+    v25: a unit drawn from a CONSIGNMENT supplier who settles on 'sale' becomes
+    payable to that supplier the moment it is sold here."""
     items = conn.execute("""SELECT oi.id, oi.product_rowid, oi.quantity, p.cost as std_cost
                             FROM order_items oi LEFT JOIN products p ON oi.product_rowid=p.id
                             WHERE oi.order_id=?""", (order_id,)).fetchall()
     for it in items:
         need = it['quantity']
-        batches = conn.execute("""SELECT id, remaining_qty, unit_cost FROM purchase_batches
-                                  WHERE product_rowid=? AND remaining_qty>0
-                                  ORDER BY created_at, id""", (it['product_rowid'],)).fetchall()
+        batches = conn.execute("""SELECT b.id, b.remaining_qty, b.unit_cost, b.supplier_id,
+                                          s.account_type, s.consignment_settle_on
+                                   FROM purchase_batches b JOIN suppliers s ON b.supplier_id=s.id
+                                   WHERE b.product_rowid=? AND b.remaining_qty>0
+                                   ORDER BY b.created_at, b.id""", (it['product_rowid'],)).fetchall()
         for b in batches:
             if need <= 0:
                 break
@@ -4090,6 +4206,9 @@ def _allocate_order_fifo(conn, order_id):
                             VALUES (?,?,?,?)""", (it['id'], b['id'], take, b['unit_cost']))
             conn.execute("UPDATE purchase_batches SET remaining_qty=remaining_qty-? WHERE id=?",
                          (take, b['id']))
+            if b['account_type'] == 'consignment' and (b['consignment_settle_on'] or 'sale') == 'sale':
+                conn.execute("UPDATE suppliers SET our_outstanding = our_outstanding + ? WHERE id=?",
+                             (round(take * b['unit_cost'], 2), b['supplier_id']))
             need -= take
         if need > 0:   # no (more) recorded stock → unsourced at standard cost
             conn.execute("""INSERT INTO order_item_allocations (order_item_id, batch_id, quantity, unit_cost)

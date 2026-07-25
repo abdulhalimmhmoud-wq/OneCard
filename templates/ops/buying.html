@@ -7,7 +7,25 @@
 <div class="page-header">
     <div>
         <h1 class="page-title">🧭 Buy Planner</h1>
-        <p class="page-subtitle">What to reorder now — stock on hand vs recent draw-down and forecast. New/unproven-client forecast is weighted at {{ new_weight }}% of a proven active client's. Costs in SAR.</p>
+        <p class="page-subtitle">What to reorder now — stock on hand vs recent draw-down and forecast. New/unproven-client forecast is weighted at {{ settings.new_client_forecast_weight|round|int }}% of a proven active client's. Costs in SAR.</p>
+    </div>
+    <div class="page-actions">
+        <details style="position:relative">
+            <summary class="btn btn-ghost" style="list-style:none;cursor:pointer">⚙️ Tune weights</summary>
+            <div style="position:absolute;right:0;top:110%;z-index:200;background:var(--bg-1);border:1px solid var(--border);border-radius:10px;padding:14px;width:300px;box-shadow:0 12px 32px rgba(0,0,0,.5)">
+                <form method="POST" action="/ops/buy-settings">
+                    <label class="form-label" style="font-size:11px">New/unproven client forecast weight (%)</label>
+                    <input type="number" name="new_client_forecast_weight" min="0" max="100" step="5" value="{{ settings.new_client_forecast_weight|round|int }}" style="width:100%;font-size:12px;padding:5px;margin-bottom:6px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;color:var(--text-1)">
+                    <label class="form-label" style="font-size:11px">Target days of cover</label>
+                    <input type="number" name="cover_days" min="1" step="1" value="{{ settings.cover_days|round|int }}" style="width:100%;font-size:12px;padding:5px;margin-bottom:6px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;color:var(--text-1)">
+                    <label class="form-label" style="font-size:11px">Reorder-now threshold (days cover)</label>
+                    <input type="number" name="reorder_days" min="1" step="1" value="{{ settings.reorder_days|round|int }}" style="width:100%;font-size:12px;padding:5px;margin-bottom:6px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;color:var(--text-1)">
+                    <label class="form-label" style="font-size:11px">Draw-rate window (days)</label>
+                    <input type="number" name="draw_days" min="1" step="1" value="{{ settings.draw_days|round|int }}" style="width:100%;font-size:12px;padding:5px;margin-bottom:8px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;color:var(--text-1)">
+                    <button class="btn btn-sm btn-primary" style="width:100%" type="submit">💾 Save weights</button>
+                </form>
+            </div>
+        </details>
     </div>
 </div>
 

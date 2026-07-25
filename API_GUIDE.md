@@ -172,6 +172,22 @@ Success → `201` with the full order payload:
  "codes": [{"line_id": 40, "code": "A1B2-...", "pin": "123456"}]}
 ```
 
+### 2.10 `POST /api/v1/redemptions` — report card redemptions
+Tell us when your end customers actually **used** the cards. This only matters for
+stock we source from a **consignment supplier who settles on redemption** — your report
+is what triggers our payable to them. Report against your own order **line ids**.
+
+```json
+{"redemptions": [{"line_id": 40, "quantity": 3}, {"line_id": 41, "quantity": 1}]}
+```
+Response:
+```json
+{"ok": true, "total_supplier_accrued_sar": 276.0,
+ "redemptions": [{"line_id": 40, "quantity": 3, "supplier_accrued_sar": 276.0}]}
+```
+Errors: `422 unknown_line` (not your line), `400 bad_request`. Redemptions are capped at
+the quantity sold on each line (reporting more than sold is ignored beyond the cap).
+
 ---
 
 ## 3. Webhooks (outbound)
