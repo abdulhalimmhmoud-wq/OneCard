@@ -1,4 +1,16 @@
-# OneCard — Reseller Operations Platform (v25)
+# OneCard — Reseller Operations Platform (v26)
+
+## API is an always-on channel (v26)
+
+The Integration API is now the **default channel for everyone** — not a manual opt-in:
+
+- **Every reseller** is issued a working API key (`rk_…`) automatically at registration,
+  and **every supplier** gets one (`sk_…`) at creation. All pre-existing resellers and
+  suppliers were backfilled, so none are left without a key.
+- **My Resellers → 🔌 API** now shows the key inline (copyable) with a single **Rotate**
+  action (no more "Generate" step); rotating invalidates the old key immediately.
+- Docs updated (`API_GUIDE.md §1`). Coverage: `tests/e2e_v26.py` (9 checks). Full
+  regression green — 26 suites.
 
 ## Buy-side refinements — consignment triggers, soft limits, tunable planner (v25)
 

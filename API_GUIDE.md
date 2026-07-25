@@ -12,8 +12,9 @@ All endpoints under `/api/` are **CSRF-exempt** and JSON-only.
 ## 1. Authentication
 
 ### 1.1 Reseller API (all `/api/v1/*` endpoints)
-Every reseller can be given an API key. A Sales Manager (or CCO/Admin) generates or rotates
-it from **Sales Portal → My Resellers → 🔌 API**. The key is displayed **once**.
+**The API is an always-on channel** — every reseller is issued an API key automatically at
+registration (`rk_…`). A Sales Manager (or CCO/Admin) can view or **rotate** it from
+**Sales Portal → My Resellers → 🔌 API**; rotating invalidates the old key immediately.
 
 Send it on every request, either way:
 
@@ -26,7 +27,8 @@ Missing/invalid key → `401 {"error":{"code":"unauthorized", ...}}`.
 The key identifies the reseller: all prices, orders, wallet and codes are scoped to them.
 
 ### 1.2 Supplier price feed
-Per-supplier key generated from **Operations → Suppliers → 🔑**. The key travels in the JSON
+Every supplier is also issued a key automatically at creation (`sk_…`), rotatable from
+**Operations → Suppliers → 🔑**. The key travels in the JSON
 body (legacy shape, kept stable):
 
 ```

@@ -22,6 +22,13 @@ import math
 import calendar
 import hashlib
 import bcrypt
+import secrets as _secrets_mod
+
+
+def new_api_key(prefix='rk'):
+    """A fresh API key. v26: the API is an always-on channel, so every reseller
+    and supplier gets one automatically at creation."""
+    return f"{prefix}_{_secrets_mod.token_hex(24)}"
 from datetime import datetime, date, timedelta, timezone
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'onecard.db')
@@ -884,6 +891,15 @@ def migrate_db():
     aacols = {r['name'] for r in conn.execute("PRAGMA table_info(order_item_allocations)")}
     if 'redeemed_qty' not in aacols:
         conn.execute("ALTER TABLE order_item_allocations ADD COLUMN redeemed_qty INTEGER NOT NULL DEFAULT 0")
+    conn.commit()
+
+    # v26: the API is an always-on channel — every reseller and supplier that
+    # predates auto-provisioning gets a key now (unique per row).
+    for r in conn.execute("SELECT id FROM reseller_profiles WHERE api_key IS NULL OR api_key=''").fetchall():
+        conn.execute("UPDATE reseller_profiles SET api_key=? WHERE id=?", (new_api_key('rk'), r['id']))
+    for r in conn.execute("SELECT id FROM suppliers WHERE api_key IS NULL OR api_key=''").fetchall():
+        conn.execute("UPDATE suppliers SET api_key=? WHERE id=?", (new_api_key('sk'), r['id']))
+    conn.commit()
 
     # 6. v7 hardening: FX-aware order items + backfill of historical data
     oicols = {r['name'] for r in conn.execute("PRAGMA table_info(order_items)")}
@@ -1214,10 +1230,11 @@ def create_reseller(user_id, company_name, expected_sales, tier_id, registered_b
     conn.execute("""INSERT INTO reseller_profiles
                     (user_id, company_name, expected_monthly_sales, assigned_tier_id,
                      registered_by, notes, client_type, display_currency, auto_suspend_at,
-                     contact_phone)
-                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                     contact_phone, api_key)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                  (user_id, company_name, expected_sales, tier_id, registered_by, notes,
-                  primary, disp, _suspend_deadline(), (contact_phone or '').strip() or None))
+                  primary, disp, _suspend_deadline(), (contact_phone or '').strip() or None,
+                  new_api_key('rk')))
     reseller_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     for c in (countries or []):
         conn.execute("INSERT INTO reseller_countries (reseller_id, country) VALUES (?,?)", (reseller_id, c))
@@ -3564,10 +3581,11 @@ def upsert_supplier(sid, name, contact_person, email, phone, payment_terms, note
     else:
         conn.execute("""INSERT INTO suppliers (name, contact_person, email, phone, payment_terms,
                         notes, account_type, our_credit_limit, settlement_terms_days, billing_cycle,
-                        consignment_settle_on)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                        consignment_settle_on, api_key)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                      (name, contact_person, email, phone, payment_terms, notes, account_type,
-                      our_credit_limit or 0, settlement_terms_days or 30, billing_cycle, settle_on))
+                      our_credit_limit or 0, settlement_terms_days or 30, billing_cycle, settle_on,
+                      new_api_key('sk')))
         sid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.execute("DELETE FROM supplier_merchants WHERE supplier_id=?", (sid,))
     for m in merchants:
