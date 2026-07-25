@@ -73,12 +73,36 @@
                         </div>
                     </details>
                     {% else %}<span class="badge badge-success">settled</span>{% endif %}
+                    <form method="POST" action="/finance/payables/{{ p.id }}/issue-statement" style="margin-top:4px">
+                        <button class="btn btn-sm btn-ghost" type="submit" title="Record the supplier's period invoice for what we owe but haven't billed yet">🧾 Issue statement</button>
+                    </form>
                 </td>
             </tr>
             {% else %}
             <tr><td colspan="8" style="text-align:center;padding:40px;color:var(--text-3)">
                 No credit/consignment suppliers yet. Set a supplier's terms in Operations → Suppliers.
             </td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="table-card mt-24">
+    <div class="table-header"><div class="table-title">🧾 Open Supplier Statements (what's due, when)</div></div>
+    <div class="table-scroll" style="max-height:320px;overflow-y:auto">
+        <table>
+            <thead><tr><th>Supplier</th><th>Amount</th><th>Due</th><th>Status</th></tr></thead>
+            <tbody>
+            {% for s in open_statements %}
+            <tr>
+                <td class="fw6">{{ s.supplier_name }}</td>
+                <td class="fw6">SAR {{ s.amount|money }}</td>
+                <td class="text-muted" style="font-size:12px">{{ s.due_at }}</td>
+                <td>{% if s.status == 'overdue' %}<span class="badge badge-danger">Overdue</span>{% else %}<span class="badge badge-warning">Issued</span>{% endif %}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4" style="text-align:center;padding:24px;color:var(--text-3)">No open supplier statements</td></tr>
             {% endfor %}
             </tbody>
         </table>

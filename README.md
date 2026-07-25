@@ -1,4 +1,25 @@
-# OneCard — Reseller Operations Platform (v21)
+# OneCard — Reseller Operations Platform (v22)
+
+## Buy-side, Phase 2 — Supplier statements & buying methods (v22)
+
+Extends the payables engine with the same statement/settlement lifecycle the customer
+side has (v14), plus how we acquire stock:
+
+- **Supplier statements** — record the supplier's period invoice for what we owe
+  (`issue_supplier_statement`; Finance can issue on demand and a daily sweep auto-issues
+  per billing cycle). `unbilled = our_outstanding − open statements`.
+- **Overdue → alert** — a supplier statement past its due date flips to `overdue` and
+  alerts Finance/Ops/CCO (we're late paying → supply risk).
+- **FIFO settlement** — `pay_supplier` now applies a payment to open statements
+  oldest-first, marking them paid as covered, and reduces `our_outstanding`.
+- **Buying method** — every purchase batch is tagged **offline** (stock we hold) or
+  **api** (pulled on demand), chosen on the Ops batch form and shown on the batches list.
+- **Finance → Supplier Payables** now shows the open-statements table (what's due, when).
+
+Coverage: `tests/e2e_v22.py` (12 checks). Full regression green — 20 suites.
+
+**Next:** Phase 3 — inventory on-hand + a **buy-decision engine** (draw-rate + forecast,
+active-client vs new-client, vs stock & cash); Phase 4 — cash-flow command centre.
 
 ## Buy-side, Phase 1 — Supplier account models & payables (v21)
 

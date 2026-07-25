@@ -1824,7 +1824,8 @@ def ops_batches():
         if not sid or not pid or qty <= 0 or unit_cost <= 0:
             flash("Supplier, product, quantity and unit cost are required.", "error")
         else:
-            bid, err = models.create_batch(sid, pid, qty, unit_cost, invoice, reason, curr['id'])
+            bid, err = models.create_batch(sid, pid, qty, unit_cost, invoice, reason, curr['id'],
+                                           method=request.form.get('method', 'offline'))
             if err:
                 flash(err, "error")
             else:
@@ -2070,7 +2071,18 @@ def finance_payables():
                            summary=models.get_payables_summary(),
                            payables=models.get_supplier_payables(),
                            payments=models.get_supplier_payments(limit=25),
+                           open_statements=models.get_all_supplier_statements('issued')
+                                          + models.get_all_supplier_statements('overdue'),
                            supplier_labels=models.SUPPLIER_ACCOUNT_LABELS)
+
+
+@app.route('/finance/payables/<int:sid>/issue-statement', methods=['POST'])
+@auth.finance_required
+def finance_issue_supplier_statement(sid):
+    curr = auth.get_current_user()
+    stid = models.issue_supplier_statement(sid, actor_id=curr['id'])
+    flash("Supplier statement recorded." if stid else "Nothing new to bill for this supplier.", "info")
+    return redirect(url_for('finance_payables'))
 
 
 @app.route('/finance/payables/<int:sid>/pay', methods=['POST'])

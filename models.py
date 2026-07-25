@@ -642,6 +642,22 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_supplier_payments ON supplier_payments(supplier_id, created_at);
 
+        -- ── v22: Supplier statements (period bill of what we owe them) ──
+        CREATE TABLE IF NOT EXISTS supplier_statements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+            amount REAL NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'issued',   -- issued | paid | overdue | void
+            period_start TEXT,
+            period_end TEXT,
+            due_at TEXT,
+            issued_by INTEGER REFERENCES users(id),
+            issued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            paid_at TIMESTAMP,
+            note TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_supplier_statements ON supplier_statements(supplier_id, status);
+
         -- Which batch every sold unit came from (FIFO) → true COGS per sale
         CREATE TABLE IF NOT EXISTS order_item_allocations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -851,9 +867,15 @@ def migrate_db():
         ('settlement_terms_days', "ALTER TABLE suppliers ADD COLUMN settlement_terms_days INTEGER NOT NULL DEFAULT 30"),
         ('billing_cycle', "ALTER TABLE suppliers ADD COLUMN billing_cycle TEXT NOT NULL DEFAULT 'monthly'"),
         ('is_active', "ALTER TABLE suppliers ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1"),
+        # v22: cycle marker for auto-issuing supplier statements
+        ('last_statement_at', "ALTER TABLE suppliers ADD COLUMN last_statement_at TEXT"),
     ):
         if col not in scols:
             conn.execute(ddl)
+    # v22: how a purchase batch was acquired (api pull vs offline stock)
+    bcols = {r['name'] for r in conn.execute("PRAGMA table_info(purchase_batches)")}
+    if 'method' not in bcols:
+        conn.execute("ALTER TABLE purchase_batches ADD COLUMN method TEXT NOT NULL DEFAULT 'offline'")
 
     # 6. v7 hardening: FX-aware order items + backfill of historical data
     oicols = {r['name'] for r in conn.execute("PRAGMA table_info(order_items)")}
@@ -3446,6 +3468,16 @@ def pay_supplier(supplier_id, amount, method='', reference='', note='', paid_by=
                      (supplier_id, amount, method or None, reference or None, note or None, paid_by))
         conn.execute("UPDATE suppliers SET our_outstanding = MAX(0, our_outstanding - ?) WHERE id=?",
                      (amount, supplier_id))
+        # v22: apply the payment to open statements oldest-first (mark paid when covered)
+        left = amount
+        for st in conn.execute("""SELECT id, amount FROM supplier_statements
+                                  WHERE supplier_id=? AND status IN ('issued','overdue')
+                                  ORDER BY due_at, id""", (supplier_id,)).fetchall():
+            if left < st['amount'] - 0.01:
+                break
+            conn.execute("UPDATE supplier_statements SET status='paid', paid_at=CURRENT_TIMESTAMP WHERE id=?",
+                         (st['id'],))
+            left -= st['amount']
         conn.commit()
     except Exception:
         try:
@@ -3516,6 +3548,127 @@ def get_payables_summary():
     d = dict(row)
     d['available'] = round(max(0.0, (d['total_limit'] or 0) - (d['total_outstanding'] or 0)), 2)
     return d
+
+
+# ── Supplier statements (period bill of what we owe them) (v22) ──
+
+def _open_supplier_statements_total(conn, supplier_id):
+    return conn.execute("""SELECT COALESCE(SUM(amount),0) FROM supplier_statements
+                           WHERE supplier_id=? AND status IN ('issued','overdue')""",
+                        (supplier_id,)).fetchone()[0]
+
+
+def unbilled_supplier_amount(supplier_id):
+    """What we owe that isn't yet on a statement = outstanding − open statements."""
+    conn = get_db()
+    row = conn.execute("SELECT our_outstanding FROM suppliers WHERE id=?", (supplier_id,)).fetchone()
+    if not row:
+        conn.close()
+        return 0.0
+    v = (row['our_outstanding'] or 0) - _open_supplier_statements_total(conn, supplier_id)
+    conn.close()
+    return round(max(0.0, v), 2)
+
+
+def issue_supplier_statement(supplier_id, actor_id=None, auto=False):
+    """Record the supplier's period invoice for what we owe but haven't billed yet.
+    due date = today + settlement_terms_days. Race-safe. Returns id or None."""
+    conn = get_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        s = conn.execute("SELECT * FROM suppliers WHERE id=?", (supplier_id,)).fetchone()
+        if not s or (s['account_type'] or 'prepaid') == 'prepaid':
+            conn.rollback()
+            return None
+        unbilled = round(max(0.0, (s['our_outstanding'] or 0)
+                              - _open_supplier_statements_total(conn, supplier_id)), 2)
+        today = datetime.now(timezone.utc).date()
+        if unbilled <= 0.009:
+            conn.execute("UPDATE suppliers SET last_statement_at=? WHERE id=?",
+                         (today.isoformat(), supplier_id))
+            conn.commit()
+            return None
+        due = (today + timedelta(days=int(s['settlement_terms_days'] or 30))).isoformat()
+        period_start = s['last_statement_at'] or today.isoformat()
+        conn.execute("""INSERT INTO supplier_statements
+                        (supplier_id, amount, status, period_start, period_end, due_at, issued_by)
+                        VALUES (?,?,?,?,?,?,?)""",
+                     (supplier_id, unbilled, 'issued', period_start, today.isoformat(), due, actor_id))
+        sid_ = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("UPDATE suppliers SET last_statement_at=? WHERE id=?", (today.isoformat(), supplier_id))
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+    return sid_
+
+
+def get_supplier_statements(supplier_id):
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM supplier_statements WHERE supplier_id=? ORDER BY id DESC",
+                        (supplier_id,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_all_supplier_statements(status=None):
+    conn = get_db()
+    q = """SELECT ss.*, s.name as supplier_name FROM supplier_statements ss
+           JOIN suppliers s ON ss.supplier_id=s.id"""
+    params = []
+    if status:
+        q += " WHERE ss.status=?"
+        params.append(status)
+    q += " ORDER BY ss.due_at, ss.id DESC"
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def run_supplier_statement_cycle(force=False):
+    """Daily: auto-issue supplier statements per billing cycle and flag ones we've
+    let go past due (we're late paying → supply risk). Returns action strings."""
+    conn = get_db()
+    today = datetime.now(timezone.utc).date()
+    rows = conn.execute("""SELECT id, name, account_type, billing_cycle, last_statement_at,
+                                  our_outstanding
+                           FROM suppliers WHERE account_type IN ('credit','consignment')""").fetchall()
+    conn.close()
+    actions = []
+    for r in rows:
+        # mark overdue + alert (we owe and are late)
+        conn2 = get_db()
+        overdue = conn2.execute("""SELECT id FROM supplier_statements
+                                   WHERE supplier_id=? AND status='issued' AND due_at < ?""",
+                                (r['id'], today.isoformat())).fetchall()
+        if overdue:
+            conn2.execute("""UPDATE supplier_statements SET status='overdue'
+                             WHERE supplier_id=? AND status='issued' AND due_at < ?""",
+                          (r['id'], today.isoformat()))
+            conn2.commit()
+            notify(get_user_ids_by_role('finance', 'ops', 'cco'),
+                   "⚠️ Supplier payment overdue",
+                   f"We have an overdue balance with {r['name']}. Pay it to protect supply.",
+                   "/finance/payables")
+            actions.append(f"SUPPLIER-OVERDUE: {r['name']}")
+        conn2.close()
+        # auto-issue when the cycle elapsed
+        base = r['last_statement_at']
+        due_cycle = True
+        if base:
+            try:
+                due_cycle = (today - date.fromisoformat(base[:10])).days >= _cycle_days(r['billing_cycle'])
+            except (ValueError, TypeError):
+                due_cycle = True
+        if (force or due_cycle) and (r['our_outstanding'] or 0) > 0.01:
+            if issue_supplier_statement(r['id'], auto=True):
+                actions.append(f"SUPPLIER-STATEMENT: {r['name']}")
+    return actions
 
 
 def get_supplier_by_api_key(key):
@@ -3679,9 +3832,11 @@ SOURCING_VARIANCE_TOLERANCE = 0.02   # alert BD/CCO if bought >2% above best ava
 
 
 def create_batch(supplier_id, product_rowid, quantity, unit_cost, invoice_ref='',
-                 reason='', created_by=None):
-    """Ops records a stock purchase. Captures the best available cost at this moment;
-    overpaying beyond tolerance alerts BD + CCO automatically (governance)."""
+                 reason='', created_by=None, method='offline'):
+    """Ops records a stock purchase. method: 'offline' (stock we hold) or 'api'
+    (pulled from the supplier's API on demand). Captures the best available cost
+    at this moment; overpaying beyond tolerance alerts BD + CCO (governance)."""
+    method = 'api' if method == 'api' else 'offline'
     best = get_best_source(product_rowid)
     best_cost = best['supplier_cost'] if best else None
     variance = round((unit_cost - best_cost) * quantity, 2) if best_cost is not None else 0
@@ -3706,11 +3861,11 @@ def create_batch(supplier_id, product_rowid, quantity, unit_cost, invoice_ref=''
                           f"Settle outstanding first or raise the limit.")
     conn.execute("""INSERT INTO purchase_batches
                     (supplier_id, product_rowid, quantity, remaining_qty, unit_cost, total_cost,
-                     best_cost_at_purchase, sourcing_variance, reason, invoice_ref, created_by)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                     best_cost_at_purchase, sourcing_variance, reason, invoice_ref, created_by, method)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                  (supplier_id, product_rowid, quantity, quantity, unit_cost,
                   total, best_cost, max(variance, 0),
-                  reason, invoice_ref, created_by))
+                  reason, invoice_ref, created_by, method))
     bid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     # credit/consignment purchases accrue to what we owe this supplier
     if account_type != 'prepaid':
@@ -4790,6 +4945,7 @@ def run_tier_compliance(force=False):
     expire_new_flags()
     run_prospect_suspension()
     run_statement_cycle()
+    run_supplier_statement_cycle()
     try:
         backup_database()
     except OSError:

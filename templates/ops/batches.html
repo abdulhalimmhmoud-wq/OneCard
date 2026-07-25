@@ -40,9 +40,18 @@
                     <input type="number" name="unit_cost" id="bCost" required min="0.001" step="0.001" oninput="warnCheck()">
                 </div>
             </div>
-            <div class="form-group">
-                <label class="form-label">Supplier Invoice Ref</label>
-                <input type="text" name="invoice_ref" placeholder="e.g. INV-2026-04471">
+            <div class="form-row">
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">How acquired</label>
+                    <select name="method">
+                        <option value="offline">Offline stock (we hold it)</option>
+                        <option value="api">API pull (on demand)</option>
+                    </select>
+                </div>
+                <div class="form-group" style="flex:1">
+                    <label class="form-label">Supplier Invoice Ref</label>
+                    <input type="text" name="invoice_ref" placeholder="e.g. INV-2026-04471">
+                </div>
             </div>
 
             <!-- Governance warning -->
@@ -77,7 +86,8 @@
                         <div class="text-muted" style="font-size:10px">{{ b.created_at[:10] }}</div>
                     </td>
                     <td>
-                        <div class="fw6 truncate" style="max-width:210px" title="{{ b.product_name }}">{{ b.product_name }}</div>
+                        <div class="fw6 truncate" style="max-width:210px" title="{{ b.product_name }}">{{ b.product_name }}
+                            {% if b.method == 'api' %}<span class="badge badge-info" style="font-size:9px">🔌 API</span>{% endif %}</div>
                         <div class="text-muted" style="font-size:10px">{{ b.supplier_name }}{% if b.invoice_ref %} · {{ b.invoice_ref }}{% endif %}</div>
                     </td>
                     <td>
