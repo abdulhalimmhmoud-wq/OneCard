@@ -3288,6 +3288,93 @@ def get_price_log(limit=200, product_rowid=None):
     return [dict(r) for r in rows]
 
 
+# v23: forecast from a brand-new/unproven client (no orders yet) is speculative,
+# so it's discounted vs a proven active client's forecast in buy planning.
+NEW_CLIENT_FORECAST_WEIGHT = 0.4
+
+
+def get_buy_recommendations(cover_days=14, draw_days=30, forecast_days=30):
+    """The buy-decision engine: for each supplier-bought (non-issued) product, weigh
+    stock on hand vs the recent draw-down rate and forecast demand (active-client
+    forecast counts fully; new/unproven-client forecast is discounted) to recommend
+    what to reorder now. All money in SAR. Returns a list of per-product dicts."""
+    conn = get_db()
+    since = (datetime.now(timezone.utc).date() - timedelta(days=draw_days)).isoformat()
+    fsince = (datetime.now(timezone.utc).date() - timedelta(days=forecast_days)).isoformat()
+
+    # stock on hand (remaining across purchase batches)
+    on_hand = {r['product_rowid']: r['q'] for r in conn.execute(
+        "SELECT product_rowid, COALESCE(SUM(remaining_qty),0) q FROM purchase_batches GROUP BY product_rowid")}
+    # draw-down: units sold in the window
+    sold = {r['product_rowid']: r['q'] for r in conn.execute(
+        """SELECT oi.product_rowid, COALESCE(SUM(oi.quantity),0) q
+           FROM order_items oi JOIN orders o ON oi.order_id=o.id
+           WHERE date(o.created_at) >= ? AND oi.product_rowid IS NOT NULL
+           GROUP BY oi.product_rowid""", (since,))}
+    # forecast qty split by whether the forecasting reseller is already active
+    # (has >=1 order) or is new/unproven (no orders yet)
+    fc_active, fc_new = {}, {}
+    for r in conn.execute(
+        """SELECT fi.product_rowid,
+                  (SELECT COUNT(*) FROM orders o WHERE o.reseller_id=f.reseller_id) as ord,
+                  COALESCE(SUM(fi.quantity),0) as q
+           FROM forecast_items fi JOIN forecasts f ON fi.forecast_id=f.id
+           WHERE fi.item_type='product' AND fi.product_rowid IS NOT NULL
+                 AND date(f.created_at) >= ?
+           GROUP BY fi.product_rowid, (ord>0)""", (fsince,)):
+        (fc_active if r['ord'] and r['ord'] > 0 else fc_new)[r['product_rowid']] = \
+            (fc_active if r['ord'] and r['ord'] > 0 else fc_new).get(r['product_rowid'], 0) + (r['q'] or 0)
+
+    pids = set(on_hand) | set(sold) | set(fc_active) | set(fc_new)
+    if not pids:
+        conn.close()
+        return []
+    ph = ','.join('?' * len(pids))
+    prods = {r['id']: dict(r) for r in conn.execute(
+        f"""SELECT id, product_name, merchant, currency, cost
+            FROM products WHERE id IN ({ph}) AND is_active=1 AND COALESCE(is_issued,0)=0""",
+        list(pids))}
+    # cheapest current supplier cost per product (what a reorder would cost)
+    best = {r['product_rowid']: r['c'] for r in conn.execute(
+        f"""SELECT product_rowid, MIN(supplier_cost) c FROM supplier_products
+            WHERE product_rowid IN ({ph}) AND is_available=1 GROUP BY product_rowid""", list(pids))}
+    conn.close()
+
+    out = []
+    for pid, p in prods.items():
+        oh = on_hand.get(pid, 0)
+        daily_draw = sold.get(pid, 0) / float(draw_days)
+        fa, fn = fc_active.get(pid, 0), fc_new.get(pid, 0)
+        weighted_fc = fa + NEW_CLIENT_FORECAST_WEIGHT * fn
+        daily_fc = weighted_fc / float(forecast_days)
+        daily_expected = max(daily_draw, daily_fc)
+        days_cover = round(oh / daily_expected, 1) if daily_expected > 0 else None
+        target = daily_expected * cover_days
+        rec_qty = max(0, int(round(target - oh)))
+        unit_cost = best.get(pid, p['cost'] or 0)
+        if daily_expected <= 0 and oh > 0:
+            signal = 'ok'
+        elif oh <= 0 and daily_expected > 0:
+            signal = 'out'
+        elif days_cover is not None and days_cover < 7:
+            signal = 'reorder'
+        elif days_cover is not None and days_cover < cover_days:
+            signal = 'watch'
+        else:
+            signal = 'ok'
+        out.append({
+            'product_rowid': pid, 'product_name': p['product_name'], 'merchant': p['merchant'],
+            'on_hand': oh, 'sold': sold.get(pid, 0), 'daily_draw': round(daily_draw, 2),
+            'forecast_active': fa, 'forecast_new': fn, 'weighted_forecast': round(weighted_fc, 1),
+            'days_cover': days_cover, 'recommended_qty': rec_qty,
+            'est_cost': round(rec_qty * unit_cost, 2), 'unit_cost': round(unit_cost, 2),
+            'currency': p['currency'], 'signal': signal,
+        })
+    order = {'out': 0, 'reorder': 1, 'watch': 2, 'ok': 3}
+    out.sort(key=lambda x: (order.get(x['signal'], 9), -x['est_cost']))
+    return out
+
+
 def get_ops_stats():
     conn = get_db()
     stats = {

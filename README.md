@@ -1,4 +1,28 @@
-# OneCard — Reseller Operations Platform (v22)
+# OneCard — Reseller Operations Platform (v23)
+
+## Buy-side, Phase 3 — Inventory & the Buy-Decision Engine (v23)
+
+A new **Ops → Buy Planner** answers *"what do we reorder now, and how much?"* by weighing,
+per supplier-bought product:
+
+- **Stock on hand** (remaining across purchase batches) vs
+- **Draw-down rate** (units sold over the last 30 days → a daily burn rate) vs
+- **Forecast demand**, where a **proven active client's** forecast counts in full but a
+  **new/unproven client's** forecast (no orders yet) is discounted to
+  `NEW_CLIENT_FORECAST_WEIGHT` (40%) — so speculative demand doesn't over-order stock.
+
+It computes **days-of-cover**, a **recommended reorder quantity** (to reach a target cover
+window), the **estimated cost** at the cheapest current supplier, and a **signal**
+(out-of-stock / reorder / watch / ok). The page has signal + merchant filters, KPIs
+(urgent counts, total cost to clear urgent), and a one-click "Buy" into the batch form.
+Engine: `get_buy_recommendations()`. Issued products stay in the Issuing Hub (their own
+low-stock alerts); the planner covers stock we buy from suppliers.
+
+Coverage: `tests/e2e_v23.py` (8 checks incl. the active-vs-new weighting). Full regression
+green — 21 suites.
+
+**Next:** Phase 4 — the cash-flow command centre (receivables in vs payables out →
+*safe-to-buy*), tying the Buy Planner's recommended spend to what cash/credit we actually have.
 
 ## Buy-side, Phase 2 — Supplier statements & buying methods (v22)
 

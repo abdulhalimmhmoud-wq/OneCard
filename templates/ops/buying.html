@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Buy Planner — Operations — OneCard{% endblock %}
+
+{% set sig = {'out': ('Out of stock', '#ef4444'), 'reorder': ('Reorder now', '#f59e0b'),
+              'watch': ('Watch', '#3b82f6'), 'ok': ('OK', '#10b981')} %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">🧭 Buy Planner</h1>
+        <p class="page-subtitle">What to reorder now — stock on hand vs recent draw-down and forecast. New/unproven-client forecast is weighted at {{ new_weight }}% of a proven active client's. Costs in SAR.</p>
+    </div>
+</div>
+
+<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(180px,1fr))">
+    <div class="stat-card" style="border:2px solid var(--danger)">
+        <div class="stat-icon">🚨</div>
+        <div class="stat-value">{{ by_signal.get('out', 0) }}</div>
+        <div class="stat-label">Out of Stock (with demand)</div>
+    </div>
+    <div class="stat-card" style="border:2px solid var(--warning)">
+        <div class="stat-icon">⏰</div>
+        <div class="stat-value">{{ by_signal.get('reorder', 0) }}</div>
+        <div class="stat-label">Reorder Now (&lt;7 days cover)</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">👀</div>
+        <div class="stat-value">{{ by_signal.get('watch', 0) }}</div>
+        <div class="stat-label">Watch</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">💰</div>
+        <div class="stat-value">SAR {{ reorder_cost|money }}</div>
+        <div class="stat-label">Cost to clear all urgent</div>
+    </div>
+</div>
+
+<div class="card mb-24">
+    <form method="GET" style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">
+        <div>
+            <label class="form-label" style="font-size:11px">Signal</label>
+            <select name="signal">
+                <option value="">All</option>
+                {% for k, v in sig.items() %}<option value="{{ k }}" {{ 'selected' if filters.signal == k }}>{{ v[0] }}</option>{% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="form-label" style="font-size:11px">Merchant</label>
+            <select name="merchant">
+                <option value="">All</option>
+                {% for m in merchants %}<option value="{{ m }}" {{ 'selected' if filters.merchant == m }}>{{ m }}</option>{% endfor %}
+            </select>
+        </div>
+        <button type="submit" class="btn btn-primary">🔎 Filter</button>
+        <a href="/ops/buying" class="btn btn-ghost">Reset</a>
+    </form>
+</div>
+
+<div class="table-card">
+    <div class="table-header"><div class="table-title">🧭 Reorder Recommendations ({{ rows|length }})</div></div>
+    <div class="table-scroll">
+        <table>
+            <thead>
+                <tr>
+                    <th>Product</th>
+                    <th>On hand</th>
+                    <th>Sold 30d</th>
+                    <th>Forecast (act / new)</th>
+                    <th>Days cover</th>
+                    <th>Recommend</th>
+                    <th>Est. cost</th>
+                    <th>Signal</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for r in rows %}
+            <tr>
+                <td class="fw6 truncate" style="max-width:230px" title="{{ r.product_name }}">{{ r.product_name }}
+                    <div class="text-muted" style="font-size:10px">{{ r.merchant }}</div>
+                </td>
+                <td class="fw6 {{ 'text-d' if r.on_hand <= 0 }}">{{ r.on_hand|money }}</td>
+                <td>{{ r.sold|money }} <span class="text-muted" style="font-size:10px">({{ r.daily_draw }}/d)</span></td>
+                <td class="text-muted" style="font-size:12px">{{ r.forecast_active|money }} / {{ r.forecast_new|money }}</td>
+                <td class="fw6">{{ r.days_cover if r.days_cover is not none else '—' }}</td>
+                <td class="fw6 text-accent">{{ r.recommended_qty|money }}</td>
+                <td>{{ r.est_cost|money }} <span class="text-muted" style="font-size:10px">@{{ r.unit_cost }}</span></td>
+                <td><span class="badge" style="background:{{ sig[r.signal][1] }}20;color:{{ sig[r.signal][1] }}">{{ sig[r.signal][0] }}</span></td>
+                <td>
+                    {% if r.recommended_qty > 0 %}
+                    <a href="/ops/batches?product={{ r.product_rowid }}" class="btn btn-sm btn-ghost" title="Record a purchase batch for this product">📥 Buy</a>
+                    {% endif %}
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="9" style="text-align:center;padding:40px;color:var(--text-3)">
+                Nothing to plan yet — recommendations appear once there are sales, forecasts or stock.
+            </td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

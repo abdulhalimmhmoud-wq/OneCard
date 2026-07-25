@@ -1302,6 +1302,28 @@ def ops_consignment():
                            account_labels=models.ACCOUNT_TYPE_LABELS)
 
 
+@app.route('/ops/buying')
+@auth.ops_required
+def ops_buying():
+    """Buy planner: what to reorder now, weighing stock on hand vs draw-down rate
+    and forecast (active-client demand full; new/unproven-client demand discounted)."""
+    recs = models.get_buy_recommendations()
+    f_signal = request.args.get('signal', '').strip()
+    f_merchant = request.args.get('merchant', '').strip()
+    rows = [r for r in recs
+            if (not f_signal or r['signal'] == f_signal)
+            and (not f_merchant or r['merchant'] == f_merchant)]
+    from collections import Counter
+    by_signal = Counter(r['signal'] for r in recs)
+    reorder_cost = round(sum(r['est_cost'] for r in recs if r['signal'] in ('out', 'reorder')))
+    merchants = sorted({r['merchant'] for r in recs})
+    return render_template('ops/buying.html', active_tab='ops_buying',
+                           rows=rows, by_signal=by_signal, reorder_cost=reorder_cost,
+                           total=len(recs), merchants=merchants,
+                           filters={'signal': f_signal, 'merchant': f_merchant},
+                           new_weight=int(models.NEW_CLIENT_FORECAST_WEIGHT * 100))
+
+
 @app.route('/ops/products')
 @auth.ops_required
 def ops_products():
