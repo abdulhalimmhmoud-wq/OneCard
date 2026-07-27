@@ -66,7 +66,7 @@ check('app.js has msCreate component', 'function msCreate' in appjs and 'msMatch
 # ── 2. Ops product form fixed ──
 ops = login('ops@onecard.com', 'Ops2025!')
 s, b = get(ops, '/ops/products/add')
-check('merchant datalist present', 'id="merchantsList"' in b and b.count('<option value=') > 100)
+check('merchant dropdown present', '<select name="merchant"' in b and b.count('<option value=') > 100)
 check('eSIM countries in form', 'eSIM - ' in b)
 check('canonical categories present', 'Health &amp; Fitness' in b or 'Health & Fitness' in b)
 

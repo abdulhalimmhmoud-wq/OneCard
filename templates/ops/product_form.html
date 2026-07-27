@@ -30,7 +30,12 @@
             </div>
             <div class="form-group" style="flex:1">
                 <label class="form-label">Merchant *</label>
-                <input type="text" name="merchant" required value="{{ product.merchant if product else '' }}" list="merchantsList" placeholder="e.g. PlayStation USA">
+                <select name="merchant" required>
+                    {% if not product %}<option value="">-- Select merchant --</option>{% endif %}
+                    {% if product and product.merchant and product.merchant not in merchants %}
+                    <option value="{{ product.merchant }}" selected>{{ product.merchant }}</option>{% endif %}
+                    {% for m in merchants %}<option value="{{ m }}" {{ 'selected' if product and product.merchant == m }}>{{ m }}</option>{% endfor %}
+                </select>
             </div>
         </div>
         <div class="form-row">
@@ -42,7 +47,11 @@
             </div>
             <div class="form-group" style="flex:1">
                 <label class="form-label">Country *</label>
-                <input type="text" name="country" required value="{{ product.country if product else 'Global' }}" list="countriesList">
+                {% set cval = product.country if product else 'Global' %}
+                <select name="country" required>
+                    {% if cval and cval not in countries %}<option value="{{ cval }}" selected>{{ cval }}</option>{% endif %}
+                    {% for c in countries %}<option value="{{ c }}" {{ 'selected' if cval == c }}>{{ c }}</option>{% endfor %}
+                </select>
             </div>
         </div>
         <div class="form-row">
@@ -55,7 +64,11 @@
             </div>
             <div class="form-group" style="flex:1">
                 <label class="form-label">Currency</label>
-                <input type="text" name="currency" value="{{ product.currency if product else 'SAR' }}" list="currenciesList">
+                {% set cur = product.currency if product else 'SAR' %}
+                <select name="currency">
+                    {% if cur and cur not in currencies %}<option value="{{ cur }}" selected>{{ cur }}</option>{% endif %}
+                    {% for c in currencies %}<option value="{{ c }}" {{ 'selected' if cur == c }}>{{ c }}</option>{% endfor %}
+                </select>
             </div>
         </div>
         {% if product %}
@@ -96,10 +109,6 @@
     </div>
 </div>
 </form>
-
-<datalist id="countriesList">{% for c in countries %}<option value="{{ c }}">{% endfor %}</datalist>
-<datalist id="currenciesList">{% for c in currencies %}<option value="{{ c }}">{% endfor %}</datalist>
-<datalist id="merchantsList">{% for m in merchants %}<option value="{{ m }}">{% endfor %}</datalist>
 {% endblock %}
 
 {% block scripts %}
