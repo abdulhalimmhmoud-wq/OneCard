@@ -1,32 +1,35 @@
-# OneCard — Reseller Operations Platform (v27)
+# OneCard — Reseller Operations Platform (v28)
 
-## Forecast Intelligence for Operations (v27)
+## Forecasted Demand — plain, informational (v28)
 
-Resellers' forecasts used to tell Ops **what** and **how much** — but never **when**.
-v27 adds a light timing dimension at the source and turns the Ops page into a real
-planning console. See `docs/FORECAST_INTELLIGENCE.md`.
+Reworked the v27 forecast page after owner feedback: it must **inform, not decide**.
+The earlier version fired a wall of jargon-heavy alerts ("near-term run-rate", "surge",
+"concentration — verify before committing stock") that read like the system was making the
+call. v28 replaces all of that with **calm data tables** the user reads and judges:
 
-- **Timing capture (reseller + sales).** Each forecast line now carries a light quick-select:
-  **when it's needed** (This week / This month / Next month / a specific date), **cadence**
-  (one-off vs a recurring monthly run-rate), and **confidence** (high/med/low). The account
-  manager can **refine a line's needed-by date + confidence** from the sales forecast detail —
-  they often know the real timing better than a self-serve client. Schema: three new
-  `forecast_items` columns, backfilled so every existing line stays valid (recurring / medium).
-- **Ops → 📊 Forecast Intelligence.** Replaces the flat demand page with:
-  - **When demand lands** — value/units bucketed into *Next 7 days · 8–30 · 31–90 · Recurring
-    monthly · Undated*, plus a **12-week timeline** of dated one-off demand (the spikes).
-  - **Demand Signals** — per-merchant **surge** (near-term forecast ≥ 1.5× the trailing
-    run-rate), **brand-new demand** (forecast with no sales history), **single-client
-    concentration** (one client — flagged harder if new/unproven), and per-product
-    **coverage shortfalls** ("short N units before <date>"), each linking to the Buy Planner.
-  - **Coverage** — forecast-in-window vs stock on hand, so Ops sees what we can't yet meet.
-  - **Per-customer register** — every plan with tier (active vs new), value and earliest
-    needed-by, drilling into a **line-by-line detail with fulfilment** (how much of each line
-    the client has actually ordered since submitting).
-- **Risk-adjusted.** New/unproven-client forecast is discounted with the same weight the Buy
-  Planner uses (`buy.new_client_forecast_weight`), so speculative demand doesn't overstate the plan.
+- **No verdicts, no alarm wall, no command language.** Removed the "Demand Signals" panel and
+  its surge/concentration/"verify & act" wording, and the silent risk-weighting. The page now
+  shows **raw client numbers** only.
+- **Plain business language** — *Planned for the next 30 days*, *Sold (30d)*, *In stock*, *Gap*,
+  *Needed by*, *Clients* — no internal jargon.
+- **Ops → 📅 Forecasted Demand**: when it's needed (time buckets + 12-week timeline of dated
+  one-off demand), **by merchant** (planned vs recent sales, and how many clients), **by
+  product** (planned vs stock on hand — the gap is plain arithmetic), and **every client's plan**
+  drilling into a line-by-line detail with fulfilment (what they've actually ordered since).
 
-Coverage: `tests/e2e_v27.py` (14 checks). Full regression green — 25 suites.
+Coverage: `tests/e2e_v27.py` (14 checks, updated). Full regression green — 25 suites.
+
+## Forecast timing capture (v27)
+
+Resellers' forecasts told Ops **what** and **how much** — never **when**. v27 added a light
+timing dimension at the source (kept in v28; only the Ops presentation changed):
+
+- Each forecast line carries a light quick-select: **when it's needed** (This week / This month /
+  Next month / a specific date), **cadence** (one-off vs recurring monthly), and **confidence**.
+- The account manager can **refine a line's needed-by date + confidence** from the sales forecast
+  detail — they often know the real timing better than a self-serve client.
+- Schema: three new `forecast_items` columns (`needed_by`, `period`, `confidence`), backfilled so
+  every existing line stays valid (recurring / medium). See `docs/FORECAST_INTELLIGENCE.md`.
 
 ## API is an always-on channel (v26)
 

@@ -1,81 +1,56 @@
 {% extends "base.html" %}
-{% block title %}Forecast Intelligence — Operations — OneCard{% endblock %}
+{% block title %}Forecasted Demand — Operations — OneCard{% endblock %}
 
-{% set sev = {'high': ('var(--danger)', '🔴'), 'medium': ('var(--warning)', '🟠'), 'low': ('var(--accent)', '🔵')} %}
-{% set kind_icon = {'surge': '📈', 'new_demand': '🆕', 'concentration': '🎯', 'short': '🚨'} %}
 {% set bkt_icon = {'week': '🔥', 'month': '📅', 'quarter': '🗓️', 'later': '⏳', 'recurring': '🔁', 'undated': '❓'} %}
 {% set tmax = (fi.timeline | map(attribute='value') | max) or 0 %}
 
 {% block content %}
 <div class="page-header">
     <div>
-        <h1 class="page-title">📊 Forecast Intelligence</h1>
-        <p class="page-subtitle">What resellers plan to buy, <b>when</b> they need it, where demand is spiking, and whether we can cover it.
-           Near-term window = next {{ fi.window }} days · live forecasts from the last {{ fi.lookback }} days · all values in SAR.</p>
+        <h1 class="page-title">📅 Forecasted Demand</h1>
+        <p class="page-subtitle">What your clients plan to buy and when they need it — shown next to recent sales and current stock,
+           so you can plan sourcing. Amounts in SAR. You decide what to act on.</p>
     </div>
     <div class="page-actions">
-        <a href="/ops/buying" class="btn btn-ghost">🧭 Buy Planner →</a>
+        <a href="/ops/buying" class="btn btn-ghost">Open Buy Planner →</a>
     </div>
 </div>
 
-<!-- ── Headline ── -->
+<!-- ── Plain headline numbers ── -->
 <div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(180px,1fr))">
     <div class="stat-card">
         <div class="stat-icon">💰</div>
         <div class="stat-value">SAR {{ fi.totals.est_value|money }}</div>
-        <div class="stat-label">Total Forecasted Value</div>
+        <div class="stat-label">Total planned (all periods)</div>
     </div>
-    <div class="stat-card" style="border:2px solid var(--accent)">
-        <div class="stat-icon">⏱️</div>
-        <div class="stat-value">SAR {{ fi.totals.near_term|money }}</div>
-        <div class="stat-label">Near-term (next {{ fi.window }}d, risk-adjusted)</div>
-    </div>
-    <div class="stat-card {{ 'stat-card' if fi.totals.signals == 0 else '' }}" style="border:2px solid {{ 'var(--danger)' if fi.totals.signals else 'var(--border)' }}">
-        <div class="stat-icon">⚠️</div>
-        <div class="stat-value">{{ fi.totals.signals }}</div>
-        <div class="stat-label">Demand Signals</div>
+    <div class="stat-card">
+        <div class="stat-icon">📆</div>
+        <div class="stat-value">SAR {{ fi.totals.planned|money }}</div>
+        <div class="stat-label">Planned for the next {{ fi.window }} days</div>
     </div>
     <div class="stat-card">
         <div class="stat-icon">👥</div>
-        <div class="stat-value">{{ fi.totals.resellers }}</div>
-        <div class="stat-label">Resellers Planning</div>
+        <div class="stat-value">{{ fi.totals.clients }}</div>
+        <div class="stat-label">Clients with a plan</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">📦</div>
+        <div class="stat-value">{{ fi.totals.short_products }}</div>
+        <div class="stat-label">Products with plan above stock</div>
     </div>
     <div class="stat-card">
         <div class="stat-icon">💡</div>
         <div class="stat-value">SAR {{ fi.unallocated_budget|money }}</div>
-        <div class="stat-label">Unallocated Budget (exploratory)</div>
+        <div class="stat-label">Budgets not yet allocated</div>
     </div>
 </div>
 
-<!-- ── Demand Signals: the decisions to make ── -->
-<div class="card mt-24" style="border-left:3px solid var(--danger)">
-    <div class="card-header"><div class="card-title">⚠️ Demand Signals — verify &amp; act</div>
-        <span class="text-muted" style="font-size:12px">Spikes, brand-new demand, single-client concentration &amp; stock shortfalls</span>
-    </div>
-    {% for s in fi.signals %}
-    <div style="display:flex;gap:10px;align-items:flex-start;padding:10px 4px;border-bottom:1px solid var(--border)">
-        <span style="font-size:16px">{{ kind_icon.get(s.kind, '•') }}</span>
-        <div style="flex:1">
-            <span class="badge" style="background:{{ sev[s.severity][0] }}22;color:{{ sev[s.severity][0] }};border:1px solid {{ sev[s.severity][0] }}">{{ s.kind|replace('_',' ')|upper }}</span>
-            <span style="margin-left:6px">{{ s.message }}</span>
-        </div>
-        {% if s.kind == 'short' and s.product_rowid %}
-            <a href="/ops/buying" class="btn btn-sm btn-primary">Buy</a>
-        {% elif s.merchant %}
-            <a href="/ops/buying" class="btn btn-sm btn-ghost">Plan</a>
-        {% endif %}
-    </div>
-    {% else %}
-    <div style="text-align:center;padding:24px;color:var(--text-3)">✅ No spikes, shortfalls or concentration risks right now. Demand is tracking the baseline.</div>
-    {% endfor %}
-</div>
-
-<!-- ── When demand lands ── -->
-<h2 style="font-size:15px;margin:26px 0 12px">🗓️ When demand lands</h2>
+<!-- ── When demand is needed ── -->
+<h2 style="font-size:15px;margin:26px 0 12px">🗓️ When it's needed</h2>
 <div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr))">
     {% for key, label in fi.bucket_labels %}
     {% set b = fi.buckets[key] %}
-    <div class="stat-card" style="{{ 'border:2px solid var(--danger)' if key == 'week' and b.value > 0 else '' }}">
+    <div class="stat-card">
         <div class="stat-icon">{{ bkt_icon[key] }}</div>
         <div class="stat-value" style="font-size:18px">SAR {{ b.value|money }}</div>
         <div class="stat-label">{{ label }}</div>
@@ -84,78 +59,66 @@
     {% endfor %}
 </div>
 
-<!-- 12-week timeline (dated one-off demand) -->
+{% if tmax > 0 %}
 <div class="table-card mt-24">
     <div class="table-header"><div class="table-title">📈 Next 12 weeks — dated one-off demand</div>
-        <span class="text-muted" style="font-size:12px">Recurring/monthly demand is the steady baseline; these bars show the time-specific spikes</span>
+        <span class="text-muted" style="font-size:12px">Recurring monthly demand is steady and shown above; these bars are the dated one-off needs</span>
     </div>
-    {% if tmax > 0 %}
     <div style="display:flex;align-items:flex-end;gap:6px;height:150px;padding:16px 12px 0">
         {% for t in fi.timeline %}
         <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%" title="Week of {{ t.start }}: SAR {{ t.value|money }} · {{ t.units }} units">
             <div class="text-muted" style="font-size:10px">{% if t.value %}{{ (t.value/1000)|round|int }}k{% endif %}</div>
-            <div style="width:100%;background:{{ 'var(--danger)' if t.week == 0 else 'var(--accent)' }};border-radius:4px 4px 0 0;height:{{ ((t.value / tmax) * 100)|round(1) }}%;min-height:{{ 2 if t.value else 0 }}px"></div>
+            <div style="width:100%;background:var(--accent);border-radius:4px 4px 0 0;height:{{ ((t.value / tmax) * 100)|round(1) }}%;min-height:{{ 2 if t.value else 0 }}px"></div>
             <div class="text-muted" style="font-size:10px;margin-top:4px">{{ t.start[5:] }}</div>
         </div>
         {% endfor %}
     </div>
-    {% else %}
-    <div style="text-align:center;padding:28px;color:var(--text-3)">No dated one-off demand in the next 12 weeks — current demand is recurring/monthly (see the baseline above).</div>
-    {% endif %}
 </div>
+{% endif %}
 
 <div class="grid-2 mt-24" style="align-items:start">
-    <!-- ── Demand by merchant + spike ── -->
+    <!-- ── By merchant: planned vs recent sales ── -->
     <div class="table-card">
-        <div class="table-header"><div class="table-title">🏬 Demand by Merchant vs baseline</div></div>
+        <div class="table-header"><div class="table-title">🏬 By merchant — planned vs recent sales</div></div>
         <div class="table-scroll" style="max-height:460px;overflow-y:auto">
             <table>
-                <thead><tr><th>Merchant</th><th>Near-term</th><th>Baseline ({{ fi.window }}d)</th><th>Signal</th></tr></thead>
+                <thead><tr><th>Merchant</th><th>Clients</th><th>Planned ({{ fi.window }}d)</th><th>Sold ({{ fi.window }}d)</th><th>vs recent</th></tr></thead>
                 <tbody>
                 {% for m in fi.by_merchant %}
                 <tr>
-                    <td class="fw6">{{ m.merchant }}
-                        <div class="text-muted" style="font-size:10px">{{ m.resellers }} reseller{{ 's' if m.resellers != 1 }} · {{ m.forecasts }} forecast{{ 's' if m.forecasts != 1 }}
-                        {% if m.top_share >= 0.6 %}· <span style="color:var(--warning)">{{ (m.top_share*100)|round|int }}% one client{{ ' (new)' if m.top_new }}</span>{% endif %}</div>
-                    </td>
-                    <td class="fw6 text-accent">SAR {{ m.near_term|money }}</td>
+                    <td class="fw6">{{ m.merchant }}</td>
+                    <td>{{ m.clients }}</td>
+                    <td class="fw6">SAR {{ m.planned|money }}</td>
                     <td class="text-muted">SAR {{ m.baseline|money }}</td>
-                    <td>
-                        {% if m.signal == 'surge' %}<span class="badge badge-danger">📈 {{ m.ratio }}×</span>
-                        {% elif m.signal == 'new_demand' %}<span class="badge badge-warning">🆕 new</span>
-                        {% elif m.signal == 'cooling' %}<span class="badge badge-info">📉 cooling</span>
-                        {% else %}<span class="badge badge-ghost">steady</span>{% endif %}
-                    </td>
+                    <td>{% if m.ratio %}<span class="text-muted">{{ m.ratio }}×</span>{% else %}<span class="text-muted" style="font-size:11px">no recent sales</span>{% endif %}</td>
                 </tr>
                 {% else %}
-                <tr><td colspan="4" style="text-align:center;padding:30px;color:var(--text-3)">No forecast demand yet</td></tr>
+                <tr><td colspan="5" style="text-align:center;padding:30px;color:var(--text-3)">No forecast demand yet</td></tr>
                 {% endfor %}
                 </tbody>
             </table>
         </div>
     </div>
 
-    <!-- ── Coverage — products at risk ── -->
+    <!-- ── By product: planned vs stock ── -->
     <div class="table-card">
-        <div class="table-header"><div class="table-title">📦 Coverage — can we meet the forecast?</div></div>
+        <div class="table-header"><div class="table-title">📦 By product — planned vs stock on hand</div></div>
         <div class="table-scroll" style="max-height:460px;overflow-y:auto">
             <table>
-                <thead><tr><th>Product</th><th>Need</th><th>On hand</th><th>Gap / By</th></tr></thead>
+                <thead><tr><th>Product</th><th>Planned ({{ fi.window }}d)</th><th>In stock</th><th>Gap</th><th>Needed by</th></tr></thead>
                 <tbody>
                 {% for p in fi.by_product %}
                 <tr>
                     <td class="fw6 truncate" style="max-width:200px" title="{{ p.product_name }}">{{ p.product_name }}
-                        <div class="text-muted" style="font-size:10px">{{ p.merchant }} · {{ p.resellers }} reseller{{ 's' if p.resellers != 1 }}</div>
+                        <div class="text-muted" style="font-size:10px">{{ p.merchant }} · {{ p.clients }} client{{ 's' if p.clients != 1 }}</div>
                     </td>
-                    <td class="fw6">{{ p.qty_near|money }}</td>
-                    <td class="{{ 'text-d' if p.short else '' }}">{{ p.on_hand|money }}</td>
-                    <td>
-                        {% if p.short %}<span class="badge badge-danger">short {{ p.short|money }}</span>{% else %}<span class="badge badge-success">covered</span>{% endif %}
-                        {% if p.earliest %}<div class="text-muted" style="font-size:10px">by {{ p.earliest[:10] }}</div>{% endif %}
-                    </td>
+                    <td class="fw6">{{ p.planned_qty|money }}</td>
+                    <td class="text-muted">{{ p.on_hand|money }}</td>
+                    <td>{% if p.gap %}<span class="text-d fw6">{{ p.gap|money }}</span>{% else %}<span class="text-muted">—</span>{% endif %}</td>
+                    <td>{% if p.earliest %}{{ p.earliest[:10] }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
                 </tr>
                 {% else %}
-                <tr><td colspan="4" style="text-align:center;padding:30px;color:var(--text-3)">No product-level forecasts yet</td></tr>
+                <tr><td colspan="5" style="text-align:center;padding:30px;color:var(--text-3)">No product-level forecasts yet</td></tr>
                 {% endfor %}
                 </tbody>
             </table>
@@ -165,13 +128,13 @@
 
 <!-- ── Per-customer register ── -->
 <div class="table-card mt-24">
-    <div class="table-header"><div class="table-title">📋 Forecast Register — every customer's plan</div>
-        <span class="text-muted" style="font-size:12px">Sorted by earliest needed-by · click a row for the line-by-line detail &amp; fulfilment</span>
+    <div class="table-header"><div class="table-title">📋 Every client's plan</div>
+        <span class="text-muted" style="font-size:12px">Sorted by earliest needed-by · click a row to see the lines &amp; what they've ordered so far</span>
     </div>
     <div class="table-scroll">
         <table>
             <thead>
-                <tr><th>Reseller</th><th>Tier</th><th>Contract</th><th>Lines</th><th>Value</th><th>Needed by</th><th>Submitted</th><th></th></tr>
+                <tr><th>Client</th><th>Type</th><th>Contract</th><th>Lines</th><th>Planned value</th><th>Needed by</th><th>Submitted</th><th></th></tr>
             </thead>
             <tbody>
             {% for f in fi.register %}
@@ -180,23 +143,23 @@
                     <div class="text-muted" style="font-size:11px">{{ f.contact_name }}</div>
                 </td>
                 <td>
-                    {% if f.tier == 'active' %}<span class="badge badge-success">Active</span>
-                    {% else %}<span class="badge badge-warning">New</span>{% endif %}
+                    {% if f.tier == 'active' %}<span class="badge badge-success">Existing</span>
+                    {% else %}<span class="badge badge-ghost">New</span>{% endif %}
                 </td>
                 <td>
                     {% if f.contract_status == 'contracted' %}<span class="badge badge-success">Signed</span>
                     {% else %}<span class="badge badge-ghost">Prospect</span>{% endif %}
                 </td>
                 <td>{{ f.lines }}</td>
-                <td class="fw6 text-accent">SAR {{ f.est_value|money }}</td>
-                <td>{% if f.earliest %}{{ f.earliest[:10] }}{% else %}<span class="text-muted">recurring</span>{% endif %}</td>
+                <td class="fw6">SAR {{ f.est_value|money }}</td>
+                <td>{% if f.earliest %}{{ f.earliest[:10] }}{% else %}<span class="text-muted">monthly</span>{% endif %}</td>
                 <td class="text-muted">{{ f.created_at[:16] }}</td>
                 <td><span class="text-muted">›</span></td>
             </tr>
             {% else %}
             <tr><td colspan="8" style="text-align:center;padding:40px;color:var(--text-3)">
                 No purchase forecasts submitted yet.<br>
-                <span style="font-size:12px">Resellers submit purchase plans from their portal → Purchase Plan page.</span>
+                <span style="font-size:12px">Clients submit purchase plans from their portal → Purchase Plan page.</span>
             </td></tr>
             {% endfor %}
             </tbody>

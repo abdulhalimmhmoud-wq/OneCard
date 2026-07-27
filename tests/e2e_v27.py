@@ -98,34 +98,33 @@ check("timing captured: product line is one-off, high confidence, with a needed-
 check("timing captured: merchant line is a recurring monthly baseline",
       by_type.get('merchant') and by_type['merchant']['period'] == 'monthly')
 
-# ── forecast intelligence: buckets, spike, coverage, weighting ──
+# ── forecast data: buckets, planned-vs-recent, planned-vs-stock (numbers only) ──
 fi = models.get_forecast_intelligence()
 mrow = next((m for m in fi['by_merchant'] if m['merchant'] == merch), None)
 prow = next((p for p in fi['by_product'] if p['product_rowid'] == pid), None)
 
 check("one-off product lands in the 'Next 7 days' bucket", fi['buckets']['week']['value'] > 0)
 check("recurring merchant line lands in the 'Recurring monthly' bucket", fi['buckets']['recurring']['value'] > 0)
-check("new merchant with no sales history is flagged as brand-new demand",
-      mrow is not None and mrow['signal'] == 'new_demand', str(mrow and mrow['signal']))
-check("new/unproven client forecast is risk-discounted (qty_near < raw 500)",
-      prow is not None and 0 < prow['qty_near'] < 500, str(prow and prow['qty_near']))
-check("coverage shortfall detected (need > on-hand 0)",
-      prow is not None and prow['short'] > 0 and prow['signal'] == 'short')
-check("a stock-shortfall demand signal is raised for the product",
-      any(s['kind'] == 'short' and s.get('product_rowid') == pid for s in fi['signals']))
-check("single-client concentration risk is flagged (one new client drives 100%)",
-      any(s['kind'] == 'concentration' and s['merchant'] == merch for s in fi['signals']))
+check("merchant row shows planned next to recent sales (no recent sales -> no ratio)",
+      mrow is not None and mrow['planned'] > 0 and mrow['baseline'] == 0 and mrow['ratio'] is None)
+check("product row shows the RAW planned quantity (500) — no weighting/judgement",
+      prow is not None and prow['planned_qty'] == 500, str(prow and prow['planned_qty']))
+check("stock gap is plain arithmetic: planned 500 - on hand 0 = 500",
+      prow is not None and prow['on_hand'] == 0 and prow['gap'] == 500)
+check("the data carries NO verdicts/alerts list (informational only)", 'signals' not in fi)
 
 # the forecast shows up in the per-customer register with the right tier
 regrow = next((r for r in fi['register'] if r['fid'] == fid), None)
-check("forecast appears in the per-customer register tagged as a NEW client",
+check("forecast appears in the register tagged as a New client",
       regrow is not None and regrow['tier'] == 'new')
 
-# ── Ops console + detail render and surface the new merchant/forecast ──
+# ── Ops page renders as calm data tables — no alarm wall, no command language ──
 ops = login('ops@onecard.com', 'Ops2025!')
 s, b = get(ops, '/ops/forecasts')
-check("Ops console renders the Forecast Intelligence page",
-      s == 200 and 'Forecast Intelligence' in b and 'Demand Signals' in b and merch in b)
+check("Ops page renders the Forecasted Demand tables and lists the merchant",
+      s == 200 and 'Forecasted Demand' in b and merch in b)
+check("Ops page dropped the alarm wall + 'verify/act' command language",
+      'Demand Signals' not in b and 'verify before committing' not in b and 'verify & act' not in b)
 s2, b2 = get(ops, f'/ops/forecasts/{fid}')
 check("Ops forecast detail shows timing + fulfilment (ordered-since)",
       s2 == 200 and 'Ordered since' in b2 and f'V27 Card {tag}' in b2 and 'one-off' in b2)

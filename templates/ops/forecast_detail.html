@@ -8,8 +8,8 @@
         <h1 class="page-title">📋 Forecast #{{ forecast.id }} — {{ forecast.company_name }}</h1>
         <p class="page-subtitle">
             Submitted {{ forecast.created_at[:16] }} ·
-            {% if forecast.orders_ct and forecast.orders_ct > 0 %}<span class="badge badge-success">Active client</span>
-            {% else %}<span class="badge badge-warning">New / unproven — forecast is risk-discounted</span>{% endif %}
+            {% if forecast.orders_ct and forecast.orders_ct > 0 %}<span class="badge badge-success">Existing client</span>
+            {% else %}<span class="badge badge-ghost">New client (no orders yet)</span>{% endif %}
             {% if forecast.contract_status == 'contracted' %}<span class="badge badge-success">Contract signed</span>
             {% else %}<span class="badge badge-ghost">Prospect</span>{% endif %}
         </p>

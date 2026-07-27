@@ -83,8 +83,8 @@ prof_f = register(sales, em_f)
 # Ops can open the demand-forecast page
 ops = login('ops@onecard.com', 'Ops2025!')
 s, b = get(ops, '/ops/forecasts')
-check('ops can open /ops/forecasts', s == 200 and 'Forecast Intelligence' in b)
-check('ops forecasts page has demand-by-merchant table', 'Demand by Merchant' in b)
+check('ops can open /ops/forecasts', s == 200 and 'Forecasted Demand' in b)
+check('ops forecasts page has by-merchant table', 'By merchant' in b)
 
 # Reseller submits a forecast
 res = login(em_f, 'Test123!')

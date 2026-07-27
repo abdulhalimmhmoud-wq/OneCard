@@ -2812,18 +2812,17 @@ BUCKET_LABELS = [
 ]
 
 
-def get_forecast_intelligence(lookback_days=120, window_days=None, spike_ratio=1.5,
-                              concentration=0.6):
-    """v27: turn raw forecast lines into an operational picture for Ops —
-      • WHEN demand lands: time buckets + a 12-week timeline
-      • WHERE the spikes are: near-term forecast vs the trailing actual run-rate
-      • whether we can COVER it: stock on hand vs the needed-by window
-      • WHO is driving it: per-customer register + single-client concentration risk
-    New/unproven-client demand (reseller with no orders yet) is risk-discounted with
-    the same weight the buy engine uses. Only forecasts submitted within
-    `lookback_days` are considered live. All money in SAR."""
+def get_forecast_intelligence(lookback_days=120, window_days=None):
+    """v27/v28: present forecast data for Operations to read and judge — numbers
+    only, no verdicts or alerts. Returns:
+      • buckets + 12-week timeline: WHEN demand is needed
+      • by_merchant: what's planned for the next `window` days vs recent actual sales,
+        and how many clients are behind it
+      • by_product: planned quantity vs stock on hand (the gap is plain arithmetic)
+      • register: every client's plan, with active-vs-new tier so Ops can weigh trust
+    Only forecasts submitted within `lookback_days` are considered live. All money SAR.
+    The page deliberately does NOT decide for the user — it informs."""
     cfg = get_buy_settings()
-    new_weight = cfg['new_client_forecast_weight'] / 100.0
     window = int(window_days if window_days is not None else cfg['forecast_days'])
     conn = get_db()
     today = datetime.now(timezone.utc).date()
@@ -2867,12 +2866,10 @@ def get_forecast_intelligence(lookback_days=120, window_days=None, spike_ratio=1
     timeline = [{'week': i, 'value': 0.0, 'units': 0,
                  'start': (today + timedelta(days=7 * i)).isoformat()} for i in range(12)]
     merch, prod, reg = {}, {}, {}
-    conc = {}   # merchant -> {reseller_id: near_term_value}
 
     for ln in lines:
         d = dict(ln)
         is_new = (d['orders_ct'] or 0) == 0
-        w = new_weight if is_new else 1.0
         days_out = None
         if d['needed_by']:
             try:
@@ -2883,10 +2880,11 @@ def get_forecast_intelligence(lookback_days=120, window_days=None, spike_ratio=1
         buckets[bk]['value'] += d['est_value']
         buckets[bk]['units'] += d['quantity']
         buckets[bk]['lines'] += 1
-        # near-term = recurring monthly run-rate, or a one-off due within the window
+        # "planned for the window" = a recurring monthly line, or a one-off due within it.
+        # These are the raw client numbers — no weighting, no judgement applied.
         near = d['period'] == 'monthly' or (days_out is not None and days_out <= window)
-        nt_val = d['est_value'] * w if near else 0.0
-        nt_qty = d['quantity'] * w if near else 0.0
+        nt_val = d['est_value'] if near else 0.0
+        nt_qty = d['quantity'] if near else 0
 
         # 12-week timeline (one-off dated demand; overdue folds into week 0)
         if d['period'] != 'monthly' and days_out is not None and days_out <= 83:
@@ -2896,21 +2894,17 @@ def get_forecast_intelligence(lookback_days=120, window_days=None, spike_ratio=1
 
         m = merch.setdefault(d['merchant'], {
             'merchant': d['merchant'], 'forecasts': set(), 'resellers': set(),
-            'est_value': 0.0, 'near_term': 0.0, 'near_term_raw': 0.0, 'qty': 0})
+            'est_value': 0.0, 'planned': 0.0, 'qty': 0})
         m['forecasts'].add(d['fid']); m['resellers'].add(d['reseller_id'])
-        m['est_value'] += d['est_value']; m['near_term'] += nt_val
-        m['near_term_raw'] += (d['est_value'] if near else 0.0); m['qty'] += d['quantity']
-        if near and nt_val > 0:
-            cm = conc.setdefault(d['merchant'], {})
-            cm[d['reseller_id']] = cm.get(d['reseller_id'], 0.0) + nt_val
+        m['est_value'] += d['est_value']; m['planned'] += nt_val; m['qty'] += d['quantity']
 
         if d['item_type'] == 'product' and d['product_rowid']:
             p = prod.setdefault(d['product_rowid'], {
                 'product_rowid': d['product_rowid'], 'product_name': d['product_name'],
                 'merchant': d['merchant'], 'resellers': set(), 'est_value': 0.0,
-                'qty': 0, 'qty_near': 0.0, 'earliest': None})
+                'qty': 0, 'planned_qty': 0, 'earliest': None})
             p['resellers'].add(d['reseller_id']); p['est_value'] += d['est_value']
-            p['qty'] += d['quantity']; p['qty_near'] += nt_qty
+            p['qty'] += d['quantity']; p['planned_qty'] += nt_qty
             if d['needed_by'] and (p['earliest'] is None or d['needed_by'] < p['earliest']):
                 p['earliest'] = d['needed_by']
 
@@ -2923,96 +2917,49 @@ def get_forecast_intelligence(lookback_days=120, window_days=None, spike_ratio=1
         if d['needed_by'] and (r['earliest'] is None or d['needed_by'] < r['earliest']):
             r['earliest'] = d['needed_by']
 
-    # ── finalise merchants: spike signal + concentration ──
-    signals = []
+    # merchants: planned for the window next to recent actual sales — just the two
+    # numbers (and how many clients), so Ops can compare and judge for themselves.
     by_merchant = []
     for m in merch.values():
         baseline = sold_val_m.get(m['merchant'], 0.0)
-        nt = m['near_term']
-        ratio = (nt / baseline) if baseline > 0 else None
-        if baseline <= 0 and nt > 0:
-            sig = 'new_demand'
-        elif ratio is not None and ratio >= spike_ratio:
-            sig = 'surge'
-        elif ratio is not None and ratio < 0.5:
-            sig = 'cooling'
-        else:
-            sig = 'steady'
-        cm = conc.get(m['merchant'], {})
-        top_share, top_new = 0.0, False
-        if cm and nt > 0:
-            top_rid = max(cm, key=cm.get)
-            top_share = cm[top_rid] / nt
-            # is that dominant reseller new/unproven? (weighted contribution < raw ⇒ discounted)
-            top_new = any(x['reseller_id'] == top_rid and (x['orders_ct'] or 0) == 0 for x in lines)
-        row = {
+        planned = m['planned']
+        ratio = round(planned / baseline, 1) if baseline > 0 else None
+        by_merchant.append({
             'merchant': m['merchant'], 'forecasts': len(m['forecasts']),
-            'resellers': len(m['resellers']), 'est_value': round(m['est_value'], 2),
-            'near_term': round(nt, 2), 'near_term_raw': round(m['near_term_raw'], 2),
-            'qty': m['qty'], 'baseline': round(baseline, 2),
-            'ratio': round(ratio, 2) if ratio is not None else None,
-            'signal': sig, 'top_share': round(top_share, 2), 'top_new': top_new,
-        }
-        by_merchant.append(row)
-        if sig == 'surge':
-            signals.append({'kind': 'surge', 'severity': 'high', 'merchant': m['merchant'],
-                            'message': f"{m['merchant']}: near-term forecast is {row['ratio']}x the "
-                                       f"last {window}-day run-rate (SAR {row['near_term']:,.0f} vs {row['baseline']:,.0f})."})
-        elif sig == 'new_demand' and nt > 0:
-            signals.append({'kind': 'new_demand', 'severity': 'medium', 'merchant': m['merchant'],
-                            'message': f"{m['merchant']}: SAR {row['near_term']:,.0f} of near-term forecast with "
-                                       f"no recent sales history - brand-new demand to source."})
-        if top_share >= concentration and nt > 0 and len(cm) >= 1:
-            who = 'NEW/unproven ' if top_new else ''
-            signals.append({'kind': 'concentration', 'severity': 'high' if top_new else 'medium',
-                            'merchant': m['merchant'],
-                            'message': f"{m['merchant']}: {row['top_share']*100:.0f}% of near-term demand comes from a "
-                                       f"single {who}client - verify before committing stock."})
-    by_merchant.sort(key=lambda x: x['near_term'], reverse=True)
+            'clients': len(m['resellers']), 'est_value': round(m['est_value'], 2),
+            'planned': round(planned, 2), 'baseline': round(baseline, 2),
+            'ratio': ratio, 'qty': m['qty'],
+        })
+    by_merchant.sort(key=lambda x: x['planned'], reverse=True)
 
-    # ── finalise products: coverage gap vs needed_by ──
+    # products: planned quantity for the window vs stock on hand — the gap is arithmetic.
     by_product = []
     for p in prod.values():
-        need = p['qty_near']
+        need = p['planned_qty']
         oh = on_hand.get(p['product_rowid'], 0)
-        short = max(0, int(round(need)) - oh)
-        daily = need / float(window) if need > 0 else 0
-        days_cover = round(oh / daily, 1) if daily > 0 else None
+        gap = max(0, need - oh)
         by_product.append({
             'product_rowid': p['product_rowid'], 'product_name': p['product_name'],
-            'merchant': p['merchant'], 'resellers': len(p['resellers']),
+            'merchant': p['merchant'], 'clients': len(p['resellers']),
             'est_value': round(p['est_value'], 2), 'qty': p['qty'],
-            'qty_near': int(round(need)), 'on_hand': oh, 'short': short,
-            'days_cover': days_cover, 'earliest': p['earliest'],
+            'planned_qty': need, 'on_hand': oh, 'gap': gap, 'earliest': p['earliest'],
             'sold': sold_qty_p.get(p['product_rowid'], 0),
-            'signal': 'short' if short > 0 else 'ok',
         })
-        if short > 0:
-            by_product_sig = f"{p['product_name']}: forecast needs {int(round(need))} units but only {oh} on hand"
-            if p['earliest']:
-                by_product_sig += f" - short {short} before {p['earliest']}"
-            signals.append({'kind': 'short', 'severity': 'high', 'merchant': p['merchant'],
-                            'product_rowid': p['product_rowid'], 'message': by_product_sig + '.'})
-    by_product.sort(key=lambda x: (x['short'], x['qty_near']), reverse=True)
+    by_product.sort(key=lambda x: (x['gap'], x['planned_qty']), reverse=True)
 
     register = sorted(reg.values(), key=lambda x: (x['earliest'] or '9999', x['created_at']))
     for r in register:
         r['est_value'] = round(r['est_value'], 2)
-    # severity order for the signals panel
-    sev_rank = {'high': 0, 'medium': 1, 'low': 2}
-    signals.sort(key=lambda s: sev_rank.get(s['severity'], 3))
 
     totals = {
-        'forecasts': len(reg), 'resellers': len({d['reseller_id'] for d in lines}),
+        'forecasts': len(reg), 'clients': len({d['reseller_id'] for d in lines}),
         'est_value': round(sum(d['est_value'] for d in lines), 2),
-        'near_term': round(sum(m['near_term'] for m in by_merchant), 2),
-        'undated_value': round(buckets['undated']['value'], 2),
-        'recurring_value': round(buckets['recurring']['value'], 2),
-        'signals': len(signals),
+        'planned': round(sum(m['planned'] for m in by_merchant), 2),
+        'short_products': sum(1 for p in by_product if p['gap'] > 0),
     }
     return {
         'buckets': buckets, 'bucket_labels': BUCKET_LABELS, 'timeline': timeline,
-        'by_merchant': by_merchant, 'by_product': by_product, 'signals': signals,
+        'by_merchant': by_merchant, 'by_product': by_product,
         'register': register, 'totals': totals, 'window': window,
         'lookback': lookback_days, 'unallocated_budget': round(unallocated, 2),
         'today': today.isoformat(),
