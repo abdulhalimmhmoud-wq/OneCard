@@ -851,7 +851,7 @@ def sales_forecasts():
     return render_template('sales/forecasts.html', active_tab='forecasts', forecasts=forecasts)
 
 
-@app.route('/sales/forecasts/<int:fid>')
+@app.route('/sales/forecasts/<int:fid>', methods=['GET', 'POST'])
 @auth.sales_required
 def sales_forecast_detail(fid):
     curr = auth.get_current_user()
@@ -862,10 +862,26 @@ def sales_forecast_detail(fid):
     if curr['role'] != 'admin' and forecast['registered_by'] != curr['id']:
         flash("Access denied.", "error")
         return redirect(url_for('sales_forecasts'))
+    # v27: the account manager often knows the real timing better than a
+    # self-serve client — let them refine a line's needed-by date + confidence.
+    if request.method == 'POST':
+        item_id = request.form.get('item_id', type=int)
+        line_ids = {it['id'] for it in items}
+        if item_id in line_ids:
+            models.set_forecast_line_timing(
+                item_id, needed_by=request.form.get('needed_by'),
+                confidence=request.form.get('confidence'))
+            models.notify(models.get_user_ids_by_role('ops'),
+                          "Forecast timing refined 🗓️",
+                          f"{forecast['company_name']}'s account manager updated when a "
+                          f"forecast line is needed.", f"/ops/forecasts/{fid}")
+            flash("Timing updated — Operations will see the refined plan.", "success")
+        return redirect(url_for('sales_forecast_detail', fid=fid))
     if forecast['status'] == 'submitted':
         models.mark_forecast_reviewed(fid)
     return render_template('sales/forecast_detail.html', active_tab='forecasts',
-                           forecast=forecast, items=items)
+                           forecast=forecast, items=items,
+                           today=datetime.now(timezone.utc).date().isoformat())
 
 
 @app.route('/sales/discounts', methods=['GET', 'POST'])
@@ -1282,12 +1298,25 @@ def ops_dashboard():
 @app.route('/ops/forecasts')
 @auth.ops_required
 def ops_forecasts():
-    """Resellers' purchase forecasts, so Operations can plan stock ahead.
-    Values are shown in SAR (the internal base currency)."""
-    demand = models.get_forecast_demand_summary(days=90)
-    forecasts = models.get_all_forecasts(limit=100)
-    return render_template('ops/forecasts.html', active_tab='ops_forecasts',
-                           demand=demand, forecasts=forecasts)
+    """Forecast Intelligence console (v27): WHEN demand lands (time buckets +
+    12-week timeline), WHERE the spikes are, whether we can COVER it, and WHO is
+    driving it. All values in SAR (the internal base currency)."""
+    fi = models.get_forecast_intelligence()
+    return render_template('ops/forecasts.html', active_tab='ops_forecasts', fi=fi)
+
+
+@app.route('/ops/forecasts/<int:fid>')
+@auth.ops_required
+def ops_forecast_detail(fid):
+    """A single reseller's forecast, line by line, with timing + fulfilment
+    (how much of each product line they've actually ordered since submitting)."""
+    forecast, items = models.get_forecast_detail(fid)
+    if not forecast:
+        flash("Forecast not found.", "error")
+        return redirect(url_for('ops_forecasts'))
+    return render_template('ops/forecast_detail.html', active_tab='ops_forecasts',
+                           forecast=forecast, items=items,
+                           today=datetime.now(timezone.utc).date().isoformat())
 
 
 @app.route('/ops/consignment')
@@ -2543,11 +2572,15 @@ def reseller_forecast():
         clean = []
         by_id = {p['id']: p for p in enriched}
         for it in items:
+            # v27: each line carries a light timing hint — when it's needed, whether
+            # it's a one-off or a recurring monthly run-rate, and how sure they are.
+            timing = {'needed_by': models._norm_needed_by(it.get('when')),
+                      'period': it.get('period'), 'confidence': it.get('confidence')}
             if it.get('type') == 'merchant' and it.get('merchant') and float(it.get('value') or 0) > 0:
                 # Value comes in the reseller's display currency; store SAR base.
                 est_sar = models.convert_amount(float(it['value']), disp, 'SAR')
                 clean.append({'item_type': 'merchant', 'merchant': it['merchant'],
-                              'est_value': round(est_sar, 2)})
+                              'est_value': round(est_sar, 2), **timing})
             elif it.get('type') == 'product' and it.get('product_id') in by_id:
                 p = by_id[it['product_id']]
                 qty = int(it.get('quantity') or 0)
@@ -2556,7 +2589,7 @@ def reseller_forecast():
                     est_sar = models.convert_amount(qty * p['client_price'], disp, 'SAR')
                     clean.append({'item_type': 'product', 'merchant': p['merchant'],
                                   'product_rowid': p['id'], 'product_name': p['product_name'],
-                                  'quantity': qty, 'est_value': round(est_sar, 2)})
+                                  'quantity': qty, 'est_value': round(est_sar, 2), **timing})
         if not clean:
             flash("Add at least one merchant or product to your plan.", "error")
         else:
@@ -2591,6 +2624,7 @@ def reseller_forecast():
         f['total_value'] = round(models.convert_amount(f['total_value'], 'SAR', disp))
     return render_template('reseller/forecast.html', active_tab='forecast',
                            profile=profile, disp=disp,
+                           today=datetime.now(timezone.utc).date().isoformat(),
                            products_json=jdump(enriched),
                            merchants_json=jdump(sorted(merchants_data.values(),
                                                             key=lambda x: x['merchant'])),

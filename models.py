@@ -335,7 +335,11 @@ def init_db():
             product_rowid INTEGER,
             product_name TEXT,
             quantity INTEGER,
-            est_value REAL NOT NULL DEFAULT 0
+            est_value REAL NOT NULL DEFAULT 0,
+            -- v27: timing dimension so Ops can plan WHEN stock is needed
+            needed_by TEXT,                              -- date the reseller wants it available
+            period TEXT NOT NULL DEFAULT 'monthly',      -- 'one_off' | 'monthly' (recurring run-rate)
+            confidence TEXT NOT NULL DEFAULT 'medium'    -- 'high' | 'medium' | 'low'
         );
 
         -- ── v4: Orders (post-contract purchasing) ─────────────
@@ -899,6 +903,22 @@ def migrate_db():
         conn.execute("UPDATE reseller_profiles SET api_key=? WHERE id=?", (new_api_key('rk'), r['id']))
     for r in conn.execute("SELECT id FROM suppliers WHERE api_key IS NULL OR api_key=''").fetchall():
         conn.execute("UPDATE suppliers SET api_key=? WHERE id=?", (new_api_key('sk'), r['id']))
+    conn.commit()
+
+    # v27: forecast lines gain a TIMING dimension so Operations can plan WHEN
+    # stock is needed (not just how much). needed_by = the date the reseller
+    # wants it available; period = one_off vs a recurring monthly run-rate;
+    # confidence = how sure the reseller is. Existing lines predate timing, so
+    # they default to a recurring monthly baseline at medium confidence — they
+    # keep flowing through every Ops view exactly as before (no date attached).
+    ficols = {r['name'] for r in conn.execute("PRAGMA table_info(forecast_items)")}
+    for col, ddl in (
+        ('needed_by', "ALTER TABLE forecast_items ADD COLUMN needed_by TEXT"),
+        ('period', "ALTER TABLE forecast_items ADD COLUMN period TEXT NOT NULL DEFAULT 'monthly'"),
+        ('confidence', "ALTER TABLE forecast_items ADD COLUMN confidence TEXT NOT NULL DEFAULT 'medium'"),
+    ):
+        if col not in ficols:
+            conn.execute(ddl)
     conn.commit()
 
     # 6. v7 hardening: FX-aware order items + backfill of historical data
@@ -2622,21 +2642,57 @@ BUDGET_MERCHANT = 'Starting budget (exploratory)'
 
 
 def create_forecast(reseller_id, note, items):
-    """items: list of dicts {item_type, merchant, product_rowid, product_name, quantity, est_value}"""
+    """items: list of dicts {item_type, merchant, product_rowid, product_name,
+    quantity, est_value, needed_by, period, confidence}. The last three (v27)
+    are optional and default to a recurring monthly baseline at medium confidence."""
     conn = get_db()
     try:
         conn.execute("INSERT INTO forecasts (reseller_id, note) VALUES (?,?)", (reseller_id, note))
         fid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         for it in items:
             conn.execute("""INSERT INTO forecast_items
-                            (forecast_id, item_type, merchant, product_rowid, product_name, quantity, est_value)
-                            VALUES (?,?,?,?,?,?,?)""",
+                            (forecast_id, item_type, merchant, product_rowid, product_name,
+                             quantity, est_value, needed_by, period, confidence)
+                            VALUES (?,?,?,?,?,?,?,?,?,?)""",
                          (fid, it['item_type'], it['merchant'], it.get('product_rowid'),
-                          it.get('product_name'), it.get('quantity'), it.get('est_value', 0)))
+                          it.get('product_name'), it.get('quantity'), it.get('est_value', 0),
+                          it.get('needed_by'), _norm_period(it.get('period')),
+                          _norm_confidence(it.get('confidence'))))
         conn.commit()
         return fid
     finally:
         conn.close()
+
+
+# v27: timing-field normalisers so bad input from the form/API can't corrupt the
+# NOT NULL columns or break the Ops bucketing that keys off these exact values.
+def _norm_period(p):
+    return 'one_off' if str(p or '').lower() in ('one_off', 'oneoff', 'one-off', 'once') else 'monthly'
+
+
+def _norm_confidence(c):
+    c = str(c or '').lower()
+    return c if c in ('high', 'medium', 'low') else 'medium'
+
+
+def _norm_needed_by(s):
+    """Accept 'YYYY-MM-DD' (or the quick-select tokens) → an ISO date string or None."""
+    from datetime import date as _date
+    if not s:
+        return None
+    s = str(s).strip().lower()
+    today = datetime.now(timezone.utc).date()
+    if s in ('this_week', 'week'):
+        return (today + timedelta(days=7)).isoformat()
+    if s in ('this_month', 'month'):
+        return (today + timedelta(days=30)).isoformat()
+    if s in ('next_month', 'nextmonth'):
+        return (today + timedelta(days=60)).isoformat()
+    # explicit date
+    try:
+        return _date.fromisoformat(s[:10]).isoformat()
+    except (ValueError, TypeError):
+        return None
 
 
 def create_budget_forecast(reseller_id, amount_sar, note=''):
@@ -2734,17 +2790,288 @@ def get_forecast_demand_summary(days=90):
     }
 
 
+def _bucket_of(period, days_out):
+    """v27: which time bucket a forecast line lands in. Recurring lines are the
+    ongoing monthly baseline; one-off lines are placed by how far out they're needed."""
+    if period == 'monthly':
+        return 'recurring'
+    if days_out is None:
+        return 'undated'
+    if days_out <= 7:
+        return 'week'      # includes overdue (days_out < 0) — needs attention now
+    if days_out <= 30:
+        return 'month'
+    if days_out <= 90:
+        return 'quarter'
+    return 'later'
+
+
+BUCKET_LABELS = [
+    ('week', 'Next 7 days'), ('month', '8-30 days'), ('quarter', '31-90 days'),
+    ('later', 'Beyond 90 days'), ('recurring', 'Recurring monthly'), ('undated', 'Undated'),
+]
+
+
+def get_forecast_intelligence(lookback_days=120, window_days=None, spike_ratio=1.5,
+                              concentration=0.6):
+    """v27: turn raw forecast lines into an operational picture for Ops —
+      • WHEN demand lands: time buckets + a 12-week timeline
+      • WHERE the spikes are: near-term forecast vs the trailing actual run-rate
+      • whether we can COVER it: stock on hand vs the needed-by window
+      • WHO is driving it: per-customer register + single-client concentration risk
+    New/unproven-client demand (reseller with no orders yet) is risk-discounted with
+    the same weight the buy engine uses. Only forecasts submitted within
+    `lookback_days` are considered live. All money in SAR."""
+    cfg = get_buy_settings()
+    new_weight = cfg['new_client_forecast_weight'] / 100.0
+    window = int(window_days if window_days is not None else cfg['forecast_days'])
+    conn = get_db()
+    today = datetime.now(timezone.utc).date()
+    since_created = (today - timedelta(days=lookback_days)).isoformat()
+
+    lines = conn.execute("""
+        SELECT fi.item_type, fi.merchant, fi.product_rowid, fi.product_name,
+               COALESCE(fi.quantity,0) AS quantity, COALESCE(fi.est_value,0) AS est_value,
+               fi.needed_by, COALESCE(fi.period,'monthly') AS period,
+               COALESCE(fi.confidence,'medium') AS confidence,
+               f.id AS fid, f.created_at, f.status, f.reseller_id,
+               cp.company_name, cp.contract_status, u.name AS contact_name,
+               (SELECT COUNT(*) FROM orders o WHERE o.reseller_id=f.reseller_id) AS orders_ct
+        FROM forecast_items fi
+        JOIN forecasts f ON fi.forecast_id=f.id
+        JOIN reseller_profiles cp ON f.reseller_id=cp.id
+        JOIN users u ON cp.user_id=u.id
+        WHERE date(f.created_at) >= ? AND fi.merchant != ?
+        ORDER BY f.created_at DESC""", (since_created, BUDGET_MERCHANT)).fetchall()
+
+    # trailing actual run-rate over the same near-term window (the baseline demand)
+    wsince = (today - timedelta(days=window)).isoformat()
+    sold_val_m = {r['merchant']: r['v'] for r in conn.execute(
+        """SELECT oi.merchant, COALESCE(SUM(oi.line_total_sar),0) v
+           FROM order_items oi JOIN orders o ON oi.order_id=o.id
+           WHERE date(o.created_at) >= ? GROUP BY oi.merchant""", (wsince,))}
+    sold_qty_p = {r['product_rowid']: r['q'] for r in conn.execute(
+        """SELECT oi.product_rowid, COALESCE(SUM(oi.quantity),0) q
+           FROM order_items oi JOIN orders o ON oi.order_id=o.id
+           WHERE date(o.created_at) >= ? AND oi.product_rowid IS NOT NULL
+           GROUP BY oi.product_rowid""", (wsince,))}
+    on_hand = {r['product_rowid']: r['q'] for r in conn.execute(
+        "SELECT product_rowid, COALESCE(SUM(remaining_qty),0) q FROM purchase_batches GROUP BY product_rowid")}
+    # exploratory "starting budget" is reported separately (not a real merchant to stock)
+    unallocated = conn.execute(
+        """SELECT COALESCE(SUM(fi.est_value),0) FROM forecast_items fi JOIN forecasts f ON fi.forecast_id=f.id
+           WHERE date(f.created_at) >= ? AND fi.merchant = ?""", (since_created, BUDGET_MERCHANT)).fetchone()[0]
+    conn.close()
+
+    buckets = {k: {'value': 0.0, 'units': 0, 'lines': 0} for k, _ in BUCKET_LABELS}
+    timeline = [{'week': i, 'value': 0.0, 'units': 0,
+                 'start': (today + timedelta(days=7 * i)).isoformat()} for i in range(12)]
+    merch, prod, reg = {}, {}, {}
+    conc = {}   # merchant -> {reseller_id: near_term_value}
+
+    for ln in lines:
+        d = dict(ln)
+        is_new = (d['orders_ct'] or 0) == 0
+        w = new_weight if is_new else 1.0
+        days_out = None
+        if d['needed_by']:
+            try:
+                days_out = (date.fromisoformat(d['needed_by'][:10]) - today).days
+            except (ValueError, TypeError):
+                days_out = None
+        bk = _bucket_of(d['period'], days_out)
+        buckets[bk]['value'] += d['est_value']
+        buckets[bk]['units'] += d['quantity']
+        buckets[bk]['lines'] += 1
+        # near-term = recurring monthly run-rate, or a one-off due within the window
+        near = d['period'] == 'monthly' or (days_out is not None and days_out <= window)
+        nt_val = d['est_value'] * w if near else 0.0
+        nt_qty = d['quantity'] * w if near else 0.0
+
+        # 12-week timeline (one-off dated demand; overdue folds into week 0)
+        if d['period'] != 'monthly' and days_out is not None and days_out <= 83:
+            wk = max(0, days_out // 7)
+            timeline[wk]['value'] += d['est_value']
+            timeline[wk]['units'] += d['quantity']
+
+        m = merch.setdefault(d['merchant'], {
+            'merchant': d['merchant'], 'forecasts': set(), 'resellers': set(),
+            'est_value': 0.0, 'near_term': 0.0, 'near_term_raw': 0.0, 'qty': 0})
+        m['forecasts'].add(d['fid']); m['resellers'].add(d['reseller_id'])
+        m['est_value'] += d['est_value']; m['near_term'] += nt_val
+        m['near_term_raw'] += (d['est_value'] if near else 0.0); m['qty'] += d['quantity']
+        if near and nt_val > 0:
+            cm = conc.setdefault(d['merchant'], {})
+            cm[d['reseller_id']] = cm.get(d['reseller_id'], 0.0) + nt_val
+
+        if d['item_type'] == 'product' and d['product_rowid']:
+            p = prod.setdefault(d['product_rowid'], {
+                'product_rowid': d['product_rowid'], 'product_name': d['product_name'],
+                'merchant': d['merchant'], 'resellers': set(), 'est_value': 0.0,
+                'qty': 0, 'qty_near': 0.0, 'earliest': None})
+            p['resellers'].add(d['reseller_id']); p['est_value'] += d['est_value']
+            p['qty'] += d['quantity']; p['qty_near'] += nt_qty
+            if d['needed_by'] and (p['earliest'] is None or d['needed_by'] < p['earliest']):
+                p['earliest'] = d['needed_by']
+
+        r = reg.setdefault(d['fid'], {
+            'fid': d['fid'], 'company_name': d['company_name'], 'contact_name': d['contact_name'],
+            'contract_status': d['contract_status'], 'tier': 'new' if is_new else 'active',
+            'created_at': d['created_at'], 'status': d['status'],
+            'lines': 0, 'est_value': 0.0, 'earliest': None})
+        r['lines'] += 1; r['est_value'] += d['est_value']
+        if d['needed_by'] and (r['earliest'] is None or d['needed_by'] < r['earliest']):
+            r['earliest'] = d['needed_by']
+
+    # ── finalise merchants: spike signal + concentration ──
+    signals = []
+    by_merchant = []
+    for m in merch.values():
+        baseline = sold_val_m.get(m['merchant'], 0.0)
+        nt = m['near_term']
+        ratio = (nt / baseline) if baseline > 0 else None
+        if baseline <= 0 and nt > 0:
+            sig = 'new_demand'
+        elif ratio is not None and ratio >= spike_ratio:
+            sig = 'surge'
+        elif ratio is not None and ratio < 0.5:
+            sig = 'cooling'
+        else:
+            sig = 'steady'
+        cm = conc.get(m['merchant'], {})
+        top_share, top_new = 0.0, False
+        if cm and nt > 0:
+            top_rid = max(cm, key=cm.get)
+            top_share = cm[top_rid] / nt
+            # is that dominant reseller new/unproven? (weighted contribution < raw ⇒ discounted)
+            top_new = any(x['reseller_id'] == top_rid and (x['orders_ct'] or 0) == 0 for x in lines)
+        row = {
+            'merchant': m['merchant'], 'forecasts': len(m['forecasts']),
+            'resellers': len(m['resellers']), 'est_value': round(m['est_value'], 2),
+            'near_term': round(nt, 2), 'near_term_raw': round(m['near_term_raw'], 2),
+            'qty': m['qty'], 'baseline': round(baseline, 2),
+            'ratio': round(ratio, 2) if ratio is not None else None,
+            'signal': sig, 'top_share': round(top_share, 2), 'top_new': top_new,
+        }
+        by_merchant.append(row)
+        if sig == 'surge':
+            signals.append({'kind': 'surge', 'severity': 'high', 'merchant': m['merchant'],
+                            'message': f"{m['merchant']}: near-term forecast is {row['ratio']}x the "
+                                       f"last {window}-day run-rate (SAR {row['near_term']:,.0f} vs {row['baseline']:,.0f})."})
+        elif sig == 'new_demand' and nt > 0:
+            signals.append({'kind': 'new_demand', 'severity': 'medium', 'merchant': m['merchant'],
+                            'message': f"{m['merchant']}: SAR {row['near_term']:,.0f} of near-term forecast with "
+                                       f"no recent sales history - brand-new demand to source."})
+        if top_share >= concentration and nt > 0 and len(cm) >= 1:
+            who = 'NEW/unproven ' if top_new else ''
+            signals.append({'kind': 'concentration', 'severity': 'high' if top_new else 'medium',
+                            'merchant': m['merchant'],
+                            'message': f"{m['merchant']}: {row['top_share']*100:.0f}% of near-term demand comes from a "
+                                       f"single {who}client - verify before committing stock."})
+    by_merchant.sort(key=lambda x: x['near_term'], reverse=True)
+
+    # ── finalise products: coverage gap vs needed_by ──
+    by_product = []
+    for p in prod.values():
+        need = p['qty_near']
+        oh = on_hand.get(p['product_rowid'], 0)
+        short = max(0, int(round(need)) - oh)
+        daily = need / float(window) if need > 0 else 0
+        days_cover = round(oh / daily, 1) if daily > 0 else None
+        by_product.append({
+            'product_rowid': p['product_rowid'], 'product_name': p['product_name'],
+            'merchant': p['merchant'], 'resellers': len(p['resellers']),
+            'est_value': round(p['est_value'], 2), 'qty': p['qty'],
+            'qty_near': int(round(need)), 'on_hand': oh, 'short': short,
+            'days_cover': days_cover, 'earliest': p['earliest'],
+            'sold': sold_qty_p.get(p['product_rowid'], 0),
+            'signal': 'short' if short > 0 else 'ok',
+        })
+        if short > 0:
+            by_product_sig = f"{p['product_name']}: forecast needs {int(round(need))} units but only {oh} on hand"
+            if p['earliest']:
+                by_product_sig += f" - short {short} before {p['earliest']}"
+            signals.append({'kind': 'short', 'severity': 'high', 'merchant': p['merchant'],
+                            'product_rowid': p['product_rowid'], 'message': by_product_sig + '.'})
+    by_product.sort(key=lambda x: (x['short'], x['qty_near']), reverse=True)
+
+    register = sorted(reg.values(), key=lambda x: (x['earliest'] or '9999', x['created_at']))
+    for r in register:
+        r['est_value'] = round(r['est_value'], 2)
+    # severity order for the signals panel
+    sev_rank = {'high': 0, 'medium': 1, 'low': 2}
+    signals.sort(key=lambda s: sev_rank.get(s['severity'], 3))
+
+    totals = {
+        'forecasts': len(reg), 'resellers': len({d['reseller_id'] for d in lines}),
+        'est_value': round(sum(d['est_value'] for d in lines), 2),
+        'near_term': round(sum(m['near_term'] for m in by_merchant), 2),
+        'undated_value': round(buckets['undated']['value'], 2),
+        'recurring_value': round(buckets['recurring']['value'], 2),
+        'signals': len(signals),
+    }
+    return {
+        'buckets': buckets, 'bucket_labels': BUCKET_LABELS, 'timeline': timeline,
+        'by_merchant': by_merchant, 'by_product': by_product, 'signals': signals,
+        'register': register, 'totals': totals, 'window': window,
+        'lookback': lookback_days, 'unallocated_budget': round(unallocated, 2),
+        'today': today.isoformat(),
+    }
+
+
 def get_forecast_detail(fid):
     conn = get_db()
-    f = conn.execute("""SELECT f.*, cp.company_name, cp.registered_by, cp.user_id as reseller_user_id
+    f = conn.execute("""SELECT f.*, cp.company_name, cp.registered_by, cp.user_id as reseller_user_id,
+                               cp.contract_status,
+                               (SELECT COUNT(*) FROM orders o WHERE o.reseller_id=f.reseller_id) AS orders_ct
                         FROM forecasts f JOIN reseller_profiles cp ON f.reseller_id=cp.id
                         WHERE f.id=?""", (fid,)).fetchone()
     if not f:
         conn.close()
         return None, []
     items = conn.execute("SELECT * FROM forecast_items WHERE forecast_id=? ORDER BY id", (fid,)).fetchall()
+    # v27: fulfilment — how much of each forecast PRODUCT line the reseller has
+    # actually ordered SINCE this forecast was submitted (intent → real orders).
+    f = dict(f)
+    out_items = []
+    for it in items:
+        it = dict(it)
+        if it['item_type'] == 'product' and it['product_rowid']:
+            row = conn.execute(
+                """SELECT COALESCE(SUM(oi.quantity),0) q FROM order_items oi JOIN orders o ON oi.order_id=o.id
+                   WHERE o.reseller_id=? AND oi.product_rowid=? AND o.created_at >= ?""",
+                (f['reseller_id'], it['product_rowid'], f['created_at'])).fetchone()
+            it['ordered_since'] = row['q'] or 0
+        else:
+            it['ordered_since'] = None
+        out_items.append(it)
+    # on-hand stock for the products in this forecast (Ops decision context)
+    for it in out_items:
+        if it['item_type'] == 'product' and it['product_rowid']:
+            oh = conn.execute("SELECT COALESCE(SUM(remaining_qty),0) q FROM purchase_batches WHERE product_rowid=?",
+                              (it['product_rowid'],)).fetchone()['q']
+            it['on_hand'] = oh
     conn.close()
-    return dict(f), [dict(i) for i in items]
+    return f, out_items
+
+
+def set_forecast_line_timing(item_id, needed_by=None, confidence=None):
+    """v27: let the account manager refine a line's timing/confidence from the
+    sales forecast detail — they often know the real timing better than a
+    self-serve client. Returns True if the line was updated."""
+    sets, params = [], []
+    if needed_by is not None:
+        sets.append("needed_by=?"); params.append(_norm_needed_by(needed_by))
+    if confidence is not None:
+        sets.append("confidence=?"); params.append(_norm_confidence(confidence))
+    if not sets:
+        return False
+    params.append(item_id)
+    conn = get_db()
+    conn.execute(f"UPDATE forecast_items SET {', '.join(sets)} WHERE id=?", params)
+    conn.commit()
+    conn.close()
+    return True
 
 
 def get_reseller_forecasts(reseller_id):

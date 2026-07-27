@@ -1,6 +1,40 @@
 {% extends "base.html" %}
 {% block title %}Purchase Plan — {{ profile.company_name }}{% endblock %}
 
+{# v27: light timing capture reused by both the merchant and product builders.
+   pfx keeps element ids unique ('m' = merchant line, 'p' = product line). #}
+{% macro timing_controls(pfx) %}
+<div class="form-group">
+    <label class="form-label">🗓️ When do you need it?</label>
+    <div class="form-row" style="gap:8px">
+        <select id="{{ pfx }}When" onchange="toggleDate('{{ pfx }}')" style="flex:1">
+            <option value="this_week">This week</option>
+            <option value="this_month" selected>This month</option>
+            <option value="next_month">Next month</option>
+            <option value="date">Specific date…</option>
+        </select>
+        <input type="date" id="{{ pfx }}Date" style="flex:1;display:none" min="{{ today }}">
+    </div>
+</div>
+<div class="form-row" style="gap:8px">
+    <div class="form-group" style="flex:1">
+        <label class="form-label">🔁 Cadence</label>
+        <select id="{{ pfx }}Period">
+            <option value="monthly" selected>Every month</option>
+            <option value="one_off">One-off</option>
+        </select>
+    </div>
+    <div class="form-group" style="flex:1">
+        <label class="form-label">🎯 Confidence <span class="text-muted" style="font-weight:400">(optional)</span></label>
+        <select id="{{ pfx }}Conf">
+            <option value="high">High</option>
+            <option value="medium" selected>Medium</option>
+            <option value="low">Low</option>
+        </select>
+    </div>
+</div>
+{% endmacro %}
+
 {% block content %}
 <div class="page-header">
     <div>
@@ -42,9 +76,10 @@
                 </select>
             </div>
             <div class="form-group">
-                <label class="form-label">Planned Monthly Purchase Value ({{ disp }})</label>
+                <label class="form-label">Planned Purchase Value ({{ disp }})</label>
                 <input type="number" id="fcMerchValue" min="0" step="1000" placeholder="e.g. 50000">
             </div>
+            {{ timing_controls('m') }}
             <button class="btn btn-primary" onclick="addMerchantLine()" style="width:100%;justify-content:center">➕ Add Merchant Line</button>
         </div>
 
@@ -59,9 +94,10 @@
                 </div>
             </div>
             <div class="form-group">
-                <label class="form-label">Planned Monthly Quantity</label>
+                <label class="form-label">Planned Quantity</label>
                 <input type="number" id="fcQty" value="10" min="1" step="1">
             </div>
+            {{ timing_controls('p') }}
             <button class="btn btn-primary" onclick="addProductLine()" style="width:100%;justify-content:center">➕ Add Product Line</button>
         </div>
 
@@ -162,11 +198,30 @@ function pickFc(idx) {
     document.getElementById('fcSuggestions').classList.remove('show');
 }
 
+// v27: show/hide the date picker when "Specific date…" is chosen.
+function toggleDate(pfx) {
+    const isDate = document.getElementById(pfx + 'When').value === 'date';
+    document.getElementById(pfx + 'Date').style.display = isDate ? '' : 'none';
+}
+
+// v27: read the light timing hint for a line (returns {when, period, confidence, whenLabel}).
+const WHEN_LABEL = { this_week: 'This week', this_month: 'This month', next_month: 'Next month' };
+function readTiming(pfx) {
+    const w = document.getElementById(pfx + 'When').value;
+    const when = w === 'date' ? (document.getElementById(pfx + 'Date').value || '') : w;
+    const period = document.getElementById(pfx + 'Period').value;
+    const confidence = document.getElementById(pfx + 'Conf').value;
+    const whenLabel = w === 'date' ? (when || 'a date') : WHEN_LABEL[w];
+    return { when, period, confidence, whenLabel };
+}
+
 function addMerchantLine() {
     const m = document.getElementById('fcMerchant').value;
     const v = parseFloat(document.getElementById('fcMerchValue').value) || 0;
     if (!m || v <= 0) { alert('Choose a merchant and enter a planned value.'); return; }
-    plan.push({ type: 'merchant', merchant: m, label: m + ' (entire merchant)', quantity: null, value: v });
+    const t = readTiming('m');
+    if (t.when === '') { alert('Pick a specific date (or choose a timeframe).'); return; }
+    plan.push({ type: 'merchant', merchant: m, label: m + ' (entire merchant)', quantity: null, value: v, ...t });
     document.getElementById('fcMerchValue').value = '';
     renderPlan();
 }
@@ -175,9 +230,11 @@ function addProductLine() {
     if (!fcPicked) { alert('Search and select a product first.'); return; }
     const qty = parseInt(document.getElementById('fcQty').value) || 0;
     if (qty <= 0) { alert('Enter a quantity.'); return; }
+    const t = readTiming('p');
+    if (t.when === '') { alert('Pick a specific date (or choose a timeframe).'); return; }
     plan.push({ type: 'product', merchant: fcPicked.merchant, product_id: fcPicked.id,
                 label: fcPicked.product_name, quantity: qty,
-                value: qty * fcPicked.client_price });
+                value: qty * fcPicked.client_price, ...t });
     fcPicked = null;
     document.getElementById('fcSearch').value = '';
     renderPlan();
@@ -199,6 +256,7 @@ function renderPlan() {
             <td>
                 <div class="fw6 truncate" style="max-width:220px" title="${esc(l.label)}">${l.type === 'product' ? '📦' : '🏪'} ${esc(l.label)}</div>
                 <div class="text-muted" style="font-size:11px">${esc(l.merchant)}</div>
+                <div class="text-muted" style="font-size:11px">🗓️ ${esc(l.whenLabel || '—')} · ${l.period === 'one_off' ? 'one-off' : 'monthly'} · ${esc(l.confidence || 'medium')} confidence</div>
             </td>
             <td>${l.quantity != null ? fmt(l.quantity) : '—'}</td>
             <td class="fw6 text-accent">${fmt(l.value)}</td>

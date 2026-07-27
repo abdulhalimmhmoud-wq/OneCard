@@ -1,4 +1,32 @@
-# OneCard — Reseller Operations Platform (v26)
+# OneCard — Reseller Operations Platform (v27)
+
+## Forecast Intelligence for Operations (v27)
+
+Resellers' forecasts used to tell Ops **what** and **how much** — but never **when**.
+v27 adds a light timing dimension at the source and turns the Ops page into a real
+planning console. See `docs/FORECAST_INTELLIGENCE.md`.
+
+- **Timing capture (reseller + sales).** Each forecast line now carries a light quick-select:
+  **when it's needed** (This week / This month / Next month / a specific date), **cadence**
+  (one-off vs a recurring monthly run-rate), and **confidence** (high/med/low). The account
+  manager can **refine a line's needed-by date + confidence** from the sales forecast detail —
+  they often know the real timing better than a self-serve client. Schema: three new
+  `forecast_items` columns, backfilled so every existing line stays valid (recurring / medium).
+- **Ops → 📊 Forecast Intelligence.** Replaces the flat demand page with:
+  - **When demand lands** — value/units bucketed into *Next 7 days · 8–30 · 31–90 · Recurring
+    monthly · Undated*, plus a **12-week timeline** of dated one-off demand (the spikes).
+  - **Demand Signals** — per-merchant **surge** (near-term forecast ≥ 1.5× the trailing
+    run-rate), **brand-new demand** (forecast with no sales history), **single-client
+    concentration** (one client — flagged harder if new/unproven), and per-product
+    **coverage shortfalls** ("short N units before <date>"), each linking to the Buy Planner.
+  - **Coverage** — forecast-in-window vs stock on hand, so Ops sees what we can't yet meet.
+  - **Per-customer register** — every plan with tier (active vs new), value and earliest
+    needed-by, drilling into a **line-by-line detail with fulfilment** (how much of each line
+    the client has actually ordered since submitting).
+- **Risk-adjusted.** New/unproven-client forecast is discounted with the same weight the Buy
+  Planner uses (`buy.new_client_forecast_weight`), so speculative demand doesn't overstate the plan.
+
+Coverage: `tests/e2e_v27.py` (14 checks). Full regression green — 25 suites.
 
 ## API is an always-on channel (v26)
 

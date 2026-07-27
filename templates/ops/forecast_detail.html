@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Forecast #{{ forecast.id }} — Operations — OneCard{% endblock %}
+
+{% set conf_badge = {'high': 'badge-success', 'medium': 'badge-warning', 'low': 'badge-danger'} %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">📋 Forecast #{{ forecast.id }} — {{ forecast.company_name }}</h1>
+        <p class="page-subtitle">
+            Submitted {{ forecast.created_at[:16] }} ·
+            {% if forecast.orders_ct and forecast.orders_ct > 0 %}<span class="badge badge-success">Active client</span>
+            {% else %}<span class="badge badge-warning">New / unproven — forecast is risk-discounted</span>{% endif %}
+            {% if forecast.contract_status == 'contracted' %}<span class="badge badge-success">Contract signed</span>
+            {% else %}<span class="badge badge-ghost">Prospect</span>{% endif %}
+        </p>
+    </div>
+    <div class="page-actions">
+        <a href="/ops/forecasts" class="btn btn-ghost">← Forecast Intelligence</a>
+        <a href="/ops/buying" class="btn btn-primary">🧭 Buy Planner</a>
+    </div>
+</div>
+
+{% set total = items|sum(attribute='est_value') %}
+<div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">
+    <div class="stat-card">
+        <div class="stat-icon">💰</div>
+        <div class="stat-value">SAR {{ total|money }}</div>
+        <div class="stat-label">Total Estimated Value</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">📦</div>
+        <div class="stat-value">{{ items|selectattr('item_type','equalto','product')|list|length }}</div>
+        <div class="stat-label">Product Lines</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🏪</div>
+        <div class="stat-value">{{ items|selectattr('item_type','equalto','merchant')|list|length }}</div>
+        <div class="stat-label">Merchant Lines</div>
+    </div>
+</div>
+
+{% if forecast.note %}
+<div class="card mb-24">
+    <div class="card-header"><div class="card-title">🗒️ Reseller Note</div></div>
+    <p style="color:var(--text-2)">{{ forecast.note }}</p>
+</div>
+{% endif %}
+
+<div class="table-card">
+    <div class="table-header"><div class="table-title">Plan Lines — timing &amp; fulfilment</div>
+        <span class="text-muted" style="font-size:12px">"Ordered since" = units this client actually bought after submitting this plan</span>
+    </div>
+    <div class="table-scroll">
+        <table>
+            <thead>
+                <tr><th>Line</th><th>When needed</th><th>Cadence</th><th>Confidence</th><th>Planned qty</th><th>Est. value</th><th>Ordered since</th><th>On hand</th></tr>
+            </thead>
+            <tbody>
+            {% for it in items %}
+            <tr>
+                <td>
+                    {% if it.item_type == 'merchant' %}<span class="badge badge-info">🏪</span> <span class="fw6">{{ it.merchant }}</span>
+                    <div class="text-muted" style="font-size:11px">entire merchant</div>
+                    {% else %}<span class="badge badge-accent">📦</span> <span class="fw6 truncate" style="max-width:240px;display:inline-block;vertical-align:middle" title="{{ it.product_name }}">{{ it.product_name }}</span>
+                    <div class="text-muted" style="font-size:11px">{{ it.merchant }}</div>{% endif %}
+                </td>
+                <td>
+                    {% if it.needed_by %}
+                        {% set od = (it.needed_by[:10]) %}
+                        <span class="{{ 'text-d fw6' if od <= today else '' }}">{{ od }}</span>
+                    {% else %}<span class="text-muted">—</span>{% endif %}
+                </td>
+                <td>{% if it.period == 'one_off' %}<span class="badge badge-ghost">one-off</span>{% else %}<span class="badge badge-info">🔁 monthly</span>{% endif %}</td>
+                <td><span class="badge {{ conf_badge.get(it.confidence, 'badge-warning') }}">{{ it.confidence or 'medium' }}</span></td>
+                <td class="fw6">{{ it.quantity|money if it.quantity else '—' }}</td>
+                <td class="fw6 text-accent">SAR {{ it.est_value|money }}</td>
+                <td>
+                    {% if it.ordered_since is not none %}
+                        {% if it.quantity and it.quantity > 0 %}
+                            {% set pct = ((it.ordered_since / it.quantity) * 100)|round|int %}
+                            <span class="{{ 'text-s fw6' if pct >= 80 else ('text-d' if pct < 20 else '') }}">{{ it.ordered_since|money }} ({{ pct }}%)</span>
+                        {% else %}{{ it.ordered_since|money }}{% endif %}
+                    {% else %}<span class="text-muted">—</span>{% endif %}
+                </td>
+                <td>
+                    {% if it.on_hand is defined %}
+                        <span class="{{ 'text-d' if (it.quantity and it.on_hand < it.quantity) else 'text-s' }}">{{ it.on_hand|money }}</span>
+                    {% else %}<span class="text-muted">—</span>{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

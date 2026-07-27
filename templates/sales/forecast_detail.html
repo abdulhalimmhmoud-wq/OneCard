@@ -39,11 +39,13 @@
 {% endif %}
 
 <div class="table-card">
-    <div class="table-header"><div class="table-title">Plan Lines</div></div>
+    <div class="table-header"><div class="table-title">Plan Lines</div>
+        <span class="text-muted" style="font-size:12px">Refine <b>when</b> each line is needed &amp; how sure — Operations plans stock from this</span>
+    </div>
     <div class="table-scroll">
         <table>
             <thead>
-                <tr><th>Type</th><th>Merchant</th><th>Product</th><th>Quantity</th><th>Estimated Value</th></tr>
+                <tr><th>Type</th><th>Merchant</th><th>Product</th><th>Qty</th><th>Value</th><th>Needed by · confidence</th><th>Refine</th></tr>
             </thead>
             <tbody>
             {% for it in items %}
@@ -56,6 +58,22 @@
                 <td>{{ it.product_name or '— entire merchant —' }}</td>
                 <td>{{ it.quantity or '—' }}</td>
                 <td class="fw6 text-accent">SAR {{ it.est_value|money }}</td>
+                <td>
+                    {% if it.needed_by %}{{ it.needed_by[:10] }}{% else %}<span class="text-muted">{{ 'monthly' if it.period != 'one_off' else 'undated' }}</span>{% endif %}
+                    · <span class="badge {{ {'high':'badge-success','medium':'badge-warning','low':'badge-danger'}.get(it.confidence,'badge-warning') }}">{{ it.confidence or 'medium' }}</span>
+                </td>
+                <td>
+                    <form method="POST" style="display:flex;gap:4px;align-items:center">
+                        <input type="hidden" name="item_id" value="{{ it.id }}">
+                        <input type="date" name="needed_by" value="{{ it.needed_by[:10] if it.needed_by else '' }}" min="{{ today }}" style="font-size:11px;padding:3px">
+                        <select name="confidence" style="font-size:11px;padding:3px">
+                            <option value="high" {{ 'selected' if it.confidence == 'high' }}>High</option>
+                            <option value="medium" {{ 'selected' if it.confidence == 'medium' or not it.confidence }}>Med</option>
+                            <option value="low" {{ 'selected' if it.confidence == 'low' }}>Low</option>
+                        </select>
+                        <button type="submit" class="btn btn-sm btn-ghost" title="Save timing">💾</button>
+                    </form>
+                </td>
             </tr>
             {% endfor %}
             </tbody>
